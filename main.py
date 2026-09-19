@@ -116,7 +116,11 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
 
         if verdict.response == "ALLOW":
             task.state = "RUNNING"
-            logger.log_event("EXECUTION", timestamp, decision_id=decision.decision_id, task_id=task.task_id, result="STARTED")
+            logger.log_event(
+                "EXECUTION", timestamp,
+                decision_id=decision.decision_id, task_id=task.task_id,
+                resource_id=assignment.resource_id, result="STARTED",
+            )
 
             observation = _get_observation(assignment.resource_id, timestamp, task.task_id, decision.decision_id, assignment)
             logger.log_event(

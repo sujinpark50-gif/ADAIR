@@ -7,6 +7,7 @@
 
 ```
 ├── main.py                          # 전체 흐름 실행 (process_task가 핵심 로직)
+├── orchestration_demo.py            # IT-01/IT-02 Mock 오케스트레이션 폐루프 시연
 ├── config.py                        # 좌표·Grid·연결방식·schema_version 등 설정값
 ├── ids.py                           # run_id/task_id/decision_id 생성 (Decision ID 원칙)
 ├── logger.py                        # 이벤트 단위 JSONL 로거
@@ -26,9 +27,15 @@
 ## 실행 방법
 
 ```bash
+python3 orchestration_demo.py   # IT-01 정상 흐름 + IT-02 REJECT 재할당 시연
 python3 main.py                 # 일반 시뮬레이션 (10 스텝)
 python3 -m tests.it_cases       # IT-01, IT-02 통합 테스트
 ```
+
+`orchestration_demo.py`는 Environment, UAV, Safety를 Mock으로 두고 가운데 Orchestrator의
+선택 → Local 응답 → Safety → 실행 → 관측 → 환경 갱신 → 완료 흐름을 출력합니다.
+IT-02에서는 첫 UAV의 `HIGH_WIND` 거절 후 새 `decision_id`로 다른 UAV를
+재할당하는 과정도 확인할 수 있습니다. 상세 이벤트는 `logs/`의 JSONL에도 저장됩니다.
 
 ## Integration Contract/Test Cases 반영 사항
 

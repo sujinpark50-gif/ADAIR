@@ -34,13 +34,25 @@ def _to_jsonable(value):
 class EventLogger:
     """1 Run = 1 Log File 원칙에 따라, 실행(run_id)마다 파일을 새로 만든다."""
 
-    def __init__(self, run_id: str, scenario_id: str = None, log_dir: str = None, file_name: str = None):
+    def __init__(
+        self,
+        run_id: str,
+        scenario_id: str = None,
+        log_dir: str = None,
+        file_name: str = None,
+        console: bool = False,
+    ):
         self.run_id = run_id
         self.scenario_id = scenario_id or config.SCENARIO_ID
         self.log_dir = log_dir or config.LOG_DIR
         self.file_name = file_name or config.LOG_FILE_NAME
+        self.console = console
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_path = os.path.join(self.log_dir, self.file_name)
+        # 1 Run = 1 Log File: 같은 이름으로 데모를 다시 실행해도
+        # 이전 run의 레코드가 섞이지 않도록 새 로그로 시작한다.
+        with open(self.log_path, "w", encoding="utf-8"):
+            pass
 
     def log_event(
         self,
@@ -75,6 +87,43 @@ class EventLogger:
 
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        if self.console:
+            print(self._format_console(record))
+
+    @staticmethod
+    def _format_console(record: dict) -> str:
+        """시연에서 폐루프를 한눈에 볼 수 있는 짧은 이벤트 로그."""
+        event = record["event_type"]
+        result = record["result"]
+        resource = record.get("resource_id")
+        decision = record.get("decision_id")
+        reason = record.get("reason")
+        detail = record.get("detail", {})
+
+        if event == "ENVIRONMENT_CHANGE":
+            return f"[ENV] FIRE_DETECTED cell={detail.get('cell_id', 'unknown')}"
+        if event == "TASK_CREATED":
+            return f"[TASK] {record['task_id']} CREATED"
+        if event == "CANDIDATE_EVALUATED":
+            selected = detail.get("assignments", ["NONE"])[0]
+            return f"[ORCH] {decision} -> {selected} assigned"
+        if event == "LOCAL_RESPONSE":
+            suffix = f" reason={reason}" if reason else ""
+            return f"[{resource}] {result}{suffix}"
+        if event == "REEVALUATION":
+            return f"[ORCH] reevaluate -> {decision} reason={reason}"
+        if event == "SAFETY_JUDGEMENT":
+            return f"[SAFETY] {result}"
+        if event == "EXECUTION":
+            return f"[EXEC] {resource or 'mission'} started"
+        if event == "OBSERVATION":
+            return f"[OBS] {resource} target reached"
+        if event == "ENVIRONMENT_UPDATE":
+            return "[ENV] observation applied"
+        if event == "TASK_COMPLETE":
+            return f"[TASK] {result}"
+        return f"[{event}] {result}"
 
     def read_all(self):
         if not os.path.exists(self.log_path):
