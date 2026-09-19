@@ -6,8 +6,8 @@ from mavsdk_grpc import System
 
 async def main():
     drone = System()
-    print("연결 시도: udp://:14540")
-    await drone.connect(system_address="udpin://0.0.0.0:14540")
+    print("연결 시도: udp://:14541")
+    await drone.connect(system_address="udpin://0.0.0.0:14541")
 
     async for state in drone.core.connection_state():
         if state.is_connected:
