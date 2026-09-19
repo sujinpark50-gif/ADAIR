@@ -1,0 +1,12 @@
+# 산불 대응 멀티에이전트 시뮬레이터 — 공통 의존성
+# 파트별로 사용하는 패키지를 추가해 주세요.
+
+# --- 지상자원(UGV/소방차) ---
+# 주의: 'mavsdk' 패키지가 'mavsdk-grpc'로 이름이 변경되었다.
+# 기존 'mavsdk' 이름은 이제 다른 API(네이티브 바인딩)를 가리키므로
+# 'from mavsdk import System' 은 더 이상 동작하지 않는다.
+# 임포트는 'from mavsdk_grpc import System' 형태로 사용할 것.
+mavsdk-grpc
+
+# --- 공통 ---
+pytest
