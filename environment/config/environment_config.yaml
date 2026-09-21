@@ -1,0 +1,97 @@
+# ============================================================================
+# Environment & Wildfire Model Configuration
+# ============================================================================
+# Authority: mission/environmental-modeling.txt (Section 3)
+# All spatial, fuel, and moisture parameters are externalized here.
+# Nothing in src/environment/ should hardcode these values.
+# ============================================================================
+
+# --- Raster file paths (relative to project root) --------------------------
+raster_paths:
+  dem_path: "data/processed/dem_clipped.tif"
+  slope_path: "data/processed/slope_5186.tif"
+  aspect_path: "data/processed/aspect_5186.tif"
+  fuel_path: "data/processed/fuel_type.tif"
+  roads_path: "data/processed/roads_raster.tif"
+
+# --- Grid spatial settings --------------------------------------------------
+# These values are derived from the actual raster metadata (EPSG:5186, 90 m).
+# They MUST match the preprocessed layers; change them here if layers change.
+grid:
+  crs: "EPSG:5186"
+  cell_resolution_m: 90.0          # metres per cell edge
+  origin_x: 298096.0               # left edge of the grid (easting, m)
+  origin_y: 591533.0               # bottom edge of the grid (northing, m)
+
+# --- Fuel-type → fuel_amount mapping ----------------------------------------
+# SCENARIO MODELING ASSUMPTION (see mission/environmental-modeling.txt L45-47):
+#   "토지피복 자료를 연료 유형이나 연료량으로 바꿀 경우에는 변환 기준을 기록한다."
+#   Translation: "When converting land-cover data to fuel type or fuel
+#   quantity, the conversion criteria must be recorded."
+#
+# The fuel_type raster contains categorical integer codes:
+#   0 = non-fuel / water / road / barren
+#   1 = low-density vegetation / grassland
+#   2 = moderate-density vegetation / shrubland
+#   3 = high-density vegetation / dense forest
+#
+# The fuel_amount values below are *placeholder modelling assumptions* in
+# arbitrary relative units (0.0–1.0). They must be reviewed and validated
+# by the Environment Lead before any scientific conclusions are drawn.
+# Do NOT treat these as empirically measured physical constants.
+fuel_mapping:
+  fuel_type_to_amount:
+    0: 0.0    # non-fuel
+    1: 0.3    # low-density vegetation  (assumption)
+    2: 0.6    # moderate vegetation     (assumption)
+    3: 1.0    # dense forest            (assumption)
+  default_fuel_amount: 0.0  # fallback for unmapped codes
+
+# --- Default environmental parameters --------------------------------------
+# SCENARIO MODELING ASSUMPTION:
+#   "실제 자료로 확인하기 어려운 습도 … 는 시나리오 설정값으로 둔다."
+#   Translation: "Moisture … that is hard to verify from real data is set
+#   as a scenario configuration value."
+defaults:
+  moisture: 0.2   # initial uniform moisture (0.0–1.0, assumption)
+
+# --- Wind vector (global, uniform across grid) ------------------------------
+# mission/environmental-modeling.txt L72: wind can initially be a single
+# global value; per-cell wind fields are a future extension.
+wind:
+  speed_ms: 5.0       # m/s (assumption — scenario parameter)
+  direction_deg: 270  # degrees from north, clockwise (west wind); (north: 0, east: 90, south: 180, west: 270)
+
+# --- Wildfire CA Simulation Parameters --------------------------------------
+# SCENARIO MODELING ASSUMPTIONS (see mission/environmental-modeling.txt L80):
+#   "구체적인 확산식과 알고리즘은 환경 담당이 제안한다."
+#   Translation: "The specific spread formula and algorithm are proposed by the Environment Lead."
+# All scientific parameters below are explicit modeling assumptions exposed for configuration.
+fire_ca:
+  base_spread_probability: 0.40    # Base ignition probability per step
+  burn_duration_steps: 5         # Steps a cell remains BURNING before becoming BURNED
+  slope_factor_weight: 0.05      # Exponential slope factor per unit gradient (uphill boost / downhill dampening)
+  wind_factor_weight: 0.1        # Wind vector alignment factor multiplier
+  moisture_dampening_weight: 1.0 # Moisture reduction factor: max(0.0, 1.0 - weight * moisture)
+  neighbor_mode: "8-neighbor"    # Neighbor connectivity mode ("4-neighbor" or "8-neighbor")
+
+# --- Risk Scoring Configuration -------------------------------------------
+# SCENARIO MODELING ASSUMPTION (see mission/environmental-modeling.txt L72 & L43-55):
+#   "risk_score의 계산 기준과 값의 범위는 총괄·통합 담당과 합의한다."
+#   Translation: "The calculation criteria and value range of risk_score are agreed with the Orchestrator/Integration Lead."
+#   TEMPORARY SCENARIO ASSUMPTION:
+#   Pending formal cross-subsystem agreement, the risk score is computed as a modular
+#   function combining fire proximity, slope, and fuel load.
+risk_scoring:
+  burning_cell_risk: 1.0         # Risk score assigned to currently BURNING cells
+  burned_cell_risk: 0.2          # Risk score assigned to BURNED cells
+  unburned_cell_base_risk: 0.0   # Base risk score for UNBURNED cells
+  downwind_buffer_cells: 3       # Grid radius to apply downwind proximity risk elevation; 셀 단위 반경으로 정의되어 있으므로, 실제 공간 해상도 변화에 따라 동일 값의 물리적 의미가 달라짐
+  downwind_risk_weight: 0.4      # Elevated risk weight for unburned cells in downwind path
+  slope_risk_weight: 0.2         # Weight of slope in risk score calculation
+  max_slope_degrees: 45.0        # Reference slope angle (deg) normalized to 1.0 risk weighting; "45도 이상이면 최대 위험 수준으로 본다"는 단순한 임시 모델 가정
+  downwind_dot_threshold: 0.3    # Dot product threshold for downwind direction alignment
+  fuel_risk_weight: 0.2          # Weight of fuel amount in risk score calculation
+  min_risk_score: 0.0            # Minimum risk score bound
+  max_risk_score: 1.0            # Maximum risk score bound
+
