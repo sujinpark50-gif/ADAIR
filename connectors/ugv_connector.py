@@ -12,18 +12,27 @@ from interfaces.schema import ResourceStatus, LocalResponse, Observation
 
 
 def get_ugv_status(base: str) -> list:
+    if config.UGV_CONNECTION_MODE == "integrated":
+        from integration import bridge_ugv
+        return bridge_ugv.get_ugv_status(base)
     if config.UGV_CONNECTION_MODE == "mock":
         return _get_ugv_status_mock(base)
     raise NotImplementedError("UGV 실제 연동이 아직 구현되지 않았습니다.")
 
 
 def send_ugv_command(task_id: str, assignment, force_response: str = None, force_reason: str = None) -> LocalResponse:
+    if config.UGV_CONNECTION_MODE == "integrated":
+        from integration import bridge_ugv
+        return bridge_ugv.send_ugv_command(task_id, assignment, force_response, force_reason)
     if config.UGV_CONNECTION_MODE == "mock":
         return _send_ugv_command_mock(assignment, force_response, force_reason)
     raise NotImplementedError("UGV 실제 명령 전송이 아직 구현되지 않았습니다.")
 
 
 def get_ugv_observation(resource_id: str, timestamp: float, task_id: str = None, decision_id: str = None) -> Observation:
+    if config.UGV_CONNECTION_MODE == "integrated":
+        from integration import bridge_ugv
+        return bridge_ugv.get_ugv_observation(resource_id, timestamp, task_id, decision_id)
     if config.UGV_CONNECTION_MODE == "mock":
         return Observation(
             resource_id=resource_id,
