@@ -87,7 +87,7 @@ class _RealEnvBackend:
         except Exception:
             pass
         return EnvironmentState(
-            timestamp=timestamp,
+            simulation_time_s=timestamp,
             fire_cells=fire_cells[:80],
             risk_zone=[],
             wind_speed=wind_speed,
@@ -197,7 +197,7 @@ class _LightFireBackend:
         wind_dir_map = {"N": 0, "NE": 45, "E": 90, "SE": 135,
                         "S": 180, "SW": 225, "W": 270, "NW": 315}
         return EnvironmentState(
-            timestamp=timestamp,
+            simulation_time_s=timestamp,
             fire_cells=fire_cells,
             risk_zone=risk,
             wind_speed=wind_speed,

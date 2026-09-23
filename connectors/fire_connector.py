@@ -66,7 +66,7 @@ def get_environment_state(timestamp: float, advance: bool = True) -> Environment
             lat,lon=gb.grid_cell_to_latlon(c["x"],c["y"]); c["location_lat"]=round(lat,6); c["location_lon"]=round(lon,6)
     except Exception: pass
     sp=api.get_spread_direction()
-    return EnvironmentState(timestamp=timestamp,fire_cells=fire,risk_zone=rz,
+    return EnvironmentState(simulation_time_s=timestamp,fire_cells=fire,risk_zone=rz,
         wind_speed=float(sp.get("wind_speed_ms",0.0)),wind_direction=float(sp.get("wind_direction_deg",0.0)),
         spread_direction=sp.get("primary_cardinal","N"),env_updated=False,
         sim_step=max(_tick-1,0))
@@ -115,7 +115,7 @@ def update_environment(env_state: EnvironmentState, observations: list) -> Envir
 
 def _mock_state(timestamp):
     import random
-    return EnvironmentState(timestamp=timestamp,
+    return EnvironmentState(simulation_time_s=timestamp,
         fire_cells=[{"cell_id":"50_50","x":50,"y":50,"fire_state":"BURNING","risk_score":0.8}],
         risk_zone=[{"cell_id":"51_50","x":51,"y":50,"risk_score":0.6}],
         wind_speed=3.0,wind_direction=270.0,spread_direction="E",env_updated=False)

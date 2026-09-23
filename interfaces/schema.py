@@ -6,6 +6,10 @@ interfaces/schema.py
 공통 데이터 형식입니다. 이 파일이 곧 Contract 2번 "통합 담당"의 산출물
 (Schema/Enum, 공통 ID, 좌표·단위·시간 형식)에 해당합니다.
 
+시간 필드 규칙 (문서 §1):
+- simulation_time_s : 시뮬레이션 경과초(float) — 이 파일의 모든 데이터 객체가 사용
+- timestamp         : 실제 시각(ISO 8601) — logger.py 가 로그 한 줄마다 자동 기록
+
 문서 대조:
 - 4번(공통 메시지 식별 정보) → MessageHeader
 - 5번(공통 데이터 의미) → EnvironmentState, ResourceStatus
@@ -28,7 +32,7 @@ class MessageHeader:
     sender: str              # 어느 모듈이 보냈는지 (예: "fire_connector", "uav_connector")
     message_type: str        # 예: "ENVIRONMENT_STATE", "LOCAL_RESPONSE"
     schema_version: str
-    timestamp: float
+    simulation_time_s: float     # 시뮬레이션 경과초 (문서 §1). ISO 8601 timestamp 는 로그에만 기록
     run_id: str
     # 상황별 추가 (필요한 메시지에만)
     task_id: Optional[str] = None
@@ -51,7 +55,7 @@ class Task:
     Orchestrator가 후보 자원을 평가해 할당한다.
     """
     task_id: str
-    created_at: float
+    created_at: float          # Task 생성 시점의 시뮬레이션 경과초(s)
     state: TaskState = "READY"
     description: str = ""     # 예: "화재 셀(50,50) 관측"
     target_lat: float = 0.0
@@ -82,7 +86,7 @@ ResourceType = Literal["UAV", "UGV", "FIRE_ENGINE"]
 @dataclass
 class EnvironmentState:
     """환경모델이 매 스텝마다 제공하는 화재 상태 정보"""
-    timestamp: float
+    simulation_time_s: float   # 시뮬레이션 경과초 (문서 §1)
     fire_cells: List[dict]
     risk_zone: List[dict]
     wind_speed: float          # m/s
@@ -176,7 +180,7 @@ class Observation:
     resource_id: str
     location_lat: float
     location_lon: float
-    timestamp: float
+    simulation_time_s: float     # 관측 시점의 시뮬레이션 경과초 (문서 §1)
     observation_type: str        # 관측 종류 (예: "FIRE_BOUNDARY", "WIND")
     value: dict                  # 관측 값
     task_id: Optional[str] = None
@@ -209,7 +213,7 @@ class Decision:
     """
     decision_id: str
     task_id: str
-    timestamp: float
+    simulation_time_s: float   # 판단 시점의 시뮬레이션 경과초 (문서 §1)
     assignments: List[Assignment]
     safety_verdict: Optional[SafetyVerdict] = None
 

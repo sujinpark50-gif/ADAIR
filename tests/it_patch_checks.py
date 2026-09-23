@@ -26,7 +26,7 @@ def skip(name, why):
 
 
 def _env(cells):
-    return EnvironmentState(timestamp=0.0, fire_cells=cells, risk_zone=[], wind_speed=3.0,
+    return EnvironmentState(simulation_time_s=0.0, fire_cells=cells, risk_zone=[], wind_speed=3.0,
                             wind_direction=270.0, spread_direction="E")
 
 

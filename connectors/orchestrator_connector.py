@@ -89,4 +89,4 @@ def _propose_mock(timestamp: float, task: Task, resource_pool, exclude_ids: set)
             )
         )
 
-    return Decision(decision_id=decision_id, task_id=task.task_id, timestamp=timestamp, assignments=assignments)
+    return Decision(decision_id=decision_id, task_id=task.task_id, simulation_time_s=timestamp, assignments=assignments)
