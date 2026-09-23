@@ -71,7 +71,7 @@ def _get_ugv_status_mock(base: str) -> list:
         )
     statuses.append(
         ResourceStatus(
-            resource_id=f"{base}-truck1",
+            resource_id=f"{base}-fire1",
             resource_type="FIRE_ENGINE",
             base=base,
             location_lat=base_lat + random.uniform(-0.01, 0.01),

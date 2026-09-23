@@ -4,7 +4,7 @@
 RESOURCES = [
     {"resource_id": "A-ugv1",   "resource_type": "UGV",
      "base": "A", "home_node": "A", "px4_port": 14540},
-    {"resource_id": "A-truck1", "resource_type": "FIRE_ENGINE",
+    {"resource_id": "A-fire1", "resource_type": "FIRE_ENGINE",
      "base": "A", "home_node": "A", "px4_port": None},
     {"resource_id": "B-ugv1",   "resource_type": "UGV",
      "base": "B", "home_node": "B", "px4_port": 14541},

@@ -105,7 +105,7 @@ class EnvironmentState:
 @dataclass
 class ResourceStatus:
     """UAV·UGV·소방차 공통 Resource 표현"""
-    resource_id: str                 # 예: "A-uav1", "A-ugv1", "A-truck1"
+    resource_id: str                 # 예: "A-uav1", "A-ugv1", "A-fire1"
     resource_type: ResourceType
     base: str                        # 소속 거점 ("A" 또는 "B")
     location_lat: float
