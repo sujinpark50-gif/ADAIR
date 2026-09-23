@@ -7,7 +7,15 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import config
 config.FIRE_CONNECTION_MODE = "real"
-from connectors import fire_connector
+config.UAV_CONNECTION_MODE = "real"          # ▶ 변경: auto_tick이 uav_connector로 실제 서버에 붙게 함
+config.UAV_ENDPOINTS = {
+    os.environ.get("UAV_ID", "A-uav1"): os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
+}                                             # ▶ 변경
+from connectors import fire_connector, uav_connector, orchestrator_connector  # ▶ 변경: uav_connector, orchestrator_connector 추가
+from interfaces.schema import ResourcePool   # ▶ 변경
+from logger import EventLogger               # ▶ 변경
+from main import process_task                # ▶ 변경
+import ids                                   # ▶ 변경
 import gz_bridge as gb
 import math
 from ugv.road_graph import RoadGraph
@@ -127,44 +135,51 @@ def extinguish(cell: dict):
         return {"ok": False, "error": str(e)}
 
 # ===== 자동 폐루프 =====
-_AUTO = {"on": False, "target": None, "assigned": False, "t": 0}
+# ▶ 변경: 이제 판단·배정·Safety 검사는 orchestrator_connector + process_task 가 전담한다.
+#         이 dict는 "화면에 어떤 셀을 목표로 보여줄지"만 기억하는 용도다.
+_AUTO = {"on": False, "target": None, "t": 0}
+_AUTO_LOGGER = EventLogger(run_id=ids.new_run_id(), scenario_id="WEB-AUTO", file_name="web_auto.jsonl")  # ▶ 변경
 
 @app.post("/api/auto/toggle")
 def auto_toggle():
     _AUTO["on"] = not _AUTO["on"]
     if _AUTO["on"]:
-        _AUTO["target"] = None; _AUTO["assigned"] = False
+        _AUTO["target"] = None
     return {"on": _AUTO["on"]}
 
-@app.post("/api/auto/tick")
+@app.post("/api/auto/tick")  # ▶ 변경: 함수 전체 재작성
 async def auto_tick():
     if not _AUTO["on"]:
         return {"on": False, "events": []}
     ev = []
-    if _AUTO["target"] is None:
-        # 자동배정은 환경을 진행시키지 않는다(시계는 /api/env 가 소유)
-        es = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False); _AUTO["t"] += 1
+    try:
+        # 환경은 진행시키지 않는다(시계는 /api/env 가 소유) — 기존 규칙 유지
+        es = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False)
+        _AUTO["t"] += 1
         if not es.fire_cells:
-            return {"on": True, "events": ["화재 없음 - 대기"]}
-        best = max(es.fire_cells, key=lambda c: c.get("risk_score", 0.0))
-        _AUTO["target"] = {"col": best["x"], "row": best["y"]}; _AUTO["assigned"] = False
-        ev.append("감지: 셀(%d,%d)" % (best["x"], best["y"]))
-    tgt = _AUTO["target"]
-    if not _AUTO["assigned"]:
-        try:
-            lat, lon = gb.grid_cell_to_latlon(tgt["col"], tgt["row"])
-            target = {"lat": round(lat,6), "lon": round(lon,6), "alt_m_amsl": round(gb.terrain_elev(tgt["col"],tgt["row"]),1)}
-            base = {"task_id":"AUTO-"+uuid.uuid4().hex[:6], "decision_id":"AD-"+uuid.uuid4().hex[:6], "target": target, "observation_type":"THERMAL"}
-            async with httpx.AsyncClient(timeout=20) as cx:
-                r = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/evaluate", json={**base,"wind_ms":WIND_MS})).json()
-                if r.get("verdict") == "ACCEPT":
-                    await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)
-                    _AUTO["assigned"] = True; ev.append("드론 출동 ACCEPT")
-                else:
-                    ev.append("드론 " + str(r.get("verdict")))
-        except Exception as e:
-            ev.append("출동 오류: " + str(e))
-    return {"on": True, "events": ev, "target": tgt}
+            return {"on": True, "events": ["화재 없음 - 대기"], "target": _AUTO["target"]}
+
+        if _AUTO["target"] is None:
+            best = max(es.fire_cells, key=lambda c: c.get("risk_score", 0.0))
+            _AUTO["target"] = {"col": best["x"], "row": best["y"]}
+            ev.append("감지: 셀(%d,%d)" % (best["x"], best["y"]))
+
+        # 화재 좌표 확정, 후보 선택, 재평가, Safety 검증은 기존 검증된 폐루프가 전담한다.
+        task = orchestrator_connector.create_task(float(_AUTO["t"]), es)
+        if not getattr(task, "target_resolved", True):
+            ev.append("타깃 확정 실패: " + str(getattr(task, "unresolved_reason", "")))
+            _AUTO["target"] = None
+            return {"on": True, "events": ev, "target": None}
+
+        pool = ResourcePool(base_a=uav_connector.get_uav_status("A"), base_b=[])
+        task, es = process_task(task, es, pool, _AUTO_LOGGER, float(_AUTO["t"]))
+        ev.append(f"Task {task.task_id}: {task.state}")
+
+        if task.state in ("COMPLETED", "FAILED", "CANCELLED"):
+            _AUTO["target"] = None  # 다음 tick에서 새 화재를 다시 고름
+    except Exception as e:
+        ev.append("출동 오류: " + str(e))
+    return {"on": True, "events": ev, "target": _AUTO["target"]}
 
 @app.post("/api/auto/done")
 def auto_done():
@@ -175,7 +190,7 @@ def auto_done():
             fire_connector._engine().apply_observation({"reporter_id":"AUTO","world_x":x,"world_y":y,"fire_state":"UNBURNED"})
         except Exception:
             pass
-    _AUTO["target"] = None; _AUTO["assigned"] = False
+    _AUTO["target"] = None
     return {"ok": True}
 
 @app.post("/api/fly")
