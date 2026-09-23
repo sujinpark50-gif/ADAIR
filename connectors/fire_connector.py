@@ -37,12 +37,20 @@ def _engine():
         eng.ignite_at(ix,iy)
     _api=api; return _api
 
-def get_environment_state(timestamp: float) -> EnvironmentState:
+def get_environment_state(timestamp: float, advance: bool = True) -> EnvironmentState:
+    """환경 상태 조회.
+
+    advance=True  : CA 를 한 스텝 진행한 뒤 읽는다 (시뮬레이션 시계를 가진 쪽만 호출).
+                    최초 호출은 점화 직후 상태를 그대로 읽는다.
+    advance=False : 진행 없이 현재 상태만 읽는다 (재평가·자동배정·표시용 재조회).
+    같은 sim_step 값이면 같은 환경 상태다.
+    """
     if config.FIRE_CONNECTION_MODE=="mock": return _mock_state(timestamp)
     global _tick
     api=_engine()
-    if _tick>0: api.step()
-    _tick+=1
+    if advance:
+        if _tick>0: api.step()
+        _tick+=1
     fire=[]
     for loc in api.get_fire_locations():
         x,y=loc["x"],loc["y"]; fire.append({"cell_id":f"{x}_{y}","x":x,"y":y,
@@ -60,21 +68,46 @@ def get_environment_state(timestamp: float) -> EnvironmentState:
     sp=api.get_spread_direction()
     return EnvironmentState(timestamp=timestamp,fire_cells=fire,risk_zone=rz,
         wind_speed=float(sp.get("wind_speed_ms",0.0)),wind_direction=float(sp.get("wind_direction_deg",0.0)),
-        spread_direction=sp.get("primary_cardinal","N"),env_updated=False)
+        spread_direction=sp.get("primary_cardinal","N"),env_updated=False,
+        sim_step=max(_tick-1,0))
+
+def current_step() -> int:
+    """마지막으로 진행된 CA 스텝 번호 (real 모드)."""
+    return max(_tick-1,0)
+
+_FIRE_STATES=("BURNING","UNBURNED","BURNED")
+
+def _observed_fire_state(obs):
+    """관측 값에서 화재 상태 근거를 뽑는다. 근거가 없으면 None (환경에 반영하지 않음).
+
+    - value["fire_state"] 가 명시돼 있으면 그대로 사용
+    - value["hotspot_detected"] is True 이면 BURNING
+    - hotspot_detected=False 는 '이번 관측에서 못 봤다'일 뿐이라 UNBURNED 로 확정하지 않는다
+    - ROAD_STATUS 등 화재와 무관한 관측은 반영하지 않는다
+    """
+    v=getattr(obs,"value",None) or {}
+    fs=v.get("fire_state")
+    if fs in _FIRE_STATES: return fs
+    if v.get("hotspot_detected") is True: return "BURNING"
+    return None
 
 def update_environment(env_state: EnvironmentState, observations: list) -> EnvironmentState:
+    """관측을 환경에 반영한다. 관측 값에 화재 근거가 있고 위치가 있는 것만 반영한다.
+    (이전 동작: 관측 값과 무관하게 무조건 BURNING → 드론을 보낸 곳마다 불이 붙는 자기확증 루프)
+    """
+    usable=[(o,_observed_fire_state(o)) for o in (observations or [])]
+    usable=[(o,fs) for o,fs in usable if fs is not None
+            and getattr(o,"location_lat",None) is not None and getattr(o,"location_lon",None) is not None]
     if config.FIRE_CONNECTION_MODE=="mock":
-        if observations: env_state.env_updated=True
+        env_state.env_updated=bool(usable)
         return env_state
     api=_engine(); applied=False
-    for obs in (observations or []):
-        lat=getattr(obs,"location_lat",None); lon=getattr(obs,"location_lon",None)
-        if lat is None or lon is None: continue
+    for obs,fs in usable:
         try:
             import gz_bridge as gb
-            x,y=gb.latlon_to_epsg(float(lat),float(lon))
+            x,y=gb.latlon_to_epsg(float(obs.location_lat),float(obs.location_lon))
             r=api.apply_observation({"reporter_id":getattr(obs,"resource_id","UAV"),
-                "world_x":x,"world_y":y,"fire_state":"BURNING"})
+                "world_x":x,"world_y":y,"fire_state":fs})
             if r.get("success"): applied=True
         except Exception as e: print("[fire] 관측 반영 스킵:",e)
     env_state.env_updated=applied

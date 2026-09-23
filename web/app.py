@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """웹 관제판: 강원 지형 + 산불 CA + 드론 실시간 + 화재 출동."""
-import os, uuid
+import os, uuid, time
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
@@ -13,14 +13,16 @@ import math
 from ugv.road_graph import RoadGraph
 from ugv.graph_data_demo import NODES, ROADS
 from connectors import ugv_connector
+from ugv.geo import distance_m
 _RG = RoadGraph(NODES, ROADS)
 _NODE_LL = {n["node_id"]:(n["lat"],n["lon"]) for n in NODES}
 def _nearest_node(lat, lon):
-    best=None; bd=1e18
+    """(노드 id, 거리 m). 미터 거리로 비교 — 위경도 제곱합은 경도 방향을 과대평가한다."""
+    best=None; bd=float("inf")
     for nid,(la,lo) in _NODE_LL.items():
-        d=(la-lat)**2+(lo-lon)**2
+        d=distance_m((lat,lon),(la,lo))
         if d<bd: bd=d; best=nid
-    return best
+    return best, bd
 
 UAV_AGENT = os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
 UAV_ID    = os.environ.get("UAV_ID", "A-uav1")
@@ -32,6 +34,10 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI(title="ADAIR 강원 관제판")
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__),"static")), name="static")
 _tick = 0
+# 환경 시계는 서버가 소유한다. /api/env 는 이 간격이 지났을 때만 CA 를 한 스텝 진행하고,
+# 그 외에는 현재 상태만 읽는다 → 브라우저 탭 수·폴링 주기와 무관하게 확산 속도가 일정하다.
+WEB_ENV_STEP_SEC = float(os.environ.get("WEB_ENV_STEP_SEC", "1.5"))
+_last_advance = 0.0
 
 class FlyReq(BaseModel):
     col: int; row: int
@@ -43,9 +49,15 @@ def preview():
 
 @app.get("/api/env")
 def env():
-    """환경 CA 한 틱 진행 → 불타는 셀·위험셀 반환(격자 x,y)."""
-    global _tick
-    es = fire_connector.get_environment_state(float(_tick)); _tick += 1
+    """환경 상태 반환(격자 x,y). CA 진행은 서버 시계(WEB_ENV_STEP_SEC)로만 한다."""
+    global _tick, _last_advance
+    now = time.monotonic()
+    advance = (now - _last_advance) >= WEB_ENV_STEP_SEC
+    if advance:
+        _tick += 1
+    es = fire_connector.get_environment_state(float(_tick), advance=advance)
+    if advance:
+        _last_advance = time.monotonic()   # 계산이 끝난 시점 기준 (첫 호출의 엔진 로딩 시간 제외)
     fire = [{"x": c["x"], "y": c["y"]} for c in es.fire_cells]
     risk = [{"x": c["x"], "y": c["y"]} for c in es.risk_zone[:150]]
     return {"tick": _tick, "fire": fire, "risk": risk,
@@ -79,10 +91,16 @@ def ugv(col: int = 60, row: int = 70):
                       "cap": r.capability or {}})
     # 화재셀 → 위경도 → 최근접 도로노드(goal)
     flat, flon = gb.grid_cell_to_latlon(col, row)
-    goal = _nearest_node(flat, flon)
+    goal, goal_dist = _nearest_node(flat, flon)
+    snap_limit = getattr(config, "UGV_TARGET_SNAP_M", 2000.0)
     routes=[]
     for u in units:
-        start = _nearest_node(u["lat"], u["lon"])
+        if goal_dist > snap_limit:
+            # 화재 근처에 도로 노드가 없음 → 임의 노드로 경로를 그리지 않는다
+            routes.append({"id": u["id"], "reachable": False, "eta_sec": None, "path": [],
+                           "err": "GOAL_TOO_FAR"})
+            continue
+        start, _ = _nearest_node(u["lat"], u["lon"])
         try:
             rr = _RG.find_route(start, goal)
             path = [{"lat": _NODE_LL[nid][0], "lon": _NODE_LL[nid][1]} for nid in getattr(rr,"path",[]) or []]
@@ -93,7 +111,7 @@ def ugv(col: int = 60, row: int = 70):
     # 차단 도로 수
     blocked = sum(1 for rd in ROADS if rd.get("blocked"))
     return {"fire_cell":{"col":col,"row":row,"lat":round(flat,6),"lon":round(flon,6)},
-            "goal_node": goal, "units": units, "routes": routes, "blocked_roads": blocked}
+            "goal_node": goal, "goal_distance_m": round(goal_dist, 1), "units": units, "routes": routes, "blocked_roads": blocked}
 
 @app.post("/api/extinguish")
 def extinguish(cell: dict):
@@ -124,7 +142,8 @@ async def auto_tick():
         return {"on": False, "events": []}
     ev = []
     if _AUTO["target"] is None:
-        es = fire_connector.get_environment_state(float(_AUTO["t"])); _AUTO["t"] += 1
+        # 자동배정은 환경을 진행시키지 않는다(시계는 /api/env 가 소유)
+        es = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False); _AUTO["t"] += 1
         if not es.fire_cells:
             return {"on": True, "events": ["화재 없음 - 대기"]}
         best = max(es.fire_cells, key=lambda c: c.get("risk_score", 0.0))
@@ -161,8 +180,12 @@ def auto_done():
 
 @app.post("/api/fly")
 async def fly(req: FlyReq):
-    lat, lon = gb.grid_cell_to_latlon(req.col, req.row)
-    target = {"lat": round(lat,6), "lon": round(lon,6), "alt_m_amsl": round(gb.terrain_elev(req.col,req.row),1)}
+    try:
+        lat, lon = gb.grid_cell_to_latlon(req.col, req.row)
+        target = {"lat": round(lat,6), "lon": round(lon,6), "alt_m_amsl": round(gb.terrain_elev(req.col,req.row),1)}
+    except Exception as e:
+        # 고도를 확정하지 못하면 출동하지 않는다 (fail-closed)
+        return {"ok": False, "verdict": None, "reason": "TARGET_UNRESOLVED", "detail": str(e)}
     tid = "WEB-"+uuid.uuid4().hex[:8]; did = "DEC-"+uuid.uuid4().hex[:8]
     base = {"task_id": tid, "decision_id": did, "target": target, "observation_type": "THERMAL"}
     async with httpx.AsyncClient(timeout=30) as cx:

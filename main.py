@@ -53,6 +53,23 @@ def _get_observation(resource_id, timestamp, task_id, decision_id, assignment):
     return ugv_connector.get_ugv_observation(resource_id, timestamp, task_id, decision_id)
 
 
+def _refresh_for_reevaluation(timestamp, env_state, resource_pool):
+    """재평가 직전에 환경·자원 상태를 다시 읽는다 (R04).
+
+    환경은 advance=False 로 읽어 재조회가 불 확산을 추가로 일으키지 않게 한다.
+    조회에 실패하면 이전 상태를 그대로 쓴다(재평가 자체는 계속).
+    """
+    try:
+        env_state = fire_connector.get_environment_state(timestamp, advance=False)
+    except Exception as e:
+        print(f"[main] 재평가용 환경 재조회 실패, 이전 상태 사용: {e}")
+    try:
+        resource_pool = get_all_resources(timestamp)
+    except Exception as e:
+        print(f"[main] 재평가용 자원 재조회 실패, 이전 상태 사용: {e}")
+    return env_state, resource_pool
+
+
 def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp: float, forced_responses: dict = None):
     """
     Task 하나를 '자원 선택 → Local 확인 → Safety → 실행 → 관측 → 환경 갱신'까지
@@ -60,7 +77,15 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
     형식: {resource_id: (response, reason)}
     """
     forced_responses = forced_responses or {}
-    logger.log_event("TASK_CREATED", timestamp, task_id=task.task_id, result=task.state)
+    logger.log_event("TASK_CREATED", timestamp, task_id=task.task_id, result=task.state,
+                     detail={"target_source": getattr(task, "target_source", "")})
+
+    # fail-closed: 타깃 좌표를 확정하지 못한 Task 는 자원에 배정하지 않는다
+    if not getattr(task, "target_resolved", True):
+        reason = getattr(task, "unresolved_reason", None) or "TARGET_UNRESOLVED"
+        task.state = "CANCELLED" if reason == "NO_FIRE_TARGET" else "FAILED"
+        logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result=task.state, reason=reason)
+        return task, env_state
 
     exclude_ids = set()
     decision = orchestrator_connector.propose(timestamp, task, env_state, resource_pool, exclude_ids)
@@ -97,6 +122,7 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
                 task.state = "FAILED"
                 logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result="FAILED", reason="MAX_REEVALUATION_EXCEEDED")
                 return task, env_state
+            env_state, resource_pool = _refresh_for_reevaluation(timestamp, env_state, resource_pool)
             decision = orchestrator_connector.reevaluate(timestamp, task, env_state, resource_pool, exclude_ids)
             logger.log_event(
                 "REEVALUATION", timestamp,
@@ -143,6 +169,7 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
             task.state = "FAILED"
             logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result="FAILED", reason="SAFETY_REJECT_MAX_RETRY")
             return task, env_state
+        env_state, resource_pool = _refresh_for_reevaluation(timestamp, env_state, resource_pool)
         decision = orchestrator_connector.reevaluate(timestamp, task, env_state, resource_pool, exclude_ids)
         logger.log_event(
             "REEVALUATION", timestamp,

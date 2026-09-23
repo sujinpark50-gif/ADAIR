@@ -12,3 +12,6 @@ logs/
 *.jsonl
 .vscode/
 .idea/
+
+_old_pre_patch/
+adair_integration_fix.patch

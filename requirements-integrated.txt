@@ -1,0 +1,12 @@
+# ADAIR 통합 실행(run_integrated.py)에 필요한 패키지
+# 설치:  pip install -r requirements-integrated.txt
+
+fastapi
+uvicorn[standard]
+requests
+pyyaml
+numpy
+
+# 아래는 김은주님의 '실제' 산불 CA 모델(environment/)을 돌릴 때만 필요합니다.
+# 설치하지 않아도 run_integrated.py 는 내장 stateful 산불 모델로 자동 전환되어 그대로 실행됩니다.
+rasterio

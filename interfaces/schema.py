@@ -56,6 +56,13 @@ class Task:
     description: str = ""     # 예: "화재 셀(50,50) 관측"
     target_lat: float = 0.0
     target_lon: float = 0.0
+    # 목표 지점의 지면 고도(AMSL, m). 여유고도는 여기서 더하지 않는다 —
+    # UAV Local Agent 가 MIN_CLEARANCE_M 를 한 번만 더한다(이중 가산 방지).
+    target_alt_m: float = 0.0
+    # 타깃 좌표를 실제로 확정했는지. False 이면 자원 배정 없이 Task 를 종료한다(fail-closed).
+    target_resolved: bool = True
+    target_source: str = ""              # "DEM" / "MOCK_PLACEHOLDER" / ""
+    unresolved_reason: Optional[str] = None   # "NO_FIRE_TARGET" / "TARGET_UNRESOLVED"
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +89,7 @@ class EnvironmentState:
     wind_direction: float      # degree
     spread_direction: str
     env_updated: bool = False
+    sim_step: Optional[int] = None   # 환경 CA 스텝 번호 (real 모드). 같은 값이면 같은 상태
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +196,7 @@ class Assignment:
     target_lon: float
     task_type: str = "OBSERVE"
     # UAV는 goto(위도,경도,고도) 형태로 명령해야 해서 고도가 필수임 (px4/uav-agent 요청 반영)
-    # TBD: 실제 지형 고도(DEM)는 김은주님 환경모델 완성 후 반영, 그 전까지는 0.0(해수면)
+    # 의미: 목표 지점 지면 고도(AMSL, m). 여유고도는 UAV Local Agent 가 더한다.
     target_alt_m: float = 0.0
 
 

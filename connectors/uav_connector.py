@@ -64,13 +64,16 @@ def get_uav_observation(resource_id: str, timestamp: float, task_id: str = None,
     assignment: 실행 목표(target_lat/lon/alt_m)가 필요해서 추가된 인자
     """
     if config.UAV_CONNECTION_MODE == "mock":
+        # 드론은 배정된 화재 타깃 위치에서 관측한다 → 그 좌표를 담아 환경 되먹임이 격자 안에 들어가게 함
+        obs_lat = getattr(assignment, "target_lat", config.BASE_A_LAT) if assignment is not None else config.BASE_A_LAT
+        obs_lon = getattr(assignment, "target_lon", config.BASE_A_LON) if assignment is not None else config.BASE_A_LON
         return Observation(
             resource_id=resource_id,
-            location_lat=config.BASE_A_LAT,
-            location_lon=config.BASE_A_LON,
+            location_lat=obs_lat,
+            location_lon=obs_lon,
             timestamp=timestamp,
             observation_type="FIRE_BOUNDARY",
-            value={"note": "mock observation"},
+            value={"fire_state": "BURNING", "note": "mock observation @ target"},
             task_id=task_id,
             decision_id=decision_id,
         )
@@ -216,10 +219,13 @@ def _get_uav_observation_real(resource_id, timestamp, task_id, decision_id, assi
 
         if task_data["status"] == "COMPLETED":
             obs = task_data.get("observation") or {}
+            pos = obs.get("position") or {}
+            # 관측 위치가 없으면 목표 좌표로 채우지 않는다(없는 관측을 만들지 않음).
+            # 위치가 None 인 관측은 fire_connector.update_environment 가 반영하지 않는다.
             return Observation(
                 resource_id=resource_id,
-                location_lat=obs.get("position", {}).get("lat", assignment.target_lat),
-                location_lon=obs.get("position", {}).get("lon", assignment.target_lon),
+                location_lat=pos.get("lat"),
+                location_lon=pos.get("lon"),
                 timestamp=timestamp,
                 observation_type=obs.get("sensor_type", "THERMAL"),
                 value=obs.get("values", {}),
