@@ -1,0 +1,68 @@
+{
+ "meta": {
+  "captured_at": "2026-09-24T08:03:25Z",
+  "mavsdk_address": "udpin://0.0.0.0:14550",
+  "agent": "http://localhost:8000"
+ },
+ "health": {
+  "status": "ok",
+  "mode": "real",
+  "uav_id": "A-uav1"
+ },
+ "state": {
+  "uav_id": "A-uav1",
+  "timestamp": "2026-09-24T08:03:34Z",
+  "position": {
+   "lat": 38.121499899999996,
+   "lon": 128.2029997,
+   "alt_m_amsl": 280.9930114746094,
+   "alt_m_agl": 50.038002014160156
+  },
+  "battery": {
+   "percent": 50.0,
+   "voltage": 15.30000114440918
+  },
+  "velocity_ms": 0.0,
+  "flight_mode": "HOLD",
+  "armed": true,
+  "health": {
+   "gps_ok": true,
+   "sensors_ok": true,
+   "failsafe": false
+  },
+  "wind_ms": null,
+  "link_quality": "OK",
+  "current_task_id": null
+ },
+ "evaluate_request": {
+  "task_id": "capture-001",
+  "decision_id": "capture-dec-001",
+  "target": {
+   "lat": 38.0425,
+   "lon": 128.2541,
+   "alt_m_amsl": 761.0
+  },
+  "observation_type": "THERMAL",
+  "wind_ms": 3.1
+ },
+ "evaluate_response": {
+  "task_id": "capture-001",
+  "decision_id": "capture-dec-001",
+  "uav_id": "A-uav1",
+  "verdict": "REJECT",
+  "eta_sec": null,
+  "reason": "LOW_BATTERY",
+  "detail": "need 57.0% but have 50.0%",
+  "counter_offer": null,
+  "constraints": {
+   "distance_km": 9.86,
+   "battery_now_pct": 50.0,
+   "battery_after_pct": -7.0,
+   "return_margin_pct": -7.0,
+   "wind_ms": 3.1,
+   "required_climb_m": 530,
+   "eta_sec": 834
+  }
+ },
+ "captured_at": "2026-09-24T08:03:38.241Z"
+}

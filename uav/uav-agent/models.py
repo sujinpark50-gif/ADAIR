@@ -16,9 +16,9 @@ from pydantic import BaseModel, Field
 class Position(BaseModel):
     """위치. 단위 m, 좌표 WGS84.
 
-    합의 필요: 팀 Assignment 에는 고도 필드가 없다(target_lat/target_lon 뿐).
     드론은 goto(위도, 경도, 고도) 형태로 명령하므로 목표 고도가 필수다.
-    관측 지점이 800 m 능선이라 AMSL/AGL 구분도 함께 정해야 한다.
+    팀 Assignment.target_alt_m 이 여기 alt_m_amsl 로 들어온다(기본 0.0 이면 지형 무시).
+    팀 합의안(docs/uav/uav_final 4.1)은 AGL 전달이나, 현재는 목표 지면 AMSL 을 받는다.
     """
     lat: float
     lon: float

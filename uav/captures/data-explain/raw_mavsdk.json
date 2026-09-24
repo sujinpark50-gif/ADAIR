@@ -1,0 +1,322 @@
+{
+ "meta": {
+  "captured_at": "2026-09-24T08:03:25Z",
+  "mavsdk_address": "udpin://0.0.0.0:14550",
+  "agent": "http://localhost:8000"
+ },
+ "streams": {
+  "actuator_control_target": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:03:41.887Z",
+   "value": null
+  },
+  "actuator_output_status": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:03:44.889Z",
+   "value": null
+  },
+  "altitude": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:45.093Z",
+   "value": {
+    "altitude_amsl_m": 281.0104675292969,
+    "altitude_local_m": 50.12434387207031,
+    "altitude_monotonic_m": 281.5786437988281,
+    "altitude_relative_m": 50.056243896484375,
+    "altitude_terrain_m": "nan",
+    "bottom_clearance_m": "nan",
+    "timestamp_us": 4669360000
+   }
+  },
+  "armed": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:29.092Z",
+   "value": true
+  },
+  "attitude_angular_velocity_body": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:45.097Z",
+   "value": {
+    "pitch_rad_s": 0.0012650967109948397,
+    "roll_rad_s": 0.00838270504027605,
+    "yaw_rad_s": 0.0007266038446687162
+   }
+  },
+  "attitude_euler": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:45.116Z",
+   "value": {
+    "pitch_deg": -0.3952074348926544,
+    "roll_deg": -0.2906687557697296,
+    "timestamp_us": 4669380000,
+    "yaw_deg": -0.01887333393096924
+   }
+  },
+  "attitude_quaternion": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:45.137Z",
+   "value": {
+    "timestamp_us": 4669400000,
+    "w": 0.9999910593032837,
+    "x": -0.0024653340224176645,
+    "y": -0.0034447996877133846,
+    "z": -0.0001721866283332929
+   }
+  },
+  "battery": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:27.093Z",
+   "value": {
+    "battery_function": "ALL",
+    "capacity_consumed_ah": 0.0,
+    "current_battery_a": "nan",
+    "id": 0,
+    "remaining_percent": 50.0,
+    "temperature_degc": "nan",
+    "time_remaining_s": "nan",
+    "voltage_v": 15.30000114440918
+   }
+  },
+  "distance_sensor": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:03:48.137Z",
+   "value": null
+  },
+  "fixedwing_metrics": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:48.345Z",
+   "value": {
+    "absolute_altitude_m": 280.99322509765625,
+    "airspeed_m_s": "nan",
+    "climb_rate_m_s": 0.006864469964057207,
+    "groundspeed_m_s": 0.015125281177461147,
+    "heading_deg": 359.0,
+    "throttle_percentage": 0.7199999690055847
+   }
+  },
+  "flight_mode": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:28.094Z",
+   "value": "HOLD"
+  },
+  "gps_info": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:48.493Z",
+   "value": {
+    "fix_type": "FIX_3D",
+    "num_satellites": 10
+   }
+  },
+  "ground_truth": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:03:51.493Z",
+   "value": null
+  },
+  "heading": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:51.501Z",
+   "value": {
+    "heading_deg": 0.0
+   }
+  },
+  "health": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:30.092Z",
+   "value": {
+    "is_accelerometer_calibration_ok": true,
+    "is_armable": true,
+    "is_global_position_ok": true,
+    "is_gyrometer_calibration_ok": true,
+    "is_home_position_ok": true,
+    "is_local_position_ok": true,
+    "is_magnetometer_calibration_ok": true
+   }
+  },
+  "health_all_ok": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:52.092Z",
+   "value": true
+  },
+  "home": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:53.094Z",
+   "value": {
+    "absolute_altitude_m": 230.95401000976562,
+    "approach_down_m": 0.0,
+    "approach_east_m": 0.0,
+    "approach_north_m": 0.0,
+    "latitude_deg": 38.1204933,
+    "local_down_m": -0.0680999755859375,
+    "local_east_m": 0.9362789988517761,
+    "local_north_m": -0.295594185590744,
+    "longitude_deg": 128.2018085,
+    "q": {
+     "timestamp_us": 0,
+     "w": 0.46027636528015137,
+     "x": 0.0033701681531965733,
+     "y": -0.009738176129758358,
+     "z": 0.8877158761024475
+    },
+    "relative_altitude_m": 0.0,
+    "timestamp_us": 79488000
+   }
+  },
+  "imu": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:03:56.097Z",
+   "value": null
+  },
+  "in_air": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:57.093Z",
+   "value": true
+  },
+  "landed_state": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:58.093Z",
+   "value": "IN_AIR"
+  },
+  "odometry": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:04:01.097Z",
+   "value": null
+  },
+  "position": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:26.101Z",
+   "value": {
+    "absolute_altitude_m": 281.00201416015625,
+    "latitude_deg": 38.1215,
+    "longitude_deg": 128.20299989999998,
+    "relative_altitude_m": 50.048004150390625
+   }
+  },
+  "position_velocity_ned": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:04:01.114Z",
+   "value": {
+    "position": {
+     "down_m": -50.11894226074219,
+     "east_m": 105.15902709960938,
+     "north_m": 111.64556884765625
+    },
+    "velocity": {
+     "down_m_s": 0.005685833282768726,
+     "east_m_s": -0.015294735319912434,
+     "north_m_s": 0.0030483563896268606
+    }
+   }
+  },
+  "raw_gps": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:04:01.294Z",
+   "value": {
+    "absolute_altitude_m": 280.9690246582031,
+    "altitude_ellipsoid_m": 280.9690246582031,
+    "cog_deg": 271.7099914550781,
+    "hdop": 0.699999988079071,
+    "heading_uncertainty_deg": 0.0,
+    "horizontal_uncertainty_m": 0.9000000357627869,
+    "latitude_deg": 38.1215001,
+    "longitude_deg": 128.2030002,
+    "timestamp_us": 4685540000,
+    "vdop": 1.100000023841858,
+    "velocity_m_s": 0.03999999910593033,
+    "velocity_uncertainty_m_s": 0.4000000059604645,
+    "vertical_uncertainty_m": 1.78000009059906,
+    "yaw_deg": 0.0
+   }
+  },
+  "raw_imu": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:04:04.297Z",
+   "value": null
+  },
+  "rc_status": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:04:05.094Z",
+   "value": {
+    "is_available": false,
+    "signal_strength_percent": "nan",
+    "was_available_once": false
+   }
+  },
+  "scaled_imu": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:04:08.097Z",
+   "value": null
+  },
+  "scaled_pressure": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:04:09.097Z",
+   "value": {
+    "absolute_pressure_hpa": 1002.0852661132812,
+    "differential_pressure_hpa": 0.0,
+    "differential_pressure_temperature_deg": 0.0,
+    "temperature_deg": 15.0,
+    "timestamp_us": 4693280000
+   }
+  },
+  "status_text": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:04:12.097Z",
+   "value": null
+  },
+  "unix_epoch_time": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:04:15.100Z",
+   "value": null
+  },
+  "velocity_ned": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:03:27.100Z",
+   "value": {
+    "down_m_s": 0.0,
+    "east_m_s": 0.0,
+    "north_m_s": 0.0
+   }
+  },
+  "vtol_state": {
+   "status": "ok",
+   "captured_at": "2026-09-24T08:04:16.094Z",
+   "value": "UNDEFINED"
+  },
+  "wind": {
+   "status": "timeout",
+   "captured_at": "2026-09-24T08:04:19.097Z",
+   "value": null
+  }
+ },
+ "info": {
+  "version": {
+   "flight_sw_git_hash": "61907962c",
+   "flight_sw_major": 1,
+   "flight_sw_minor": 18,
+   "flight_sw_patch": 0,
+   "flight_sw_vendor_major": 0,
+   "flight_sw_vendor_minor": 0,
+   "flight_sw_vendor_patch": 0,
+   "flight_sw_version_type": "BETA",
+   "os_sw_git_hash": "000000000000000",
+   "os_sw_major": 6,
+   "os_sw_minor": 18,
+   "os_sw_patch": 33
+  },
+  "identification": {
+   "hardware_uid": "000000000000000000000000000000000000",
+   "legacy_uid": 5283920058631409231
+  },
+  "product": {
+   "product_id": 0,
+   "product_name": "undefined",
+   "vendor_id": 0,
+   "vendor_name": "undefined"
+  },
+  "speed_factor": 1.000227746856821,
+  "gps_global_origin": {
+   "altitude_m": 230.88601684570312,
+   "latitude_deg": 38.120495999999996,
+   "longitude_deg": 128.20179779999998
+  }
+ }
+}

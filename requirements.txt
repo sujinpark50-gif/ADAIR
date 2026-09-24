@@ -8,5 +8,13 @@
 # 임포트는 'from mavsdk_grpc import System' 형태로 사용할 것.
 mavsdk-grpc
 
+# --- UAV (uav-agent) ---
+# UAV 는 네이티브 바인딩 'mavsdk' 4.x 를 쓴다 (import mavsdk). 위 mavsdk-grpc 와 import 이름이 달라 공존 가능.
+# 4.x 의 battery.remaining_percent 는 0~100 (PX4 원값 0~1 을 ×100).
+mavsdk>=4,<5
+fastapi
+uvicorn
+pydantic
+
 # --- 공통 ---
 pytest

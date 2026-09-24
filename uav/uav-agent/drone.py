@@ -78,9 +78,13 @@ class MockDrone(DroneProvider):
 
 
 class Px4Drone(DroneProvider):
-    """MAVSDK 실연동.
+    """MAVSDK 4.x(네이티브 바인딩) 실연동.
 
     주의:
+      - mavsdk>=4 전용이다. 3.x(gRPC) 의 `System().connect()` / `drone.telemetry.*` 는
+        4.x 에서 동작하지 않는다(`Mavsdk` + `TelemetryAsync(system)` 방식).
+      - battery.remaining_percent 는 4.x 에서 0~100 이다(PX4 원값 0~1 을 ×100, 실측 확인).
+        원값 그대로 전달하며 여기서 변환하지 않는다.
       - PX4 SITL 은 telemetry.wind 를 발행하지 않는다(실측 확인). wind_ms 는 None 으로
         반환하며, 판단에 쓸 풍속은 요청(EvaluateRequest.wind_ms)으로 주입받는다.
       - 2 vCPU 환경에서 PX4 가 CPU 고갈로 MAVLink 송신을 멈추는 사례를 확인했다.
@@ -91,48 +95,68 @@ class Px4Drone(DroneProvider):
                  timeout_s: float = 8.0) -> None:
         self.address = address
         self.timeout_s = timeout_s
-        self._drone = None
+        self._sdk = None
+        self._tel = None
+        self._act = None
 
     async def _ensure(self):
-        if self._drone is None:
-            from mavsdk import System
+        if self._tel is None:
+            from mavsdk.asyncio import ComponentType, Configuration, Mavsdk
+            from mavsdk.asyncio.plugins.action import ActionAsync
+            from mavsdk.asyncio.plugins.telemetry import TelemetryAsync
 
-            drone = System()
-            await drone.connect(system_address=self.address)
-            async with asyncio.timeout(self.timeout_s * 2):
-                async for s in drone.core.connection_state():
-                    if s.is_connected:
-                        break
-            self._drone = drone
-        return self._drone
+            sdk = Mavsdk(Configuration.create_with_component_type(
+                ComponentType.GROUND_STATION))
+            try:
+                await sdk.add_any_connection(self.address)
+                system = await sdk.first_autopilot(timeout_s=self.timeout_s * 2)
+                if system is None:
+                    raise RuntimeError(f"{self.address} 에서 PX4 를 찾지 못함")
+            except Exception:
+                sdk.destroy()
+                raise
+            self._sdk = sdk
+            self._tel = TelemetryAsync(system)
+            self._act = ActionAsync(system)
+        return self._tel, self._act
+
+    def _reset(self) -> None:
+        """연결을 버린다. 다음 호출에서 재연결한다."""
+        if self._sdk is not None:
+            try:
+                self._sdk.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        self._sdk = self._tel = self._act = None
 
     async def _first(self, stream, default=None):
-        """스트림의 첫 값을 타임아웃과 함께 읽는다."""
+        """구독 스트림의 첫 값을 타임아웃과 함께 읽고 구독을 해제한다."""
+        gen = stream()
         try:
             async with asyncio.timeout(self.timeout_s):
-                async for v in stream():
-                    return v
+                return await anext(gen)
         except (TimeoutError, Exception):
             return default
-        return default
+        finally:
+            await gen.aclose()   # 4.x 는 aclose 시점에 unsubscribe 한다
 
     async def get_state(self, uav_id: str) -> dict:
         try:
-            drone = await self._ensure()
+            tel, _ = await self._ensure()
         except Exception as e:
-            self._drone = None
+            self._reset()
             raise RuntimeError(f"PX4 연결 실패: {e}") from e
 
-        pos = await self._first(drone.telemetry.position)
-        bat = await self._first(drone.telemetry.battery)
-        health = await self._first(drone.telemetry.health)
-        mode = await self._first(drone.telemetry.flight_mode)
-        armed = await self._first(drone.telemetry.armed, default=False)
-        vel = await self._first(drone.telemetry.velocity_ned)
+        pos = await self._first(tel.subscribe_position)
+        bat = await self._first(tel.subscribe_battery)
+        health = await self._first(tel.subscribe_health)
+        mode = await self._first(tel.subscribe_flight_mode)
+        armed = await self._first(tel.subscribe_armed, default=False)
+        vel = await self._first(tel.subscribe_velocity_ned)
 
         if pos is None or bat is None or health is None:
             # PX4 가 응답을 멈춘 상태. 연결을 버리고 다음 호출에서 재연결한다.
-            self._drone = None
+            self._reset()
             raise RuntimeError("PX4 텔레메트리 타임아웃 (송신 중단 가능성)")
 
         sensors_ok = bool(
@@ -158,7 +182,8 @@ class Px4Drone(DroneProvider):
                 "voltage": bat.voltage_v,
             },
             "velocity_ms": round(speed, 2),
-            "flight_mode": str(mode) if mode is not None else "UNKNOWN",
+            # 4.x FlightMode 는 IntEnum 이라 str() 이 "3" 이 된다. 이름("HOLD")으로 보낸다.
+            "flight_mode": mode.name if mode is not None else "UNKNOWN",
             "armed": bool(armed),
             "health": {
                 "gps_ok": bool(health.is_global_position_ok),
@@ -173,14 +198,14 @@ class Px4Drone(DroneProvider):
         }
 
     async def goto(self, lat: float, lon: float, alt_amsl: float) -> None:
-        drone = await self._ensure()
-        await drone.action.arm()
-        await drone.action.takeoff()
-        await drone.action.goto_location(lat, lon, alt_amsl, 0)
+        _, act = await self._ensure()
+        await act.arm()
+        await act.takeoff()
+        await act.goto_location(lat, lon, alt_amsl, 0)
 
     async def land(self) -> None:
-        drone = await self._ensure()
-        await drone.action.land()
+        _, act = await self._ensure()
+        await act.land()
 
 
 def get_provider() -> DroneProvider:

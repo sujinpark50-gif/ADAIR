@@ -1,13 +1,16 @@
 # UAV 담당(김동현) 구축·개발 노트
 
-작성일: 2026-09-15
+작성일: 2026-09-15 (2026-09-24 현행화)
 대상: 산불 관측 폐루프 시뮬레이터 — UAV 파트
+
+> 이 문서는 **구축 과정 기록**이다. 현재 실행 방법은 [README.md](README.md),
+> API 사양은 [API_DEFINE.md](API_DEFINE.md), 팀 합의 정책은 [docs/uav/uav_final](../docs/uav/uav_final) 을 따른다.
 
 ---
 
 ## 0. 내 역할과 산출물
 
-`info/1.md` 기준 내 담당은 **UAV Local Agent** 다.
+프로젝트 과제 기준 내 담당은 **UAV Local Agent** 다.
 
 | 구분 | 내용 |
 |---|---|
@@ -44,7 +47,8 @@ Safety가 ALLOW 한 뒤에야 실행 명령이 내려온다. 즉 **판단 API와
                                    [Gazebo headless]   ← 물리 계산
 ```
 
-- **Gazebo**: 물리 계산 담당. 위치·배터리·자세 같은 "사실"을 만든다. 화면은 부산물이라 headless로 끈다.
+- **Gazebo**: 물리 계산 담당. 위치·자세·속도 같은 "사실"을 만든다. 화면은 부산물이라 서버에서는 headless로 끈다.
+  (배터리는 Gazebo 가 아니라 PX4 내부 `battery_simulator` 가 계산한다 — 6-2 참조)
 - **PX4**: 비행제어. Gazebo가 준 센서값으로 기체를 제어한다.
 - **MAVSDK**: PX4의 값을 Python으로 가져온다.
 - **UAV Agent**: 그 값으로 **판단**하고 REST로 제공한다. ← 내 산출물
@@ -54,13 +58,13 @@ Safety가 ALLOW 한 뒤에야 실행 명령이 내려온다. 즉 **판단 API와
 ##  내 설명
 말이 너무 AI스러워서 이해하기 쉽지 않은데, 
 Gazebo와 PX4는 서로 양방향으로 계속 데이터를 엄청나게 주고 받고 있음. 
-Gaezbo -> PX4는 물리 계산으로 센서값(위치, 자세, 배터리)을 만들어 보냄. 쉽게 말하면, 차가 왼쪽으로 기울었다, 속도는 80km/h다, 연료가 절반 남았다. 이런 정보들을 화면에서 볼 수 있는데 이러한 센서값들을 Gazebo가 전부 계산해서 지금 드론이 어디있고, 얼마나 기울었고, 배터리가 얼마 남았다를 만들어서 px4에게 알려주는 것임.
+Gaezbo -> PX4는 물리 계산으로 센서값(위치, 자세, 배터리)을 만들어 보냄. 쉽게 말하면, 차가 왼쪽으로 기울었다, 속도는 80km/h다, 연료가 절반 남았다. 이런 정보들을 화면에서 볼 수 있는데 이러한 센서값들을 Gazebo가 계산해서 지금 드론이 어디있고, 얼마나 기울었는지를 만들어서 px4에게 알려주는 것임. (배터리 잔량은 예외로, PX4 안의 battery_simulator 가 계산함)
 PX4 -> Gazebo는 그 센서값으로 제어 판단해서 모터 출력을 보냄. 예를 들어, 왼쪽으로 지금 기울었네? 오른쪽으로 좀 꺾어야곘다. 속도가 너무 빠르네? 좀 줄여야겠다. 이러한 명령들을 Gazebo(모터)에 전달해주는 것임.
 QGC는 명령어 역할도 일부 수행하긴 하는데, PX4처럼 디테일하게는 못하고 모니터링 용도가 더 큼. 자세, 속도, 배터리가 계기판으로 보이고 경로가 보임.
 
 아 그리고, MAVLink 씀. 이게 뭐냐? 드론과 통신하기 위한 프로토콜임. 드론은 무선으로 통신해야되기 때문에 대역폭이 좁고 배터리도 아껴야되기 때문에 최적화한 프로토콜임. (UDP 14540)
 
-### 개발/운영 환경 구분 (`info/1.md` 7절)
+### 개발/운영 환경 구분
 
 | 환경 | 구성 |
 |---|---|
@@ -94,6 +98,8 @@ sudo usermod -aG docker $USER
 **재로그인 필수** (그룹 반영).
 
 ### 2-3. PX4 SITL + Gazebo headless 실행
+
+> 현재는 `px4-start.sh`(평지) 또는 `px4-start-kangwon.sh`(강원 지형)를 쓴다. 아래는 최소 형태 기록.
 
 ```bash
 docker run -d --name px4 \
@@ -168,14 +174,16 @@ MAVSDK 연결 타임아웃의 대부분은 14550 을 잘못 쓴 경우다. **Age
 ## 3. Python 환경
 
 ```bash
-python3 -m venv ~/uav-venv
-source ~/uav-venv/bin/activate
+python3 -m venv ~/uav-venv4
+source ~/uav-venv4/bin/activate
 pip install --upgrade pip
-pip install mavsdk fastapi uvicorn pydantic
+pip install "mavsdk>=4,<5" fastapi uvicorn pydantic
 ```
 
-**Python 3.14 에서 정상 동작 확인됨** (mavsdk 3.17.2, fastapi 0.141.1).
-이전에 우려했던 3.12 폴백은 불필요하다.
+**현재 코드는 MAVSDK 4.x(네이티브 바인딩) 전용이다** (Python 3.14.4, mavsdk 4.0.0, fastapi 0.141.1).
+초기(09-15)에는 mavsdk 3.17.x(gRPC)를 썼으나, 3.x 의 `System().connect()` / `drone.telemetry.*`
+방식은 4.x 에서 동작하지 않아 `drone.py` 를 4.x 방식(`Mavsdk` + `TelemetryAsync`)으로 옮겼다.
+`~/uav-venv`(3.x)로 real 모드를 띄우면 실패한다.
 
 ---
 
@@ -187,7 +195,7 @@ pip install mavsdk fastapi uvicorn pydantic
 |---|---|---|
 | 원통119안전센터 | 38.1205, 128.2018 | ~235 m |
 | 기린119안전센터 | 37.9645, 128.3062 | ~285 m |
-| 중간 지점 | 38.0425, 128.2541 | **~804 m** |
+| 중간 지점 | 38.0425, 128.2541 | **~804 m** (SRTM 30 m 기준) / 761 m (팀 DEM `dem_gangwon.tif` 90 m 기준) |
 
 - 직선거리 **약 19~21 km**, 방위 약 152°(SSE)
 
@@ -206,159 +214,56 @@ pip install mavsdk fastapi uvicorn pydantic
 
 ## 5. API 설계
 
-> ⚠️ 아래 스키마는 **잠정안**이다. 실제 필드명·ID·좌표계·단위·시간 형식은
-> `docs/통합/01_integration_contract.md` (통합계약)를 따른다. 현재 로컬에 해당 문서가 없어
-> 계약 확인 후 맞춰야 한다. **팀 합의 전에 이 스키마로 구현을 확정하지 말 것.**
+현행 사양은 [API_DEFINE.md](API_DEFINE.md) 로 옮겼다. 초기 잠정안(09-15)에 있던 `uav-01` 식 ID,
+`SENSOR_FAULT`·`LINK_LOST` 등의 reason 코드는 폐기됐다. 설계 원칙만 남긴다.
 
-### 5-1. 상태 조회 — `GET /uav/{uav_id}/state`
-
-```json
-{
-  "uav_id": "uav-01",
-  "timestamp": "2026-09-15T10:23:45Z",
-  "position": {"lat": 38.1205, "lon": 128.2018, "alt_m_amsl": 235.0, "alt_m_agl": 0.0},
-  "battery": {"percent": 78.5, "voltage": 15.8},
-  "velocity_ms": 0.0,
-  "flight_mode": "HOLD",
-  "armed": false,
-  "health": {"gps_ok": true, "sensors_ok": true, "failsafe": false},
-  "wind_ms": 3.1,
-  "link_quality": "OK",
-  "current_task_id": null
-}
-```
-
-### 5-2. 수행 가능성 판단 — `POST /uav/{uav_id}/evaluate`
-
-**핵심 산출물.** 실행하지 않고 판단만 반환한다.
-
-요청:
-```json
-{
-  "task_id": "task-101",
-  "decision_id": "dec-001",
-  "target": {"lat": 38.0425, "lon": 128.2541, "alt_m_amsl": 804.0},
-  "observation_type": "THERMAL",
-  "deadline": "2026-09-15T10:40:00Z"
-}
-```
-
-응답 (ACCEPT):
-```json
-{
-  "task_id": "task-101",
-  "decision_id": "dec-001",
-  "uav_id": "uav-01",
-  "verdict": "ACCEPT",
-  "eta_sec": 420,
-  "constraints": {
-    "distance_km": 10.2,
-    "battery_now_pct": 78.5,
-    "battery_after_pct": 41.3,
-    "return_margin_pct": 21.3,
-    "wind_ms": 3.1,
-    "required_climb_m": 569
-  }
-}
-```
-
-응답 (REJECT — IT-02 필수 케이스):
-```json
-{
-  "task_id": "task-101",
-  "decision_id": "dec-001",
-  "uav_id": "uav-01",
-  "verdict": "REJECT",
-  "reason": "HIGH_WIND",
-  "detail": "wind 12.4 m/s exceeds limit 10.0 m/s",
-  "constraints": {"wind_ms": 12.4, "wind_limit_ms": 10.0}
-}
-```
-
-응답 (COUNTER):
-```json
-{
-  "verdict": "COUNTER",
-  "reason": "DEADLINE_TIGHT",
-  "counter_offer": {"eta_sec": 480, "arrival": "2026-09-15T10:42:00Z"},
-  "constraints": {"battery_after_pct": 31.2, "return_margin_pct": 12.5}
-}
-```
-
-**`reason` 과 `constraints` 는 반드시 넣는다.** 총괄이 "왜 거절인지" 모르면
-재평가 근거가 없고, 통합·관제의 추적 로그도 성립하지 않는다.
-
-**`decision_id`**: 같은 Task 를 다른 자원으로 재평가할 때 새 `decision_id` 가 발급된다.
-Task 단위가 아니라 판단 단위 식별자이므로 응답에 그대로 echo 한다.
-
-### 5-3. 실행 — `POST /uav/{uav_id}/execute`
-
-Safety ALLOW 이후 호출된다. **비동기로 만든다** — 비행은 수 분이 걸리므로
-동기 방식이면 호출측이 타임아웃 난다.
-
-즉시 응답:
-```json
-{"task_id": "task-101", "status": "STARTED", "tracking_url": "/uav/uav-01/task/task-101"}
-```
-
-### 5-4. 진행/결과 — `GET /uav/{uav_id}/task/{task_id}`
-
-```json
-{
-  "task_id": "task-101",
-  "status": "IN_PROGRESS",
-  "progress": {"phase": "ENROUTE", "eta_sec": 180},
-  "observation": null
-}
-```
-
-완료 시 `status: "COMPLETED"` 와 관측 결과. 실패 시 `"FAILED"` 와 사유.
-
-### 5-5. 관측 결과 — 환경모델로 전달
-
-관측값에는 **위치·시각·센서 종류**를 포함해야 한다.
-
-```json
-{
-  "observed_at": "2026-09-15T10:35:12Z",
-  "position": {"lat": 38.0425, "lon": 128.2541, "alt_m_amsl": 804.0},
-  "sensor_type": "THERMAL",
-  "values": {"max_temp_c": 312.5, "hotspot_detected": true}
-}
-```
+- **판단 API(`evaluate`)와 실행 API(`execute`)를 분리한다.** ACCEPT 만으로 비행하지 않는다.
+- **`reason` 과 `constraints` 는 반드시 넣는다.** 총괄이 "왜 거절인지" 모르면
+  재평가 근거가 없고, 통합·관제의 추적 로그도 성립하지 않는다.
+- **`decision_id`** 는 판단 단위 식별자다. 재평가마다 새 값이 오며 응답에 그대로 echo 한다.
+- **execute 는 비동기**다. 비행은 수 분이 걸리므로 즉시 `STARTED` 를 반환하고 `/task` 로 폴링한다.
+- 관측값에는 **위치·시각·센서 종류**를 포함한다.
 
 ---
 
 ## 6. 판단 로직 (ACCEPT / REJECT / COUNTER)
 
-`info/1.md` "주요 고려사항"(풍속·배터리·통신·센서·failsafe)을 그대로 기준으로 삼는다.
+풍속·배터리·통신·센서·failsafe 를 기준으로 삼는다. reason 코드는 팀 `interfaces/schema.py` 의 `RejectReason` 과 같다.
 
-### 6-1. 판정 순서
+### 6-1. 판정 순서 (`evaluator.py` 기준)
 
 ```
+0단계: 풍속 미상                → REJECT / WIND_UNKNOWN
+
 1단계: 하드 제약 — 하나라도 걸리면 즉시 REJECT
    - failsafe 활성            → REJECT / FAILSAFE_ACTIVE
-   - GPS/센서 이상            → REJECT / SENSOR_FAULT
-   - 통신 두절                → REJECT / LINK_LOST
-   - 이미 다른 Task 수행 중    → REJECT / BUSY
-   - 풍속 > 한계              → REJECT / HIGH_WIND      ← IT-02 필수
-   - 센서 미탑재(관측 유형 불일치) → REJECT / SENSOR_UNAVAILABLE
+   - GPS/센서 이상            → REJECT / SENSOR_FAILURE
+   - 통신 두절                → REJECT / COMMUNICATION_FAILURE
+   - 이미 다른 Task 수행 중    → REJECT / BUSY   (현재 current_task_id 미갱신으로 동작 안 함)
+   - 센서 미탑재              → REJECT / REQUIRED_CAPABILITY_UNAVAILABLE
+   - 풍속 ≥ 한계              → REJECT / HIGH_WIND      ← IT-02 필수
 
 2단계: 에너지 여유
-   battery_needed = (편도ETA × 2 × 소모율) + 관측체류 + 상승분
+   battery_needed = (편도ETA × 2 + 관측체류) × 소모율   (편도ETA 에 상승시간 포함)
    margin = battery_now - battery_needed
-   - margin < 0               → REJECT / INSUFFICIENT_BATTERY
-   - margin < SAFETY_MARGIN   → COUNTER (고도↓ 또는 체류시간↓ 제안)
+   - margin < 0               → REJECT / LOW_BATTERY
+   - margin < SAFETY_MARGIN   → COUNTER / RETURN_MARGIN_INSUFFICIENT (체류시간↓ 제안)
 
-3단계: 시간
-   - ETA ≤ deadline           → ACCEPT
-   - ETA > deadline 이나 수행 가능 → COUNTER (가능 시각 제시)
-   - 수행 불가                 → REJECT / DEADLINE_INFEASIBLE
+3단계: 시간 (deadline 이 있을 때만)
+   - deadline 이미 지남        → REJECT / TIMEOUT
+   - ETA > 남은 시간           → COUNTER / DEADLINE_TIGHT (가능 시각 제시)
+
+4단계: 풍속 주의
+   - 풍속 ≥ COUNTER 기준       → COUNTER / MODERATE_WIND
+
+모두 통과                      → ACCEPT
 ```
 
-### 6-2. 설정값 (전부 TBD — 팀 합의 필요)
+앞 단계의 COUNTER 에 걸리면 풍속이 8~10 m/s 여도 `MODERATE_WIND` 가 아닌 그 사유로 나간다.
 
-`info/1.md` 6절에 "임계값은 설정값 또는 TBD로 관리"라고 되어 있으므로 **하드코딩하지 말고 설정 파일로 뺀다.**
+### 6-2. 설정값 (전부 잠정 — 팀 합의안 `docs/uav/uav_final` 10절)
+
+임계값은 **하드코딩하지 말고 설정 파일로 뺀다.** 풍속 8/10 m/s 는 합의안에서 잠정값으로 정했고, 20% 복귀 여유는 보편 기준이 아니라 기체 실측 후 확정할 값이다.
 
 ```python
 # config.py — 값은 잠정. 팀 합의 후 확정
@@ -422,22 +327,23 @@ required_climb = required_alt - current_alt
 - 상승에도 배터리가 들고 시간도 걸리므로 **ETA·배터리 계산에 상승분을 반영**한다.
 - 초기 구현은 "목표 지점 지형고도 + 여유"로 단순화하고,
   경로상 최고점까지 고려하는 것은 후속으로 둔다. **단순화했다는 사실을 명시할 것.**
+- 팀 합의안은 **AGL 전달 + 경로 전체 terrain-following** 이다. 현재 코드(AMSL + 50 m, 목표 지점만)와 다르다.
+- 강원 지형 월드(`gazebo/kangwon.sdf`)에서는 경로 중간 능선(최고 약 1,470 m)에 **실제로 충돌할 수 있다.**
 
 ### 6-4. 풍속 출처
 
-**PX4 에서는 못 받는다 (실측 확인).** MAVSDK 에 `telemetry.wind` 스트림이 존재하지만
-PX4 SITL 은 여기에 아무것도 발행하지 않는다. 실제로 구독하면 타임아웃한다.
-따라서 선택지는 하나로 좁혀진다.
+**현재 PX4 SITL 구성에서는 받지 못했다 (실측).** MAVSDK 에 `telemetry.wind` 스트림이 존재하지만
+사용 중인 이미지·설정에서는 아무것도 발행되지 않아 구독하면 타임아웃한다.
+("PX4 는 풍속을 제공할 수 없다"로 일반화하지 않는다 — 버전·구성에 따라 다를 수 있다.)
 
-1. ~~Gazebo/PX4 값 사용~~ → **불가**
-2. **환경모델(김은주님)이 제공** → 사실상 유일한 경로. Task 요청에 풍속을 실어 보내거나
-   환경모델 API 를 직접 조회하는 방식 중 택일. **협의 필요.**
+**결정됨 (합의안 4.3)**: 총괄이 환경모델 풍속을 평가 요청에 실어 보낸다. UAV Agent 는 환경모델 API 를
+직접 조회하지 않는다. 통합 코드는 `EnvironmentState.wind_speed` 를 `wind_ms` 로 전달한다(`config.WIND_SOURCE`).
 
 현재 구현은 `EvaluateRequest.wind_ms` 로 주입받는다. 풍속을 알 수 없으면
 `REJECT / WIND_UNKNOWN` 을 반환한다 — 모르는 값을 0 으로 간주해 통과시키지 않는다.
 
-IT-02(강풍 REJECT)를 재현하려면 **풍속을 인위적으로 주입할 수 있어야** 한다.
-Mock 단계에서는 요청에 풍속을 실어 보내거나 설정값으로 강제하는 경로를 반드시 만들 것.
+IT-02(강풍 REJECT)는 요청의 `wind_ms` 또는 `/mock/set?wind_ms=` 로 재현한다.
+단, mock 은 요청에 `wind_ms` 가 없으면 내부값(3.1)을 쓰므로 `WIND_UNKNOWN` 이 나오지 않는다.
 
 ---
 
@@ -455,11 +361,10 @@ uav-agent/
 ├── models.py       # 요청/응답 스키마 (pydantic)
 ├── evaluator.py    # 판단 로직  ← PX4 없이도 테스트 가능
 ├── config.py       # 임계값
-├── drone.py        # MAVSDK 실제 구현
-└── drone_mock.py   # Mock 구현 (같은 인터페이스)
+└── drone.py        # MockDrone / Px4Drone (같은 인터페이스)
 ```
 
-`drone.py` 와 `drone_mock.py` 를 **같은 인터페이스**로 만들고 환경변수로 교체한다.
+`drone.py` 안의 `MockDrone` 과 `Px4Drone` 을 **같은 인터페이스**로 만들고 `UAV_MODE` 로 교체한다.
 그러면 판단 로직을 드론 없이 검증할 수 있고, 나중에 실물로 바꿔도 호출측 코드는 안 바뀐다.
 
 ### 2순위: IT-01 / IT-02 통과
@@ -483,6 +388,9 @@ IT-02 에서 중요한 것: **REJECT 시 Safety 를 호출하지 않는다.** �
 ---
 
 ## 8. MAVSDK 연결 확인
+
+> ⚠️ 아래 스크립트는 **mavsdk 3.x(gRPC) 시절 기록**이라 4.x 에서는 동작하지 않는다.
+> 현재는 Agent 를 real 모드로 띄우고 `curl localhost:8000/uav/A-uav1/state` 로 확인한다.
 
 ```python
 # ~/uav-agent/check.py
@@ -591,7 +499,9 @@ health: gps_ok= True home_ok= True
 ### 홈 위치를 산불 시나리오로 변경
 
 기본 홈 위치는 **스위스 취리히(47.3979, 8.5461)** 다. 4절 좌표로 바꿔야
-거리·ETA·지형 계산이 의미를 갖는다. 컨테이너 실행 시 환경변수로 지정한다.
+거리·ETA·지형 계산이 의미를 갖는다. 평지 월드(`px4-start.sh`)는 환경변수로 지정한다.
+강원 지형 월드(`px4-start-kangwon.sh`)는 월드 원점이 `gz_bridge.py` datum 이라 `PX4_HOME_*` 를 쓰지 않고
+`PX4_GZ_MODEL_POSE`(gazebo/spawn.env)로 원통119 에 스폰한다.
 
 ```bash
 docker rm -f px4
@@ -620,12 +530,12 @@ param set COM_RCL_EXCEPT 4
 
 ## 9. 팀 협업 체크리스트
 
-- [ ] `docs/통합/01_integration_contract.md` 확인 → 5절 스키마를 계약에 맞춤
-- [ ] 필드명·좌표계·단위·시간형식 합의 (특히 고도: AMSL vs AGL)
-- [ ] 풍속 출처 합의 (환경모델 제공 vs Gazebo 값) — 6-4 참조
-- [ ] 임계값 확정 (풍속 한계, 안전마진) — 6-2 참조
-- [ ] Mock 서버 배포 + 팀에 URL 공유
-- [ ] `reason` 코드 목록 합의 (`HIGH_WIND` 등 — 총괄이 파싱해야 함)
+- [x] 통합계약 확인 — `docs/intergration/01. Integration Contract.md`
+- [ ] 필드명·좌표계·단위·시간형식 합의 — 고도는 AGL 로 합의됨, **코드 미반영** (6-3)
+- [x] 풍속 출처 합의 — 환경모델 값을 요청에 실어 보냄 (6-4)
+- [ ] 임계값 확정 — 풍속 8/10 m/s 잠정 확정, 배터리 reserve 는 실측 후 (6-2)
+- [ ] Mock/real 서버 배포 + 팀에 URL 공유 (`config.UAV_ENDPOINTS` 아직 TBD)
+- [x] `reason` 코드 목록 합의 — `interfaces/schema.py` `RejectReason` 에 반영
 - [ ] **Elastic IP 연결** — API 주소를 팀에 알려주기 전에 필수
 
 ---
@@ -635,11 +545,11 @@ param set COM_RCL_EXCEPT 4
 ### 10. 재부팅 복구 절차
 
 ```bash
-docker rm -f px4 2>/dev/null
-docker run -d --name px4 --network host --restart unless-stopped \
-  -e HEADLESS=1 px4io/px4-sitl-gazebo:latest
-docker ps --format '{{.Names}} | {{.Status}}'
+cd uav
+./px4-start.sh              # 또는 ./px4-start-kangwon.sh
 ```
+
+스크립트가 홈 좌표·GCS 안전장치 해제까지 처리한다. 직접 `docker run` 하면 둘 다 빠지므로 쓰지 않는다.
 
 > 유령 컨테이너 문제가 계속되면 `--restart` 정책 대신 mavlink-router 처럼
 > **systemd unit 으로 관리**하는 편이 확실하다.
@@ -650,13 +560,11 @@ docker ps --format '{{.Names}} | {{.Status}}'
 
 | 항목 | 상태 |
 |---|---|
-| 통합계약 문서 | **로컬에 없음.** GitHub 관리본 확인 후 5절 스키마 수정 필요 |
+| 고도 기준 | 합의안은 AGL + terrain-following, 코드는 AMSL + 50 m (6-3) |
 | 좌표 정밀도 | 건물 단위 지오코딩 실패. ±0.5~1 km 근사 (4절) |
-| 경로상 지형 회피 | 초기엔 목표지점만 고려. 경로 최고점 반영은 후속 |
-| 배터리 소모율 | Gazebo 기본값 사용 중. **실측 보정 필요** |
+| 경로상 지형 회피 | 목표지점만 고려. 강원 지형 월드에서는 실제 충돌 위험 (6-3) |
+| 배터리 소모율 | `0.033 %/s` 추정치. **실측 보정 필요** |
 | 배터리 방전 거동 | **미해결.** `SIM_BAT_DRAIN=60` 이라 방전이 켜져 있어야 하나, 시동 후 값이 100→95→88→93→100 으로 **되돌아왔다**(포트 경합 상태의 측정이라 신뢰도 낮음). `battery_simulator status` 는 출력이 없어 모듈 기동 여부도 미확인. **부하 낮은 상태에서 단독 클라이언트로 재측정 필요** |
-| 풍속 출처 | 환경모델 vs Gazebo — 미합의 (6-4) |
 | Elastic IP | `15.164.176.101` 확보했으나 **미연결**. 과금 중 |
-| COUNTER 상세 처리 | `info/1.md` 기준 후속 구현 범위 |
-| 다중 UAV | IT-02 는 대체 UAV 가 필요. 현재 단일 인스턴스만 구동 중 |
-| 홈 위치 | 기본값이 취리히. `PX4_HOME_*` 로 원통 좌표 지정 필요 (8절) |
+| BUSY / 실행 상태 | `current_task_id` 미갱신, execute `COMPLETED` 는 도착·관측 완료 아님 |
+| 다중 UAV | IT-02 는 대체 UAV 가 필요. 현재 real 1기만 구동 중 (PX4 는 multi-vehicle 을 지원하나 이 서버에서 미검증) |

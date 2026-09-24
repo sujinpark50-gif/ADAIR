@@ -2,13 +2,13 @@
 
 판단만 하고 실행하지 않는다. ACCEPT 는 Safety 검증을 거쳐야 실행된다.
 
-reason 코드는 interfaces/schema.py 의 RejectReason 에 맞춘다. 다만 아래 4개는
-팀 Enum 에 대응물이 없어 UAV 전용으로 남겨둔다 — **추가 합의 필요**:
+reason 코드는 interfaces/schema.py 의 RejectReason 과 같다. UAV 연동 과정에서
+아래 코드가 팀 Enum 에 추가됐다:
   FAILSAFE_ACTIVE  PX4 failsafe 작동 중 (드론 고유 상태)
   BUSY             다른 Task 수행 중
   WIND_UNKNOWN     풍속 미제공 — 요청에 wind_ms 가 없을 때
-  MODERATE_WIND    (COUNTER) 풍속 주의 — REJECT 가 아니므로 RejectReason 대상 아님
-  DEADLINE_TIGHT   (COUNTER) 기한 초과하나 수행 가능 — 〃
+  MODERATE_WIND    (COUNTER) 풍속 주의
+  DEADLINE_TIGHT   (COUNTER) 기한 초과하나 수행 가능
 """
 import math
 from datetime import datetime, timezone
