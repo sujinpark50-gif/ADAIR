@@ -8,19 +8,61 @@ Per `mission/environmental-modeling.txt` §3.3 (line 72):
   agreed with the Master Orchestrator and System Integration Leads.")
 
 Because final formal agreement across subsystems has not yet been established,
-the calculation in this module serves as a **temporary scenario modeling assumption**.
+the calculation in this module serves as a **provisional scenario modeling assumption**.
 It is implemented in a modular, configuration-driven manner so that when the final
-agreed-upon formula and bounds are specified, they can directly replace the contents
+agreed-upon formulas, weights, and bounds are specified, they can directly replace the contents
 of this function without altering the Phase 1 EnvironmentGrid or Phase 2 CA Engine.
 
 All parameters used in this calculation are loaded from `config/environment_config.yaml`
 under the `risk_scoring` key — zero scientific constants are hardcoded here.
+
+ARCHITECTURE: PURE MULTI-CRITERIA RISK AGGREGATION (WLC)
+---------------------------------------------------------
+This module performs pure Multi-Criteria Weighted Linear Combination (WLC) aggregation.
+It does NOT compute fire propagation physics, wind vectors, slope gradients, or CA simulations;
+spread hazard scores (S_spread ∈ [0, 1]) are computed externally by the fire spread prediction layer
+(e.g., WildfireCAEngine.predict_spread_geometric or predict_spread_ensemble).
+
+Top-Level Composite Risk Score (risk_score ∈ [0, 1] for UNBURNED cells):
+    risk_score = W_spread * S_spread
+               + W_human * S_human
+               + W_infra * S_infra
+               + W_property * S_property
+               + W_secondary * S_secondary
+
+where:
+    S_spread    = Dynamic fire spread hazard score from spread prediction layer ∈ [0, 1]
+    S_human     = Residential building proxy (building_type=1) ∈ [0, 1]
+    S_infra     = Important/Critical facility proxy (building_type=2, 3) ∈ [0, 1]
+    S_property  = Commercial/Industrial property proxy (building_type=5, 6) ∈ [0, 1]
+    S_secondary = Hazardous material facility proxy (building_type=4) ∈ [0, 1]
+    Σ W_i = 1.0  (Normalized at runtime from relative composite_weights in config)
+
+METHODOLOGY & FUTURE CALIBRATION HOOKS:
+---------------------------------------
+- Fire Hazard vs. Exposure Distinction:
+  Environmental conditions determine fire behavior (S_spread). Building and facility
+  layers determine exposure and consequence (S_human, S_infra, S_property, S_secondary).
+  These dimensions are conceptually distinct and should NOT all be inferred from
+  a single wildfire occurrence dataset.
+- Provisional Status of Current Weights:
+  The current weights are provisional scenario/policy parameters, NOT empirically
+  calibrated constants.
+- Future Calibration Pathways:
+  * Exposure Weights (W_human, W_infra, W_property, W_secondary):
+    Can be calibrated via historical damage/loss records, expert elicitation, Multi-Criteria
+    Decision Analysis (AHP / MCDA), or policy-mandated weighting schemes.
+- Operational Priority vs. Numerical Risk Score:
+  Operational SOP rules (e.g. human life protection as highest operational priority)
+  are governed by the Master Orchestrator during task allocation and scheduling.
+  The numerical risk model provides objective spatial risk estimation.
+
+See also: docs/common/ADAIR_공통데이터규약_위험우선순위_합의안.md §3
 """
 
 from __future__ import annotations
 
-import math
-from typing import Dict, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
 from src.environment.cell import Cell, FireState
 
@@ -28,118 +70,62 @@ if TYPE_CHECKING:
     from src.environment.grid import EnvironmentGrid
 
 
-def _compute_wind_vector(config: dict) -> Tuple[float, float]:
-    """Return wind direction unit vector in grid coordinates.
+def _compute_building_risk_components(
+    building_type: int,
+    building_cfg: dict,
+) -> Tuple[float, float, float, float]:
+    """Return (S_human, S_infra, S_property, S_secondary) for a cell's building type.
+
+    Parameters
+    ----------
+    building_type : int
+        Categorical building type code from the buildings raster.
+        0 = no building, 1 = RESIDENTIAL, 2 = IMPORTANT, 3 = CRITICAL,
+        4 = SECONDARY_HAZARD, 5 = COMMERCIAL, 6 = INDUSTRIAL, 7 = OTHER.
+    building_cfg : dict
+        The ``building_risk_values`` sub-dictionary from config, containing
+        per-type risk contribution values.
+
+    Returns
+    -------
+    Tuple[float, float, float, float]
+        (S_human, S_infra, S_property, S_secondary) — each in [0.0, 1.0].
+        Only one component is non-zero per building type.
 
     Notes
     -----
-    - ``direction_deg`` is interpreted as the direction the wind comes *from*.
-    - For downwind checks, we convert it to the direction the wind blows *towards*.
-    - Grid coordinates use:
-        * +x : east
-        * +y : south  아래로 증가 (위로 증가 아님)
-      so y uses negative cosine.
+    These values represent **human and asset exposure proxies**, not actual
+    population census or empirical loss counts.
     """
-    wind_cfg = config.get("wind", {})
-    wind_deg = float(wind_cfg.get("direction_deg", 270.0))
+    s_human = 0.0
+    s_infra = 0.0
+    s_property = 0.0
+    s_secondary = 0.0
 
-    # Convert "coming from" direction to "blowing towards" direction.
-    towards_deg = (wind_deg + 180.0) % 360.0
-    towards_rad = math.radians(towards_deg)
+    if building_type == 1:  # RESIDENTIAL → S_human
+        s_human = float(building_cfg.get("residential", 1.0))
+    elif building_type == 2:  # IMPORTANT → S_infra
+        s_infra = float(building_cfg.get("important", 0.7))
+    elif building_type == 3:  # CRITICAL → S_infra
+        s_infra = float(building_cfg.get("critical", 1.0))
+    elif building_type == 4:  # SECONDARY_HAZARD → S_secondary
+        s_secondary = float(building_cfg.get("secondary_hazard", 1.0))
+    elif building_type == 5:  # COMMERCIAL → S_property
+        s_property = float(building_cfg.get("commercial", 1.0))
+    elif building_type == 6:  # INDUSTRIAL → S_property
+        s_property = float(building_cfg.get("industrial", 1.0))
+    elif building_type == 7:  # OTHER → no automatic risk elevation
+        pass  # intentionally 0.0
 
-    wind_dx = math.sin(towards_rad)
-    wind_dy = -math.cos(towards_rad)    # 예: towards_rad = 0 북향 바람: wind_dy = -cos(0°) = -1: (0, -1) 북쪽 방향
-    return wind_dx, wind_dy
-
-
-def _collect_downwind_cells(
-    grid: EnvironmentGrid,
-    burning_cells: list[Cell],
-    wind_dx: float,
-    wind_dy: float,
-    downwind_buffer: int,
-    downwind_dot_thresh: float,
-) -> Set[Tuple[int, int]]:
-    """Precompute coordinates of cells that are near and downwind of any burning cell.
-
-    Why this helper exists
-    ----------------------
-    The old approach checked every grid cell against every burning cell, which is
-    roughly O(N * B), where:
-    - N = total number of cells
-    - B = number of burning cells
-
-    However, downwind influence only matters within ``downwind_buffer`` cells.
-    So instead of global search, we iterate locally around each burning cell only.
-    This reduces the work to roughly O(B * r^2), where r is the buffer radius.
-
-    Implementation detail
-    ---------------------
-    For each burning cell, only cells inside the square bounding box around radius r
-    are visited, and then filtered by:
-    1. radial distance <= r
-    2. alignment with wind direction
-
-    To reduce repeated sqrt/division cost, the common case
-    (``downwind_dot_thresh >= 0``) uses squared-distance and projection comparison.
-    """
-    if not burning_cells or downwind_buffer <= 0:
-        return set()
-
-    rows = grid.rows
-    cols = grid.cols
-    r = downwind_buffer
-    r2 = r * r
-    downwind_coords: Set[Tuple[int, int]] = set()
-
-    # For typical thresholds like 0.3, squared comparison avoids sqrt/division.
-    use_squared_compare = downwind_dot_thresh >= 0.0
-    thresh2 = downwind_dot_thresh * downwind_dot_thresh
-
-    for bc in burning_cells:
-        min_x = max(0, bc.x - r)
-        max_x = min(cols - 1, bc.x + r)
-        min_y = max(0, bc.y - r)
-        max_y = min(rows - 1, bc.y + r)
-
-        for ny in range(min_y, max_y + 1):
-            dy = ny - bc.y
-            for nx in range(min_x, max_x + 1):
-                dx = nx - bc.x
-                dist2 = dx * dx + dy * dy
-
-                # Skip the source burning cell itself and cells beyond buffer radius.
-                if dist2 == 0 or dist2 > r2:
-                    continue
-
-                # Projection of (dx, dy) onto the wind direction vector.
-                proj = dx * wind_dx + dy * wind_dy
-
-                if use_squared_compare:
-                    # Equivalent to:
-                    #   (proj / sqrt(dist2)) > downwind_dot_thresh
-                    # but avoids sqrt when threshold >= 0.
-                    #
-                    # Need proj > 0 first; otherwise squaring would lose sign.
-                    if proj <= 0.0:
-                        continue
-                    if (proj * proj) > (thresh2 * dist2):
-                        downwind_coords.add((nx, ny))
-                else:
-                    # Rare fallback path for negative thresholds to preserve semantics.
-                    dist = math.sqrt(dist2)
-                    dot = proj / dist
-                    if dot > downwind_dot_thresh:
-                        downwind_coords.add((nx, ny))
-
-    return downwind_coords
+    return s_human, s_infra, s_property, s_secondary
 
 
 def calculate_risk_scores(
     grid: EnvironmentGrid,
     config: Optional[dict] = None,
+    spread_scores: Optional[Dict[int, float]] = None,
 ) -> Dict[int, float]:
-    """Calculate and return risk scores for all cells in *grid*.
+    """Calculate and return composite risk scores for all cells in *grid*.
 
     Parameters
     ----------
@@ -148,11 +134,14 @@ def calculate_risk_scores(
     config : dict, optional
         Configuration dictionary containing a ``risk_scoring`` section.
         If None, attempts to use configuration attached to *grid*.
+    spread_scores : Dict[int, float], optional
+        Precalculated mapping of ``cell_id`` to spread hazard score (S_spread ∈ [0, 1]).
+        If None, S_spread defaults to 0.0 for all cells.
 
     Returns
     -------
     Dict[int, float]
-        Dictionary mapping ``cell_id`` to calculated risk score.
+        Dictionary mapping ``cell_id`` to calculated risk score in [min_risk, max_risk].
     """
     if config is None:
         config = getattr(grid, "_config", {})
@@ -160,35 +149,46 @@ def calculate_risk_scores(
     cfg = config.get("risk_scoring", {})
     burning_risk = float(cfg.get("burning_cell_risk", 1.0))
     burned_risk = float(cfg.get("burned_cell_risk", 0.2))
-    unburned_base_risk = float(cfg.get("unburned_cell_base_risk", 0.0))
-    downwind_buffer = int(cfg.get("downwind_buffer_cells", 3))
-    downwind_weight = float(cfg.get("downwind_risk_weight", 0.4))
-    slope_weight = float(cfg.get("slope_risk_weight", 0.2))
-    max_slope_deg = float(cfg.get("max_slope_degrees", 45.0))
-    downwind_dot_thresh = float(cfg.get("downwind_dot_threshold", 0.3))
-    fuel_weight = float(cfg.get("fuel_risk_weight", 0.2))
     min_risk = float(cfg.get("min_risk_score", 0.0))
     max_risk = float(cfg.get("max_risk_score", 1.0))
 
-    # grid.cells creates a new flat list each time, so materialize it once.
-    cells = grid.cells
+    # Top-Level Composite Risk Weights (normalized so sum(W_i) = 1.0)
+    comp_weights_cfg = cfg.get("composite_weights")
+    if comp_weights_cfg and isinstance(comp_weights_cfg, dict):
+        raw_W_spread = float(comp_weights_cfg.get("spread", 1.0))
+        raw_W_human = float(comp_weights_cfg.get("human", 0.3))
+        raw_W_infra = float(comp_weights_cfg.get("infrastructure", 0.4))
+        raw_W_property = float(comp_weights_cfg.get("property", 0.2))
+        raw_W_secondary = float(comp_weights_cfg.get("secondary_hazard", 0.5))
+    else:
+        # Fallback to legacy flat weight keys
+        raw_W_spread = float(cfg.get("spread_weight", 1.0))
+        raw_W_human = float(cfg.get("human_weight", 0.3 if "human_weight" in cfg else 0.0))
+        raw_W_infra = float(cfg.get("infrastructure_weight", 0.4 if "infrastructure_weight" in cfg else 0.0))
+        raw_W_property = float(cfg.get("property_weight", 0.2 if "property_weight" in cfg else 0.0))
+        raw_W_secondary = float(cfg.get("secondary_hazard_weight", 0.5 if "secondary_hazard_weight" in cfg else 0.0))
 
-    # Collect burning cells once.
-    burning_cells = [c for c in cells if c.fire_state == FireState.BURNING]
-
-    # Compute wind vector once.
-    wind_dx, wind_dy = _compute_wind_vector(config)
-
-    # Precompute cells that are within radius and aligned with wind from any burning cell.
-    downwind_near_coords = _collect_downwind_cells(
-        grid=grid,
-        burning_cells=burning_cells,
-        wind_dx=wind_dx,
-        wind_dy=wind_dy,
-        downwind_buffer=downwind_buffer,
-        downwind_dot_thresh=downwind_dot_thresh,
+    total_comp_w = (
+        raw_W_spread
+        + raw_W_human
+        + raw_W_infra
+        + raw_W_property
+        + raw_W_secondary
     )
+    if total_comp_w > 0.0:
+        W_spread = raw_W_spread / total_comp_w
+        W_human = raw_W_human / total_comp_w
+        W_infra = raw_W_infra / total_comp_w
+        W_property = raw_W_property / total_comp_w
+        W_secondary = raw_W_secondary / total_comp_w
+    else:
+        W_spread = 1.0
+        W_human = W_infra = W_property = W_secondary = 0.0
 
+    # Building type → exposure value mapping
+    building_cfg = cfg.get("building_risk_values", {})
+
+    cells = grid.cells
     risk_scores: Dict[int, float] = {}
 
     for cell in cells:
@@ -197,26 +197,24 @@ def calculate_risk_scores(
         elif cell.fire_state == FireState.BURNED:
             score = burned_risk
         else:
-            score = unburned_base_risk
+            # Spread hazard component S_spread ∈ [0, 1]
+            s_spread = spread_scores.get(cell.cell_id, 0.0) if spread_scores is not None else 0.0
 
-            # Add slope component:
-            # normalize slope by max_slope_deg and scale by slope_weight.
-            norm_slope = (
-                min(1.0, max(0.0, cell.slope / max_slope_deg))
-                if max_slope_deg > 0
-                else 0.0
+            # Exposure / consequence components S_i ∈ [0, 1]
+            s_human, s_infra, s_property, s_secondary = _compute_building_risk_components(
+                cell.building_type, building_cfg
             )
-            score += slope_weight * norm_slope
 
-            # Add fuel amount component:
-            # more available fuel -> higher risk.
-            score += fuel_weight * min(1.0, max(0.0, cell.fuel_amount))
+            # Composite Weighted Sum (Σ W_i = 1.0)
+            score = (
+                W_spread * s_spread
+                + W_human * s_human
+                + W_infra * s_infra
+                + W_property * s_property
+                + W_secondary * s_secondary
+            )
 
-            # Add downwind risk if this cell is precomputed as near + downwind.
-            if (cell.x, cell.y) in downwind_near_coords:
-                score += downwind_weight
-
-        # Enforce configurable bounds.
+        # Numerical safety clamp to enforced bounds
         clamped_score = max(min_risk, min(max_risk, score))
         risk_scores[cell.cell_id] = float(clamped_score)
 
@@ -226,14 +224,26 @@ def calculate_risk_scores(
 def update_grid_risk_scores(
     grid: EnvironmentGrid,
     config: Optional[dict] = None,
+    spread_scores: Optional[Dict[int, float]] = None,
 ) -> Dict[int, float]:
     """Calculate risk scores and update ``cell.risk_score`` on *grid* cells.
 
-    Returns mapping of ``cell_id`` to updated risk score.
-    """
-    scores = calculate_risk_scores(grid, config)
+    Parameters
+    ----------
+    grid : EnvironmentGrid
+        The simulation environment grid.
+    config : dict, optional
+        Configuration dictionary.
+    spread_scores : Dict[int, float], optional
+        Precalculated spread hazard score mapping.
 
-    # grid.cells creates a new list, so only materialize once here too.
+    Returns
+    -------
+    Dict[int, float]
+        Mapping of ``cell_id`` to updated risk score.
+    """
+    scores = calculate_risk_scores(grid, config, spread_scores=spread_scores)
+
     cells = grid.cells
     for cell in cells:
         cell.risk_score = scores[cell.cell_id]

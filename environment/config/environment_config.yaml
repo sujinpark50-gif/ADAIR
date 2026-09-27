@@ -13,6 +13,7 @@ raster_paths:
   aspect_path: "data/processed/aspect_5186.tif"
   fuel_path: "data/processed/fuel_type.tif"
   roads_path: "data/processed/roads_raster.tif"
+  buildings_path: "data/processed/buildings_inje.tif"
 
 # --- Grid spatial settings --------------------------------------------------
 # These values are derived from the actual raster metadata (EPSG:5186, 90 m).
@@ -80,18 +81,59 @@ fire_ca:
 #   "risk_score의 계산 기준과 값의 범위는 총괄·통합 담당과 합의한다."
 #   Translation: "The calculation criteria and value range of risk_score are agreed with the Orchestrator/Integration Lead."
 #   TEMPORARY SCENARIO ASSUMPTION:
-#   Pending formal cross-subsystem agreement, the risk score is computed as a modular
-#   function combining fire proximity, slope, and fuel load.
+#   Risk score combines dynamic fire spread prediction (S_spread) with static building exposure proxies.
 risk_scoring:
   burning_cell_risk: 1.0         # Risk score assigned to currently BURNING cells
   burned_cell_risk: 0.2          # Risk score assigned to BURNED cells
-  unburned_cell_base_risk: 0.0   # Base risk score for UNBURNED cells
-  downwind_buffer_cells: 3       # Grid radius to apply downwind proximity risk elevation; 셀 단위 반경으로 정의되어 있으므로, 실제 공간 해상도 변화에 따라 동일 값의 물리적 의미가 달라짐
-  downwind_risk_weight: 0.4      # Elevated risk weight for unburned cells in downwind path
-  slope_risk_weight: 0.2         # Weight of slope in risk score calculation
-  max_slope_degrees: 45.0        # Reference slope angle (deg) normalized to 1.0 risk weighting; "45도 이상이면 최대 위험 수준으로 본다"는 단순한 임시 모델 가정
-  downwind_dot_threshold: 0.3    # Dot product threshold for downwind direction alignment
-  fuel_risk_weight: 0.2          # Weight of fuel amount in risk score calculation
-  min_risk_score: 0.0            # Minimum risk score bound
-  max_risk_score: 1.0            # Maximum risk score bound
+  min_risk_score: 0.0            # Minimum risk score bound (numerical safety bound)
+  max_risk_score: 1.0            # Maximum risk score bound (numerical safety bound)
 
+  # --- Spread Mode Selection ---
+  # Supported modes:
+  #   - "geometric" (default baseline): spatial downwind cone + slope + fuel heuristic
+  #   - "ensemble" (experimental): N-step forward CA Monte Carlo prediction P_arrival(<=N)
+  spread_mode: "geometric"
+
+  # --- N-step CA Ensemble Settings (for spread_mode: "ensemble") ---
+  # Current prototype settings selected via empirical benchmarking:
+  # - steps: 10 provides a longer forward simulation horizon (affected envelope ~1 km in test scenario)
+  # - runs: 10 substantially improves Monte Carlo stability over 5 runs (MAD drops ~53%) with modest latency
+  # These are scenario/hardware-dependent prototype parameters, not universal scientific constants.
+  ensemble:
+    steps: 10                    # Forecast horizon steps forward (N)
+    runs: 10                     # Number of stochastic Monte Carlo simulation runs (M)
+
+  # --- Level 1 Geometric Spread Baseline Parameters (for spread_mode: "geometric") ---
+  downwind_buffer_cells: 3       # Grid radius to apply downwind proximity risk elevation (cell radius)
+  max_slope_degrees: 45.0        # Reference slope angle (deg) normalized to 1.0 slope score (S_slope)
+  downwind_dot_threshold: 0.3    # Dot product threshold for downwind direction alignment
+  spread_component_weights:
+    slope: 0.3333333333
+    fuel: 0.3333333333
+    downwind: 0.3333333333
+
+  # --- Level 2: Top-Level Composite Risk Weights (normalized at runtime so sum(W_i) = 1.0) ---
+  # PROVISIONAL SCENARIO / POLICY PARAMETERS:
+  #   risk_score = W_spread * S_spread + W_human * S_human + W_infra * S_infra
+  #                + W_property * S_property + W_secondary * S_secondary
+  #   where sum(W_i) = 1.0. Relative weights below are normalized at runtime.
+  #   S_spread is computed by the spread prediction layer (geometric or ensemble).
+  composite_weights:
+    spread: 0.0384
+    human: 0.6337
+    infrastructure: 0.1815
+    property: 0.0869
+    secondary_hazard: 0.0595
+
+  # --- Building type -> exposure/consequence component value mapping ---
+  # Maps each building_type raster code to an exposure contribution value S_i in [0.0, 1.0].
+  # building_type codes: 0=none, 1=RESIDENTIAL, 2=IMPORTANT, 3=CRITICAL,
+  #                      4=SECONDARY_HAZARD, 5=COMMERCIAL, 6=INDUSTRIAL, 7=OTHER
+  building_risk_values:
+    residential: 1.0             # building_type=1 -> S_human contribution
+    important: 0.7               # building_type=2 -> S_infra contribution
+    critical: 1.0                # building_type=3 -> S_infra contribution
+    secondary_hazard: 1.0        # building_type=4 -> S_secondary contribution
+    commercial: 1.0              # building_type=5 -> S_property contribution
+    industrial: 1.0              # building_type=6 -> S_property contribution
+    other: 0.0                   # building_type=7 -> no automatic risk elevation

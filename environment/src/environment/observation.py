@@ -187,7 +187,8 @@ class ObservationUpdateHandler:
             }
 
         # 4. Trigger dynamic recalculation of risk scores upon accepted update
-        update_grid_risk_scores(self._grid, self._ca_engine._config)
+        spread_scores = self._ca_engine.predict_spread()
+        update_grid_risk_scores(self._grid, self._ca_engine._config, spread_scores=spread_scores)
 
         return {
             "success": True,
