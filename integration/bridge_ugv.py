@@ -18,7 +18,7 @@ import config
 from interfaces.schema import ResourceStatus, LocalResponse, Observation
 
 from ugv.road_graph import RoadGraph
-from ugv.graph_data_demo import NODES, ROADS
+from ugv.graph_gpkg import NODES, ROADS   # 실제 도로망 (이전: graph_data_demo 시연용 6노드)
 from ugv import config as ugv_config
 from ugv.geo import distance_m
 
@@ -107,16 +107,18 @@ def send_ugv_command(task_id: str, assignment, force_response=None, force_reason
 
 
 def get_ugv_observation(resource_id: str, timestamp: float, task_id: str = None, decision_id: str = None) -> Observation:
+    # 도로 상태 관측. 목적지별 ETA·경로는 send_ugv_command(evaluate) 에서만 산출한다.
+    # (이전 동작: 고정 노드 F1 까지 경로 → 실제 도로망에는 F1 이 없다)
     g = _g()
     node = g.node(_home_node(resource_id))
-    route = g.find_route(_home_node(resource_id), "F1")
+    blocked = sum(1 for r in ROADS if g.get_road(r["road_id"]).blocked)
     return Observation(
         resource_id=resource_id,
         location_lat=node.lat,
         location_lon=node.lon,
         simulation_time_s=timestamp,
         observation_type="ROAD_STATUS",
-        value={"eta_sec": route.eta_s, "path": route.path, "reachable": route.reachable},
+        value={"node_id": node.node_id, "blocked_roads": blocked},
         task_id=task_id,
         decision_id=decision_id,
     )
@@ -127,28 +129,42 @@ def get_ugv_observation(resource_id: str, timestamp: float, task_id: str = None,
 # ---------------------------------------------------------------------------
 
 def demo() -> list[str]:
-    """박유홍님 Dijkstra + 도로차단 재탐색을 눈으로 보여준다. 로그 라인 리스트 반환."""
+    """Dijkstra + 도로차단 재탐색을 실제 도로망에서 보여준다. 로그 라인 리스트 반환.
+
+    거점 A(원통119) → B(기린119) 최단경로 위 도로를 하나씩 막아 보고
+    ① 우회로가 있는 도로  ② 막히면 도달 불가인 도로(산간 단일 도로) 를 하나씩 보여준다.
+    """
     g = _g()
     lines = []
-    r1 = g.find_route("A", "F1")
-    lines.append(f"  A→F1 정상:  도달={r1.reachable}  ETA={r1.eta_s}s  경로={'→'.join(r1.path or [])}")
 
-    g.set_blocked("E3", True)   # 최단 도로(J1-F1) 차단
-    r2 = g.find_route("A", "F1")
-    if r2.reachable:
-        lines.append(f"  E3 차단 후: 우회 성공  ETA={r2.eta_s}s  경로={'→'.join(r2.path or [])}")
-    else:
-        lines.append(f"  E3 차단 후: 도달 불가  막힌 도로={r2.blocked_road_id}")
+    def fmt(r):
+        return f"ETA={r.eta_s / 60:.1f}분  경유노드 {len(r.path)}개"
 
-    # 우회로까지 모두 차단 → 도달 불가 + 원인 도로 역추적
-    g.set_blocked("E2", True)
-    g.set_blocked("E4", True)
-    r3 = g.find_route("A", "F1")
-    lines.append(f"  E2·E4까지 차단: 도달={r3.reachable}  원인도로={r3.blocked_road_id}")
+    base = g.find_route("A", "B")
+    lines.append(f"  A→B 정상:  도달={base.reachable}  {fmt(base) if base.reachable else ''}")
+    if not base.reachable:
+        return lines
 
-    for rid in ("E3", "E2", "E4"):
-        g.set_blocked(rid, False)
+    shown_detour = shown_cut = False
+    for a, b in zip(base.path, base.path[1:]):
+        road = _road_between(g, a, b)
+        g.set_blocked(road, True)
+        r = g.find_route("A", "B")
+        g.set_blocked(road, False)
+        if r.reachable and r.eta_s - base.eta_s >= 60 and not shown_detour:   # 상·하행 병행 링크(+0분)는 우회로로 보지 않음
+            lines.append(f"  도로 {road} 차단: 우회 성공  {fmt(r)}  (+{(r.eta_s - base.eta_s) / 60:.1f}분)")
+            shown_detour = True
+        elif not r.reachable and not shown_cut:
+            lines.append(f"  도로 {road} 차단: 도달 불가  원인도로={r.blocked_road_id}  (우회로 없는 단일 도로)")
+            shown_cut = True
+        if shown_detour and shown_cut:
+            break
     return lines
+
+
+def _road_between(g: RoadGraph, a: str, b: str) -> str:
+    """인접 노드 a-b 를 잇는 도로 중 가장 빠른 것의 id."""
+    return min((road for nid, road in g.neighbors(a) if nid == b), key=lambda r: r.cost_s).road_id
 
 
 def reset():

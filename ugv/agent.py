@@ -74,7 +74,8 @@ class GroundResourceAgent:
 
         if not route.reachable:
             reason = "ROAD_BLOCKED" if route.blocked_road_id else "TARGET_UNREACHABLE"
-            return {"resource_id": rid, "response": "REJECT", "reason": reason}
+            return {"resource_id": rid, "response": "REJECT", "reason": reason,
+                    "blocked_road_id": route.blocked_road_id}
 
         return {
             "resource_id": rid,
@@ -120,6 +121,16 @@ class GroundResourceAgent:
             self.resource.current_node = None   # 주행 중 — 노드에 정지해 있지 않음
             self._target_node = target_node
         return started
+
+    async def stop(self) -> None:
+        """주행을 멈춘다. 멈춘 위치에서 가장 가까운 도로 노드에 선 것으로 보고 READY 로 돌린다."""
+        if self.driver is not None:
+            await self.driver.stop()
+        self.refresh()
+        node, _ = self.graph.nearest_node(self.resource.lat, self.resource.lon)
+        self.resource.current_node = node.node_id
+        self.resource.state = "READY"
+        self._target_node = None
 
     def check_arrival(self) -> None:
         """진행률을 보고 도착 여부를 확정한다. 주기적으로 호출한다."""

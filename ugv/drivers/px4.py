@@ -9,12 +9,15 @@ from dataclasses import dataclass
 from mavsdk_grpc import System
 from mavsdk_grpc.mission import MissionItem, MissionPlan
 
+from ..geo import distance_m
 from .base import MotionDriver
 
 log = logging.getLogger(__name__)
 
 TELEMETRY_RATE_HZ = 1.0
 ARM_SETTLE_S = 2.0   # arm 직후 곧바로 start_mission 하면 DENIED
+ACCEPT_RADIUS_M = 10.0                  # 웨이포인트 도착 반경. 2m 는 지나쳐 버린다
+MIN_WAYPOINT_GAP_M = 2 * ACCEPT_RADIUS_M
 
 
 @dataclass
@@ -44,6 +47,7 @@ class PX4Driver(MotionDriver):
     # --- 연결 / 텔레메트리 ---------------------------------------------
 
     async def connect(self) -> None:
+        log.info("PX4 연결 대기: %s (PX4 SITL 이 떠 있어야 한다)", self.address)
         await self._drone.connect(system_address=self.address)
         async for state in self._drone.core.connection_state():
             if state.is_connected:
@@ -132,6 +136,8 @@ class PX4Driver(MotionDriver):
             self._progress_task = None
         self._progress = (0, len(waypoints))
 
+        waypoints = self._thin(waypoints)
+        self._progress = (0, len(waypoints))
         plan = MissionPlan([self._waypoint(lat, lon) for lat, lon in waypoints])
         try:
             await self._drone.mission.upload_mission(plan)
@@ -148,6 +154,35 @@ class PX4Driver(MotionDriver):
         self._progress_task = asyncio.create_task(self._watch_progress())
         return True
 
+    async def stop(self) -> None:
+        """미션을 멈추고 HOLD 로 세운 뒤 disarm 한다. 하나가 실패해도 나머지는 시도한다."""
+        if self._progress_task:
+            self._progress_task.cancel()
+            self._progress_task = None
+        for name, call in (("pause_mission", self._drone.mission.pause_mission),
+                           ("hold", self._drone.action.hold),
+                           ("disarm", self._drone.action.disarm)):
+            try:
+                await call()
+                log.info("stop: %s 성공", name)
+            except Exception as e:
+                log.warning("stop: %s 실패: %s", name, e)
+
+    @staticmethod
+    def _thin(waypoints: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """직전 점과 MIN_WAYPOINT_GAP_M 보다 가까운 중간점을 뺀다. 마지막 점은 항상 남긴다.
+        도로망 교차로 노드는 수 m 간격으로 몰려 있어, 도착 반경(ACCEPT_RADIUS_M) 안에
+        다음 점이 들어가 있으면 rover 가 점을 건너뛰거나 도착 판정이 꼬인다."""
+        kept = [waypoints[0]]
+        for p in waypoints[1:-1]:
+            if distance_m(kept[-1], p) >= MIN_WAYPOINT_GAP_M:
+                kept.append(p)
+        if len(waypoints) > 1:
+            if distance_m(kept[-1], waypoints[-1]) < MIN_WAYPOINT_GAP_M and len(kept) > 1:
+                kept.pop()
+            kept.append(waypoints[-1])
+        return kept
+
     def _waypoint(self, lat: float, lon: float) -> MissionItem:
         nan = float("nan")
         return MissionItem(
@@ -157,7 +192,7 @@ class PX4Driver(MotionDriver):
             nan, nan,
             MissionItem.CameraAction.NONE,
             nan, nan,
-            10.0, nan, nan,       # acceptance_radius 10m — 2m 는 지나쳐 버린다
+            ACCEPT_RADIUS_M, nan, nan,
             MissionItem.VehicleAction.NONE,
         )
 

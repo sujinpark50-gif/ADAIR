@@ -31,5 +31,9 @@ class MotionDriver(ABC):
         """
 
     @abstractmethod
+    async def stop(self) -> None:
+        """주행을 멈추고 그 자리에 선다. 진행 중인 goto 는 취소된다."""
+
+    @abstractmethod
     def progress(self) -> tuple[int, int]:
         """(통과한 웨이포인트 수, 전체 웨이포인트 수)."""

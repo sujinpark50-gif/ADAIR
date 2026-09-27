@@ -66,9 +66,11 @@ def run():
     # 5) UGV: 목표 근처 노드가 없으면 임의 노드로 대체하지 않고 거절
     try:
         from integration import bridge_ugv
-        far = bridge_ugv.send_ugv_command("T", Assignment("T", "A-ugv1", 37.99, 128.14))
-        near = bridge_ugv.send_ugv_command("T", Assignment("T", "A-ugv1", 38.11465, 128.15694))
-        check("UGV 목표 15km 밖 → REJECT TARGET_UNREACHABLE (F1 대체 없음)",
+        # 실제 도로망(ugv/graph_gpkg.py) 기준: 영역 밖 좌표는 거절, 도로 노드 위 좌표는 수락
+        from ugv.graph_gpkg import NODES
+        far = bridge_ugv.send_ugv_command("T", Assignment("T", "A-ugv1", 37.50, 127.50))
+        near = bridge_ugv.send_ugv_command("T", Assignment("T", "A-ugv1", NODES[0]["lat"], NODES[0]["lon"]))
+        check("UGV 목표가 도로망 영역 밖 → REJECT TARGET_UNREACHABLE (임의 노드 대체 없음)",
               far.response == "REJECT" and far.reason == "TARGET_UNREACHABLE")
         check("UGV 목표가 도로 노드 근처 → ACCEPT", near.response == "ACCEPT")
     except Exception as e:  # noqa: BLE001

@@ -6,7 +6,12 @@
 # 기존 'mavsdk' 이름은 이제 다른 API(네이티브 바인딩)를 가리키므로
 # 'from mavsdk import System' 은 더 이상 동작하지 않는다.
 # 임포트는 'from mavsdk_grpc import System' 형태로 사용할 것.
-mavsdk-grpc
+mavsdk-grpc          # PX4 드라이버 (UGV_DRIVER=px4 일 때만)
+fastapi              # UGV 서버 (ugv/server.py)
+uvicorn              # UGV 서버 실행
+requests             # 커넥터 real 모드 (connectors/ugv_connector.py)
+# 도로망 변환 스크립트(ugv/tools/build_road_network.py)는 geopandas·rasterio 가 필요하지만
+# gpkg 가 바뀔 때만 1회 실행하므로 여기 넣지 않는다:  pip install geopandas rasterio
 
 # --- 공통 ---
 pytest
