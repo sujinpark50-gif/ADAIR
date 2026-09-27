@@ -15,6 +15,7 @@
 pip install fastapi uvicorn
 UGV_DRIVER=sim uvicorn ugv.server:app --port 8100     # PX4 없이 (좌표 계산 주행)
 UGV_DRIVER=px4 uvicorn ugv.server:app --port 8100     # UGV_PX4_RESOURCES 자원만 PX4, 나머지 sim
+GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_rover) + Gazebo 창
 ```
 
 | 환경변수 | 기본값 | 의미 |
@@ -40,6 +41,7 @@ UGV_DRIVER=px4 uvicorn ugv.server:app --port 8100     # UGV_PX4_RESOURCES 자원
 | GET | `/ugv/{resource_id}/state` | 자원 1대 상태 |
 | POST | `/ugv/{resource_id}/evaluate` | 수행 가능성 판단 (**움직이지 않음**) |
 | POST | `/ugv/{resource_id}/execute` | 주행 시작 (**Safety ALLOW 이후에만 호출**) |
+| POST | `/ugv/{resource_id}/stop` | 주행 중지 |
 | GET | `/ugv/{resource_id}/task/{task_id}` | 주행 진행·결과 |
 | GET | `/ugv/{resource_id}/observation` | 현재 위치의 도로 상태 관측 |
 | GET | `/graph/nodes/{node_id}` | 도로 노드 좌표 |
@@ -120,28 +122,36 @@ ETA 는 도로 길이 ÷ 도로등급별 속도(잠정: 고속국도 80, 일반�
 
 ## POST /ugv/{resource_id}/execute
 
-Safety ALLOW 이후 호출한다. 주행을 시작하고 즉시 반환한다. 시작 직전에 다시 판단하므로, evaluate 이후 도로가 막혔으면 거절된다.
+Safety ALLOW 이후 호출한다. 주행을 시작하고 즉시 반환한다.
+UAV 와 같이 **화재 좌표(`target`)** 를 받는다. 목적지 도로 노드는 evaluate 와 같은 규칙으로 다시 고르므로, evaluate 이후 도로가 막혔으면 여기서 거절된다.
 
-**요청**
+**요청** — `target` 과 `target_node` 중 하나
 
 ```json
-{"task_id": "task-101", "decision_id": "dec-001", "target_node": "494852"}
+{"task_id": "task-101", "decision_id": "dec-001", "target": {"lat": 38.0444, "lon": 128.2028}}
 ```
 
-`target_node` 는 evaluate 응답의 `target_node.node_id`.
+`target_node` 는 노드 id 를 직접 지정할 때만 쓴다 (시험·시연용).
 
 **응답 200**
 
 ```json
 {"task_id": "task-101", "resource_id": "A-ugv1", "status": "STARTED",
- "tracking_url": "/ugv/A-ugv1/task/task-101"}
+ "tracking_url": "/ugv/A-ugv1/task/task-101",
+ "target_node": {"node_id": "494852", "lat": 38.043899, "lon": 128.202801, "snap_m": 55.6},
+ "eta_sec": 436}
 ```
 
 | 코드 | 의미 |
 |---|---|
 | 404 | 자원 또는 도로 노드 없음 |
-| 409 | 다른 task 수행 중, 같은 task 진행 중, 또는 재판단 결과 REJECT |
+| 409 | 다른 task 수행 중, 같은 task 진행 중, 또는 판단 결과 REJECT (`detail` 에 reason) |
+| 422 | `target`·`target_node` 둘 다 없음 |
 | 500 | 드라이버가 주행을 시작하지 못함 (PX4 arm·미션 거부 등) |
+
+## POST /ugv/{resource_id}/stop
+
+주행을 멈춘다. 진행 중 task 는 `CANCELLED`. 멈춘 위치에서 가장 가까운 도로 노드에 선 것으로 보고 `READY` 로 돌린다. PX4: 미션 일시정지 → HOLD → disarm.
 
 ## GET /ugv/{resource_id}/task/{task_id}
 
@@ -199,7 +209,7 @@ Safety ALLOW 이후 호출한다. 주행을 시작하고 즉시 반환한다. �
 |---|---|---|
 | `get_ugv_status(base)` | `GET /ugv?base=` | `ResourceStatus` 목록. 서버 연결 실패 시 빈 목록 |
 | `send_ugv_command(task_id, assignment)` | `POST /evaluate` (좌표) | `LocalResponse`. ETA·목적지 노드는 `counter_constraint` 에 임시로 실음 (공통 형식에 칸이 생기면 이동) |
-| `get_ugv_observation(resource_id, ts, task_id, ...)` | ACCEPT 된 task: `POST /execute` → `GET /task` 폴링 / 그 외: `GET /observation` | `Observation` (`ROAD_STATUS`) |
+| `get_ugv_observation(resource_id, ts, task_id, ...)` | ACCEPT 된 task: `POST /execute`(evaluate 때의 좌표) → `GET /task` 폴링 / 그 외: `GET /observation` | `Observation` (`ROAD_STATUS`) |
 
 ## 알려진 제한
 

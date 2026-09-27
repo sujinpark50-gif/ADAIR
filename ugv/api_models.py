@@ -55,7 +55,8 @@ class EvaluateResponse(BaseModel):
 class ExecuteRequest(BaseModel):
     task_id: str
     decision_id: str
-    target_node: str                   # evaluate 응답의 target_node.node_id
+    target: LatLon | None = None       # 화재 좌표 (권장, UAV 와 같은 방식). evaluate 와 같은 규칙으로 목적지를 고른다
+    target_node: str | None = None     # 도로 노드 id 를 직접 지정할 때 (target 대신)
 
 
 class ExecuteResponse(BaseModel):
@@ -63,6 +64,8 @@ class ExecuteResponse(BaseModel):
     resource_id: str
     status: Literal["STARTED"]
     tracking_url: str
+    target_node: TargetNode            # 실제로 향하는 도로 노드
+    eta_sec: int                       # 출발 시점 도로망 기준 ETA
 
 
 class TaskStatus(BaseModel):

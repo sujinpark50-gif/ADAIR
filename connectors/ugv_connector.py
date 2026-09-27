@@ -119,8 +119,8 @@ def _send_ugv_command_mock(assignment, force_response, force_reason) -> LocalRes
 # Real 구현 — ugv/server.py REST API 연동
 # ---------------------------------------------------------------------------
 
-# evaluate 에서 고른 도로 노드를 execute 때 쓰기 위해 기억한다.
-# main.py 는 관측 호출에 목표를 넘기지 않으므로 (task_id, resource_id) 로 찾는다.
+# ACCEPT 된 task 의 목표 좌표를 execute 때 쓰기 위해 기억한다.
+# main.py 는 UGV 관측 호출에 목표(assignment)를 넘기지 않으므로 (task_id, resource_id) 로 찾는다.
 _evaluated: dict[tuple[str, str], dict] = {}
 
 
@@ -175,7 +175,7 @@ def _send_ugv_command_real(task_id: str, decision_id: str, assignment) -> LocalR
     data = resp.json()
 
     if data["verdict"] == "ACCEPT":
-        _evaluated[(task_id, rid)] = data
+        _evaluated[(task_id, rid)] = {**data, "target": body["target"]}
     else:
         _evaluated.pop((task_id, rid), None)
 
@@ -206,9 +206,9 @@ def _get_ugv_observation_real(resource_id, timestamp, task_id, decision_id,
                            observation_type=d["observation_type"], value=d["value"],
                            task_id=task_id, decision_id=decision_id)
 
-    node_id = evaluated["target_node"]["node_id"]
+    # UAV 와 같이 화재 좌표로 실행을 요청한다. 목적지 노드는 서버가 evaluate 와 같은 규칙으로 다시 고른다
     exec_body = {"task_id": task_id, "decision_id": decision_id or evaluated["decision_id"],
-                 "target_node": node_id}
+                 "target": evaluated["target"]}
     resp = requests.post(f"{url}/ugv/{resource_id}/execute", json=exec_body, timeout=10)
     if resp.status_code == 409:   # evaluate 이후 도로가 막혔거나 다른 task 수행 중
         raise RuntimeError(f"UGV 실행 거부: {resp.json().get('detail')}")

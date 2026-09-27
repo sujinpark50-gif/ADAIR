@@ -125,65 +125,64 @@ async def get_state(resource_id: str):
     return _state(_agent(resource_id))
 
 
-@app.post("/ugv/{resource_id}/evaluate", response_model=EvaluateResponse)
-async def evaluate(resource_id: str, req: EvaluateRequest):
-    """수행 가능성 판단. 차를 움직이지 않는다.
+def _decide(agent: GroundResourceAgent, target: LatLon | None, target_node: str | None) -> dict:
+    """목적지 도로 노드를 고르고 갈 수 있는지 판단한다. evaluate·execute 가 같은 규칙을 쓴다.
 
     target(화재 좌표)을 주면 화재에서 가장 가까운 도로 노드를 목적지로 삼는다.
       - 그 노드가 TARGET_SNAP_M 보다 멀면 TARGET_UNREACHABLE
       - 그 노드로 못 가면 기본은 REJECT. APPROACH_FALLBACK=1 이면 화재에서
         APPROACH_MAX_M 안의 다음 노드들을 가까운 순으로 시도한다 (ugv/config.py)
+    반환: verdict, eta_sec, reason, detail, target_node(TargetNode|None), path
     """
-    agent = _agent(resource_id)
-    base = dict(task_id=req.task_id, decision_id=req.decision_id, resource_id=resource_id)
+    rid = agent.resource.resource_id
 
-    if req.target_node is not None:
+    def reject(reason, detail, tn=None):
+        return dict(verdict="REJECT", eta_sec=None, reason=reason, detail=detail, target_node=tn, path=None)
+
+    if target_node is not None:
         try:
-            n = fleet.graph.node(req.target_node)
+            n = fleet.graph.node(target_node)
         except KeyError:
-            raise HTTPException(404, f"도로 노드 {req.target_node} 없음")
+            raise HTTPException(404, f"도로 노드 {target_node} 없음")
         candidates = [(n, 0.0)]
-    elif req.target is not None:
-        nearest, d = fleet.graph.nearest_node(req.target.lat, req.target.lon)
+    elif target is not None:
+        nearest, d = fleet.graph.nearest_node(target.lat, target.lon)
         if d > config.TARGET_SNAP_M:
-            return EvaluateResponse(
-                **base, verdict="REJECT", eta_sec=None, reason="TARGET_UNREACHABLE",
-                detail=f"가장 가까운 도로 노드가 {d:.0f} m 떨어짐 (허용 {config.TARGET_SNAP_M:.0f} m)",
-                target_node=None, path=None,
-            )
+            return reject("TARGET_UNREACHABLE",
+                          f"가장 가까운 도로 노드가 {d:.0f} m 떨어짐 (허용 {config.TARGET_SNAP_M:.0f} m)")
         candidates = [(nearest, d)]
         if config.APPROACH_FALLBACK:   # 가장 가까운 노드로 못 가면 반경 안 다음 노드로
-            candidates += [c for c in fleet.graph.nodes_within(req.target.lat, req.target.lon,
-                                                               config.APPROACH_MAX_M)
+            candidates += [c for c in fleet.graph.nodes_within(target.lat, target.lon, config.APPROACH_MAX_M)
                            if c[0].node_id != nearest.node_id][:MAX_TARGET_CANDIDATES - 1]
     else:
         raise HTTPException(422, "target 또는 target_node 중 하나가 필요하다")
 
     first_reject = None
     for node, snap_m in candidates:
-        target = TargetNode(node_id=node.node_id, lat=node.lat, lon=node.lon, snap_m=round(snap_m, 1))
+        tn = TargetNode(node_id=node.node_id, lat=node.lat, lon=node.lon, snap_m=round(snap_m, 1))
         result = agent.evaluate(node.node_id)
         if result["response"] == "ACCEPT":
-            return EvaluateResponse(
-                **base, verdict="ACCEPT", eta_sec=round(result["eta_s"]), reason=None,
-                detail=None if first_reject is None else f"가장 가까운 노드는 도달 불가, {snap_m:.0f} m 지점으로 접근",
-                target_node=target, path=result["path"],
-            )
+            return dict(verdict="ACCEPT", eta_sec=round(result["eta_s"]), reason=None,
+                        detail=None if first_reject is None else f"가장 가까운 노드는 도달 불가, {snap_m:.0f} m 지점으로 접근",
+                        target_node=tn, path=result["path"])
         if result["reason"] == "BUSY":
-            return EvaluateResponse(**base, verdict="REJECT", eta_sec=None, reason="BUSY",
-                                    detail=f"수행 중 task {_task_of.get(resource_id)}",
-                                    target_node=None, path=None)
-        first_reject = first_reject or (result, target)
+            return reject("BUSY", f"수행 중 task {_task_of.get(rid)}")
+        first_reject = first_reject or (result, tn)
 
-    result, target = first_reject
+    result, tn = first_reject
     blocked = result.get("blocked_road_id")
-    return EvaluateResponse(
-        **base, verdict="REJECT", eta_sec=None, reason=result["reason"],
-        detail=((f"후보 노드 {len(candidates)}개 모두 도달 불가" if len(candidates) > 1
-                 else f"화재에서 가장 가까운 노드 {target.node_id}({target.snap_m:.0f} m) 도달 불가")
-                + (f", 차단 도로 {blocked}" if blocked else "")),
-        target_node=target, path=None,
-    )
+    return reject(result["reason"],
+                  (f"후보 노드 {len(candidates)}개 모두 도달 불가" if len(candidates) > 1
+                   else f"화재에서 가장 가까운 노드 {tn.node_id}({tn.snap_m:.0f} m) 도달 불가")
+                  + (f", 차단 도로 {blocked}" if blocked else ""), tn)
+
+
+@app.post("/ugv/{resource_id}/evaluate", response_model=EvaluateResponse)
+async def evaluate(resource_id: str, req: EvaluateRequest):
+    """수행 가능성 판단. 차를 움직이지 않는다. 목적지 선정 규칙은 _decide 참고."""
+    agent = _agent(resource_id)
+    return EvaluateResponse(task_id=req.task_id, decision_id=req.decision_id, resource_id=resource_id,
+                            **_decide(agent, req.target, req.target_node))
 
 
 @app.get("/ugv/{resource_id}/observation")
@@ -251,30 +250,31 @@ async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str
 
 @app.post("/ugv/{resource_id}/execute", response_model=ExecuteResponse)
 async def execute(resource_id: str, req: ExecuteRequest):
-    """Safety ALLOW 이후 호출. 주행을 시작하고 즉시 반환한다. 진행은 tracking_url 로 조회."""
+    """Safety ALLOW 이후 호출. 주행을 시작하고 즉시 반환한다. 진행은 tracking_url 로 조회.
+
+    UAV 와 같이 target(화재 좌표)을 받는다. 목적지 노드는 evaluate 와 같은 규칙(_decide)으로
+    다시 고른다 — evaluate 이후 도로가 막혔으면 여기서 409 로 거절된다.
+    """
     agent = _agent(resource_id)
     if _task_of.get(resource_id):
         raise HTTPException(409, f"{resource_id} 는 task {_task_of[resource_id]} 수행 중")
     if req.task_id in _tasks and _tasks[req.task_id]["status"] in ("STARTED", "IN_PROGRESS"):
         raise HTTPException(409, f"task {req.task_id} 이미 진행 중")
-    try:
-        fleet.graph.node(req.target_node)
-    except KeyError:
-        raise HTTPException(404, f"도로 노드 {req.target_node} 없음")
 
-    # execute 직전에 다시 판단한다 (evaluate 이후 도로가 막혔을 수 있다)
-    check = agent.evaluate(req.target_node)
-    if check["response"] != "ACCEPT":
-        raise HTTPException(409, f"실행 불가: {check['reason']}")
-    if not await agent.execute(req.target_node):
+    d = _decide(agent, req.target, req.target_node)
+    if d["verdict"] != "ACCEPT":
+        raise HTTPException(409, f"실행 불가: {d['reason']} — {d['detail']}")
+    node_id = d["target_node"].node_id
+    if not await agent.execute(node_id):
         raise HTTPException(500, "드라이버가 주행을 시작하지 못했다")
 
     _tasks[req.task_id] = {"task_id": req.task_id, "resource_id": resource_id, "status": "STARTED",
-                           "target_node": req.target_node, "progress": None, "observation": None}
+                           "target_node": node_id, "progress": None, "observation": None}
     _task_of[resource_id] = req.task_id
-    _watchers[req.task_id] = asyncio.create_task(_watch_task(req.task_id, agent, req.target_node))
+    _watchers[req.task_id] = asyncio.create_task(_watch_task(req.task_id, agent, node_id))
     return ExecuteResponse(task_id=req.task_id, resource_id=resource_id, status="STARTED",
-                           tracking_url=f"/ugv/{resource_id}/task/{req.task_id}")
+                           tracking_url=f"/ugv/{resource_id}/task/{req.task_id}",
+                           target_node=d["target_node"], eta_sec=d["eta_sec"])
 
 
 @app.post("/ugv/{resource_id}/stop")
