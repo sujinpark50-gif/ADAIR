@@ -32,7 +32,7 @@ cd "$PX4_DIR"
 echo "인스턴스 $INSTANCE  홈=($LAT, $LON, 0m)  포트=$((14540 + INSTANCE))  world 파티션=ugv$INSTANCE"
 
 PX4_SYS_AUTOSTART=4009 \
-PX4_SIM_MODEL=gz_rover_differential \
+PX4_SIM_MODEL=gz_r1_rover \
 PX4_HOME_LAT="$LAT" \
 PX4_HOME_LON="$LON" \
 PX4_HOME_ALT=0 \

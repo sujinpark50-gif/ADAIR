@@ -20,7 +20,7 @@ PX4_BASE_PORT = 14540
 PX4_RESOURCES = [r for r in os.getenv("UGV_PX4_RESOURCES", "A-ugv1").split(",") if r]
 
 # 주행 파라미터 — 실측 보정 필요
-CRUISE_SPEED_MPS = 3.0
+CRUISE_SPEED_MPS = 2.0
 MISSION_ALT_M = 0.0      # 지상차량. 홈 고도 0 기준 상대 0m
 ARM_SETTLE_S = 2.0
 
