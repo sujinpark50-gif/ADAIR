@@ -4,11 +4,13 @@
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 from mavsdk_grpc import System
 from mavsdk_grpc.mission import MissionItem, MissionPlan
 
+from .. import config
 from ..geo import distance_m
 from .base import MotionDriver
 
@@ -26,6 +28,9 @@ class Snapshot:
     lon: float = float("nan")
     battery_pct: float = float("nan")   # MAVSDK remaining_percent 원값 그대로
     flight_mode: str = "UNKNOWN"
+    armed: bool = False
+    rel_alt_m: float = 0.0              # 홈 기준 상대고도. 지상차량은 0 근처여야 한다
+    updated_at: float = 0.0             # 마지막 위치 수신 시각 (monotonic)
 
 
 class PX4Driver(MotionDriver):
@@ -80,6 +85,7 @@ class PX4Driver(MotionDriver):
             asyncio.create_task(self._watch_position()),
             asyncio.create_task(self._watch_battery()),
             asyncio.create_task(self._watch_flight_mode()),
+            asyncio.create_task(self._watch_armed()),
         ]
 
     async def _watch_position(self) -> None:
@@ -87,6 +93,8 @@ class PX4Driver(MotionDriver):
             async for p in self._drone.telemetry.position():
                 self.snapshot.lat = p.latitude_deg
                 self.snapshot.lon = p.longitude_deg
+                self.snapshot.rel_alt_m = p.relative_altitude_m
+                self.snapshot.updated_at = time.monotonic()
         except Exception:
             log.exception("position 구독 종료")
 
@@ -103,6 +111,13 @@ class PX4Driver(MotionDriver):
                 self.snapshot.flight_mode = str(m)
         except Exception:
             log.exception("flight_mode 구독 종료")
+
+    async def _watch_armed(self) -> None:
+        try:
+            async for a in self._drone.telemetry.armed():
+                self.snapshot.armed = a
+        except Exception:
+            log.exception("armed 구독 종료")
 
     async def close(self) -> None:
         """백그라운드 태스크 정리."""
@@ -126,6 +141,20 @@ class PX4Driver(MotionDriver):
 
     def progress(self) -> tuple[int, int]:
         return self._progress
+
+    def fault(self) -> str | None:
+        """미션 수행 중(웨이포인트가 남아 있을 때)만 판정한다. 확정 지연은 server 가 한다."""
+        s, (cur, total) = self.snapshot, self._progress
+        if s.updated_at and time.monotonic() - s.updated_at > config.STALE_AFTER_S:
+            return f"TELEMETRY_LOST: 위치 수신 {time.monotonic() - s.updated_at:.0f}초 없음"
+        if s.rel_alt_m < config.FALL_ALT_M:
+            return f"VEHICLE_FAULT: 상대고도 {s.rel_alt_m:.1f} m (추락)"
+        if total and cur < total:
+            if not s.armed:
+                return "VEHICLE_FAULT: 미션 중 disarm"
+            if "MISSION" not in s.flight_mode:
+                return f"VEHICLE_FAULT: 미션 중 모드 이탈 ({s.flight_mode})"
+        return None
 
     async def goto(self, waypoints: list[tuple[float, float]]) -> bool:
         if not waypoints:

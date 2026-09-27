@@ -1,7 +1,13 @@
+import math
+import time
+
 from .drivers.base import MotionDriver
+from .geo import to_ned
 from .resource import GroundResource
 from .road_graph import RoadGraph
-import time
+
+# 이상 코드 → evaluate 거절 사유 (공통 계약 RejectReason 에 있는 값만 쓴다)
+FAULT_REASON = {"TELEMETRY_LOST": "COMMUNICATION_FAILURE"}   # 나머지(STALLED·OFF_ROUTE·VEHICLE_FAULT)는 FAILSAFE_ACTIVE
 
 
 class GroundResourceAgent:
@@ -17,6 +23,8 @@ class GroundResourceAgent:
         self.graph = graph
         self.driver = driver
         self._target_node: str | None = None
+        self.route: list[tuple[float, float]] = []   # 주행 중 경로 (출발 노드 포함 노드 좌표) — 이탈 판정용
+        self.fault: str | None = None                # 'CODE: 설명'. 있으면 UNAVAILABLE, /stop 으로 해제
 
     def refresh(self) -> None:
         """드라이버 스냅샷을 자원 상태로 옮긴다.
@@ -62,6 +70,11 @@ class GroundResourceAgent:
         REJECT  -> reason (BUSY / ROAD_BLOCKED / TARGET_UNREACHABLE)
         """
         rid = self.resource.resource_id
+
+        if self.resource.state == "UNAVAILABLE":
+            code = (self.fault or "UNKNOWN").split(":")[0]
+            return {"resource_id": rid, "response": "REJECT",
+                    "reason": FAULT_REASON.get(code, "FAILSAFE_ACTIVE"), "fault": self.fault}
 
         if self.resource.state != "READY":
             return {"resource_id": rid, "response": "REJECT", "reason": "BUSY"}
@@ -110,13 +123,12 @@ class GroundResourceAgent:
         if self.driver is None:
             return False
 
-        coords = [
-            (self.graph.node(n).lat, self.graph.node(n).lon)
-            for n in result["path"][1:]      # 출발 노드 제외
-        ]
-        
-        started = await self.driver.goto(coords)
+        route = [(self.graph.node(n).lat, self.graph.node(n).lon) for n in result["path"]]
+        if len(route) == 1:
+            return True     # 이미 목적지 노드에 있다 — 움직일 것 없이 READY 그대로 (감시가 곧바로 도착 처리)
+        started = await self.driver.goto(route[1:])      # 출발 노드 제외
         if started:
+            self.route = route
             self.resource.state = "RUNNING"
             self.resource.current_node = None   # 주행 중 — 노드에 정지해 있지 않음
             self._target_node = target_node
@@ -131,6 +143,32 @@ class GroundResourceAgent:
         self.resource.current_node = node.node_id
         self.resource.state = "READY"
         self._target_node = None
+        self.route, self.fault = [], None
+
+    async def fail(self, fault: str) -> None:
+        """주행 중 이상. 차를 세우고 UNAVAILABLE 로 둔다. 운영자가 /stop 으로 확인해야 READY 로 돌아온다."""
+        if self.driver is not None:
+            await self.driver.stop()
+        self.refresh()
+        self.resource.state = "UNAVAILABLE"
+        self.resource.current_node = None
+        self._target_node = None
+        self.fault = fault
+
+    def off_route_m(self) -> float:
+        """현재 위치에서 경로(노드를 이은 꺾은선)까지 최단 거리(m). 경로가 없으면 0."""
+        if len(self.route) < 2:
+            return 0.0
+        here = (self.resource.lat, self.resource.lon)
+        best = math.inf
+        for a, b in zip(self.route, self.route[1:]):
+            ay, ax = to_ned(*a, *here)          # 현재 위치 기준 로컬 좌표 (북, 동)
+            by, bx = to_ned(*b, *here)
+            dx, dy = bx - ax, by - ay
+            seg2 = dx * dx + dy * dy
+            t = 0.0 if seg2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / seg2))
+            best = min(best, math.hypot(ax + t * dx, ay + t * dy))
+        return best
 
     def check_arrival(self) -> None:
         """진행률을 보고 도착 여부를 확정한다. 주기적으로 호출한다."""
@@ -141,3 +179,4 @@ class GroundResourceAgent:
             self.resource.current_node = self._target_node
             self.resource.state = "READY"
             self._target_node = None
+            self.route = []

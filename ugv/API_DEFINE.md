@@ -60,7 +60,7 @@ GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_r
 | `resource_id` | string | `A-ugv1`, `A-fire1`, `B-ugv1` |
 | `resource_type` | string | `UGV` / `FIRE_ENGINE` |
 | `base` | string | `A` / `B` |
-| `state` | string | `READY` / `RUNNING` |
+| `state` | string | `READY` / `RUNNING` / `UNAVAILABLE` (주행 중 이상. `/stop` 으로 해제) |
 | `position.lat` / `position.lon` | float | 현재 위치 |
 | `fuel_pct` | float | 0~100. sim: 1 km 당 1% 감소, px4: 배터리 값 |
 | `current_node` | string \| null | 노드에 정지 중일 때만 값. 주행 중 `null` |
@@ -68,6 +68,7 @@ GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_r
 | `driver` | string | `sim` / `px4` |
 | `driver_status` | string | sim: `IDLE`/`MISSION`/`ARRIVED`, px4: flight mode |
 | `updated_at` | float | 마지막 위치 반영 시각 (epoch s) |
+| `fault` | string \| null | `UNAVAILABLE` 일 때 이상 내용 `CODE: 설명` |
 
 없는 자원이면 `404`.
 
@@ -113,6 +114,7 @@ GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_r
 |---|---|---|
 | 1 | `TARGET_UNREACHABLE` | 화재에서 가장 가까운 도로 노드가 `UGV_TARGET_SNAP_M` 보다 멂 |
 | 2 | `BUSY` | 다른 task 주행 중 |
+| 2 | `FAILSAFE_ACTIVE` / `COMMUNICATION_FAILURE` | 자원이 `UNAVAILABLE` (아래 주행 감시). `detail` 에 이상 내용 |
 | 3 | `ROAD_BLOCKED` | 경로가 차단 도로 때문에 끊김. `detail` 에 원인 도로 id |
 | 4 | `TARGET_UNREACHABLE` | 차단과 무관하게 도로망이 끊겨 있음 |
 
@@ -151,18 +153,32 @@ UAV 와 같이 **화재 좌표(`target`)** 를 받는다. 목적지 도로 노�
 
 ## POST /ugv/{resource_id}/stop
 
-주행을 멈춘다. 진행 중 task 는 `CANCELLED`. 멈춘 위치에서 가장 가까운 도로 노드에 선 것으로 보고 `READY` 로 돌린다. PX4: 미션 일시정지 → HOLD → disarm.
+주행을 멈춘다. 진행 중 task 는 `CANCELLED`. `UNAVAILABLE` 자원을 `READY` 로 복귀시키는 방법이기도 하다. 멈춘 위치에서 가장 가까운 도로 노드에 선 것으로 보고 `READY` 로 돌린다. PX4: 미션 일시정지 → HOLD → disarm.
 
 ## GET /ugv/{resource_id}/task/{task_id}
 
 | 필드 | 설명 |
 |---|---|
-| `status` | `STARTED` → `IN_PROGRESS` → `COMPLETED` / `FAILED` |
+| `status` | `STARTED` → `IN_PROGRESS` → `COMPLETED` / `FAILED` / `CANCELLED` |
 | `progress` | `{"phase": "ENROUTE" \| "ARRIVED", "waypoint": i, "total": n}` |
 | `observation` | COMPLETED 일 때 `{"observation_type": "ROAD_STATUS", "arrived_node", "position", "fuel_pct"}` |
 | `error` | FAILED 일 때 |
 
 도착은 도로 노드 도착이다. **화재를 관측했다는 뜻이 아니다.**
+
+### 주행 감시 (watchdog)
+
+주행 중 0.5 초마다 확인한다. 이상이 확정되면 task 는 `FAILED`(`error` = `CODE: 설명`), 차는 정지(HOLD), 자원은 `UNAVAILABLE` 이 된다.
+**자동으로 READY 로 돌아오지 않는다** — 떨어지거나 고장 난 차가 곧바로 READY 가 되면 총괄이 다시 배정하므로, 운영자가 확인하고 `POST /stop` 으로 복귀시킨다.
+
+| CODE | 조건 (기본값, `ugv/config.py`) | evaluate reason |
+|---|---|---|
+| `STALLED` | `STALL_TIMEOUT_S`(60 s) 동안 `STALL_MOVE_M`(10 m) 도 못 움직이고 웨이포인트도 그대로 | `FAILSAFE_ACTIVE` |
+| `OFF_ROUTE` | 경로(노드를 이은 선)에서 `OFF_ROUTE_M`(100 m) 넘게 벗어남 | `FAILSAFE_ACTIVE` |
+| `VEHICLE_FAULT` | PX4: 상대고도 < `FALL_ALT_M`(-5 m, 추락), 미션 중 disarm, 미션 중 MISSION 모드 이탈 | `FAILSAFE_ACTIVE` |
+| `TELEMETRY_LOST` | PX4: 위치 수신이 `STALE_AFTER_S`(10 s) 넘게 없음 | `COMMUNICATION_FAILURE` |
+
+`VEHICLE_FAULT`·`TELEMETRY_LOST` 는 출발 후 `FAULT_GRACE_S`(5 s) 이후부터, `FAULT_CONFIRM_S`(3 s) 이상 계속될 때만 확정한다 (arm·모드 전환 중 순간 신호 무시).
 
 ## GET /ugv/{resource_id}/observation
 

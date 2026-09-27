@@ -13,6 +13,7 @@
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -24,6 +25,7 @@ from .api_models import (
     FireCellsRequest, LatLon, TargetNode, TaskStatus, UgvState,
 )
 from .fleet import GroundFleet
+from .geo import distance_m
 from . import graph_gpkg
 from .graph_gpkg import ROAD_CELLS
 from .road_status import RoadStatus
@@ -111,6 +113,7 @@ def _state(agent: GroundResourceAgent) -> UgvState:
         driver=_driver_kind(agent),
         driver_status=agent.driver.status() if agent.driver else "NONE",
         updated_at=r.updated_at,
+        fault=agent.fault,
     )
 
 
@@ -167,6 +170,8 @@ def _decide(agent: GroundResourceAgent, target: LatLon | None, target_node: str 
                         target_node=tn, path=result["path"])
         if result["reason"] == "BUSY":
             return reject("BUSY", f"수행 중 task {_task_of.get(rid)}")
+        if result.get("fault"):                 # UNAVAILABLE — 주행 중 이상, /stop 으로 해제
+            return reject(result["reason"], f"자원 이상 [{result['fault']}] — 확인 후 /stop 으로 복귀")
         first_reject = first_reject or (result, tn)
 
     result, tn = first_reject
@@ -214,10 +219,46 @@ async def get_node(node_id: str):
 
 # --- 실행 -------------------------------------------------------------------
 
+def _check_run(agent: GroundResourceAgent, w: dict, now: float) -> str | None:
+    """주행 감시 1회. 이상이 확정되면 'CODE: 설명', 아니면 None.
+    w: task 별 감시 상태 (started, mark_t, mark_pos, mark_wp, fault_since)."""
+    r, (cur, _) = agent.resource, agent.driver.progress()
+    pos = (r.lat, r.lon)
+
+    # 1) 멈춤 — STALL_MOVE_M 이상 움직이거나 웨이포인트를 넘기면 기준점을 새로 잡는다
+    if cur != w["mark_wp"] or distance_m(pos, w["mark_pos"]) >= config.STALL_MOVE_M:
+        w.update(mark_t=now, mark_pos=pos, mark_wp=cur)
+    elif now - w["mark_t"] > config.STALL_TIMEOUT_S:
+        return (f"STALLED: {config.STALL_TIMEOUT_S:.0f}초간 이동 "
+                f"{distance_m(pos, w['mark_pos']):.0f} m, 웨이포인트 {cur} 에서 멈춤")
+
+    # 2) 경로 이탈
+    off = agent.off_route_m()
+    if off > config.OFF_ROUTE_M:
+        return f"OFF_ROUTE: 경로에서 {off:.0f} m 벗어남 (허용 {config.OFF_ROUTE_M:.0f} m)"
+
+    # 3) 차량 이상 (드라이버가 판정) — 출발 직후 유예, 일정 시간 계속될 때만 확정
+    fault = agent.driver.fault() if now - w["started"] > config.FAULT_GRACE_S else None
+    if fault is None:
+        w["fault_since"] = None
+    elif w["fault_since"] is None:
+        w["fault_since"] = now
+    elif now - w["fault_since"] >= config.FAULT_CONFIRM_S:
+        return fault
+    return None
+
+
 async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str) -> None:
-    """도착할 때까지 진행률을 기록하고, 도착하면 COMPLETED 로 바꾼다."""
+    """도착할 때까지 진행률을 기록한다. 도착하면 COMPLETED, 이상이 확정되면 FAILED.
+
+    이상(_check_run)이 나면 차를 세우고 자원을 UNAVAILABLE 로 둔다.
+    떨어지거나 고장 난 차가 곧바로 READY 가 되면 총괄이 또 배정하므로, 운영자가 /stop 으로 풀어야 한다.
+    """
     rid = agent.resource.resource_id
     t = _tasks[task_id]
+    now = time.monotonic()
+    w = dict(started=now, mark_t=now, mark_pos=(agent.resource.lat, agent.resource.lon),
+             mark_wp=0, fault_since=None)
     try:
         while True:
             agent.refresh()
@@ -227,6 +268,13 @@ async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str
             t["progress"] = {"phase": "ENROUTE", "waypoint": cur, "total": total}
             if agent.resource.state == "READY" and agent.resource.current_node == target_node:
                 break
+            fault = _check_run(agent, w, time.monotonic())
+            if fault:
+                await agent.fail(fault)
+                t["status"], t["error"] = "FAILED", fault
+                t["progress"] = {"phase": "FAILED", "waypoint": cur, "total": total}
+                log.warning("task %s 실패 — %s", task_id, fault)
+                return
             await asyncio.sleep(0.5)
         r = agent.resource
         t["status"] = "COMPLETED"
@@ -265,6 +313,16 @@ async def execute(resource_id: str, req: ExecuteRequest):
     if d["verdict"] != "ACCEPT":
         raise HTTPException(409, f"실행 불가: {d['reason']} — {d['detail']}")
     node_id = d["target_node"].node_id
+    if len(d["path"]) == 1:     # 이미 목적지 노드에 서 있다 — 움직이지 않고 바로 완료
+        r = agent.resource
+        _tasks[req.task_id] = {"task_id": req.task_id, "resource_id": resource_id, "status": "COMPLETED",
+                               "target_node": node_id,
+                               "progress": {"phase": "ARRIVED", "waypoint": 0, "total": 0},
+                               "observation": {"observation_type": "ROAD_STATUS", "arrived_node": node_id,
+                                               "position": {"lat": r.lat, "lon": r.lon}, "fuel_pct": r.fuel_pct}}
+        return ExecuteResponse(task_id=req.task_id, resource_id=resource_id, status="STARTED",
+                               tracking_url=f"/ugv/{resource_id}/task/{req.task_id}",
+                               target_node=d["target_node"], eta_sec=0)
     if not await agent.execute(node_id):
         raise HTTPException(500, "드라이버가 주행을 시작하지 못했다")
 

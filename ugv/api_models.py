@@ -16,7 +16,7 @@ class UgvState(BaseModel):
     resource_id: str
     resource_type: str                 # "UGV" | "FIRE_ENGINE"
     base: str
-    state: str                         # READY / RUNNING / ...
+    state: str                         # READY / RUNNING / UNAVAILABLE(주행 중 이상, /stop 으로 해제)
     position: LatLon
     fuel_pct: float
     current_node: str | None           # 노드에 정지 중일 때만 값이 있다 (주행 중 None)
@@ -24,6 +24,7 @@ class UgvState(BaseModel):
     driver: str                        # "sim" | "px4"
     driver_status: str                 # SimDriver: IDLE/MISSION/ARRIVED, PX4: flight mode
     updated_at: float                  # 마지막 텔레메트리 반영 시각 (epoch s, 0 이면 미수신)
+    fault: str | None = None           # state=UNAVAILABLE 일 때 이상 내용 'CODE: 설명'. /stop 으로 해제
 
 
 class EvaluateRequest(BaseModel):
