@@ -49,7 +49,7 @@ UGV_CONNECTION_MODE = "mock"
 ORCHESTRATOR_CONNECTION_MODE = "mock"
 
 UAV_SERVER_URL = "TBD"   # 구버전 — 아래 UAV_ENDPOINTS로 대체 예정, 하위호환용으로만 유지
-UGV_SERVER_URL = "TBD"
+UGV_SERVER_URL = "http://localhost:8100"   # 박유홍님 UGV 서버(ugv/server.py) 기본 포트. UGV_CONNECTION_MODE="real" 일 때만 사용
 ORCHESTRATOR_SERVER_URL = "TBD"
 
 # UAV는 "1대 = 프로세스 1개 = 포트 1개" 구조 (uav/uav-agent/README.md "UAV 여러 대 운용" 참고)

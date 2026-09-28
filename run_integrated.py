@@ -90,11 +90,18 @@ def run(total_steps: int = 8):
             print(line)
 
         # 4) UGV 판단이 팀 스키마로 연결되는지 확인 (커넥터 경유)
+        #    상태 조회에는 목적지가 없어 ETA·도달 여부가 비어 있다(설계). 도달 여부는
+        #    마지막 Task 의 화재 좌표로 evaluate 를 호출해서 확인한다.
+        from interfaces.schema import Assignment
         sample = ugv_connector.get_ugv_status("A")
         if sample:
-            s = sample[0]
-            print(f"\n  커넥터 경유 UGV 상태: {s.resource_id}  reachable={s.capability['reachable']} "
-                  f"ETA={s.capability['eta_sec']}s  blocked={s.capability['road_blocked']}")
+            print(f"\n  커넥터 경유 UGV 판단 (목표: 마지막 Task 화재 좌표 "
+                  f"{task.target_lat:.4f}, {task.target_lon:.4f})")
+            for s in sample:
+                r = ugv_connector.send_ugv_command(
+                    task.task_id, Assignment(task.task_id, s.resource_id, task.target_lat, task.target_lon))
+                print(f"    {s.resource_id:8s} state={s.state:6s} → {r.response}"
+                      + (f" ({r.reason})" if r.reason else ""))
 
         banner("완료")
         print(f"이벤트 로그: {logger.log_path}")
