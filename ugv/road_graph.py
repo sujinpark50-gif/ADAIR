@@ -4,6 +4,7 @@
 
 import heapq
 from typing import Protocol
+from .geo import distance_m
 from .models import Node, Road, RouteResult
 
 
@@ -93,6 +94,16 @@ class RoadGraph:
 
     def neighbors(self, node_id: str) -> list[tuple[str, Road]]:
         return self._adj[node_id]
+
+    def nearest_node(self, lat: float, lon: float) -> tuple[Node, float]:
+        """좌표에서 가장 가까운 노드와 그 거리(m). 목표 좌표를 도로망에 붙일 때 쓴다."""
+        best = min(self._nodes.values(), key=lambda n: distance_m((lat, lon), (n.lat, n.lon)))
+        return best, distance_m((lat, lon), (best.lat, best.lon))
+
+    def nodes_within(self, lat: float, lon: float, radius_m: float) -> list[tuple[Node, float]]:
+        """반경 안의 노드를 가까운 순으로. 가장 가까운 노드로 못 갈 때 다음 후보를 고를 때 쓴다."""
+        found = [(n, distance_m((lat, lon), (n.lat, n.lon))) for n in self._nodes.values()]
+        return sorted([(n, d) for n, d in found if d <= radius_m], key=lambda x: x[1])
 
     # --- 도로 상태 갱신 (환경모듈용) ---
 

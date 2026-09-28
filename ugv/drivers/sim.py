@@ -49,6 +49,12 @@ class SimDriver(MotionDriver):
         self._task = asyncio.create_task(self._run(list(waypoints)))
         return True
 
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            self._task = None
+        self._status = "STOPPED"
+
     async def _run(self, waypoints: list[tuple[float, float]]) -> None:
         step_m = self.speed_mps * self.tick_s
         for i, target in enumerate(waypoints, start=1):
