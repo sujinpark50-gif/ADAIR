@@ -1,0 +1,26 @@
+test_seven_connected_scenarios (test_connected.ConnectedTests.test_seven_connected_scenarios) ... ok
+test_four_rejected_uavs_are_exhausted_before_ground (test_policy.PolicyTests.test_four_rejected_uavs_are_exhausted_before_ground) ... ok
+test_ground_minimum_eta_and_id_tie (test_policy.PolicyTests.test_ground_minimum_eta_and_id_tie) ... ok
+test_haversine_known_distance_and_invalid_position (test_policy.PolicyTests.test_haversine_known_distance_and_invalid_position) ... ok
+test_missing_target_and_invalid_wind_request_manual_review (test_policy.PolicyTests.test_missing_target_and_invalid_wind_request_manual_review) ... ok
+test_moderate_wind_exact_boundaries_preserve_counter (test_policy.PolicyTests.test_moderate_wind_exact_boundaries_preserve_counter) ... ok
+test_nearest_uav_not_input_order_or_derived_state (test_policy.PolicyTests.test_nearest_uav_not_input_order_or_derived_state) ... ok
+test_observation_distance_boundary (test_policy.PolicyTests.test_observation_distance_boundary) ... ok
+test_other_counters_are_not_accepted (test_policy.PolicyTests.test_other_counters_are_not_accepted) ... ok
+test_refresh_can_switch_to_ground_after_reject (test_policy.PolicyTests.test_refresh_can_switch_to_ground_after_reject) ... ok
+test_response_id_mismatch_cannot_be_selected (test_policy.PolicyTests.test_response_id_mismatch_cannot_be_selected) ... ok
+test_safety_reject_never_executes_and_new_decision_is_created (test_policy.PolicyTests.test_safety_reject_never_executes_and_new_decision_is_created) ... ok
+test_evaluate_preserves_verdict_ids_eta_and_counter_payload (test_uav_input_preservation.UavInputPreservationTests.test_evaluate_preserves_verdict_ids_eta_and_counter_payload) ... ok
+test_existing_local_response_and_ugv_calls_remain_compatible (test_uav_input_preservation.UavInputPreservationTests.test_existing_local_response_and_ugv_calls_remain_compatible) ... ok
+test_missing_optional_values_are_not_fabricated (test_uav_input_preservation.UavInputPreservationTests.test_missing_optional_values_are_not_fabricated) ... ok
+test_state_preserves_source_values_and_marks_derived_state (test_uav_input_preservation.UavInputPreservationTests.test_state_preserves_source_values_and_marks_derived_state) ... ok
+test_unknown_endpoint_does_not_make_a_request (test_uav_input_preservation.UavInputPreservationTests.test_unknown_endpoint_does_not_make_a_request) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 19.522s
+
+OK
+[PASS] IT-01. 정상 임무 수행
+[PASS] IT-02. UAV 강풍 REJECT 후 재평가
+
+두 테스트 모두 통과했습니다.
