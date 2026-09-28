@@ -71,7 +71,7 @@ class DeterministicSelector:
                                       reason='V012_MODERATE_WIND_ACCEPTED' if policy_counter else 'NEAREST_ACCEPTED_UAV',
                                       detail={'distance_m': distance, 'wind_ms': wind, 'policy_version': '0.1.2',
                                               'local_verdict': response.response})
-                            return Selection(Decision(did, task.task_id, env.timestamp, [assignment]), 'UAV', response)
+                            return Selection(Decision(did, task.task_id, env.simulation_time_s, [assignment]), 'UAV', response)
                         excluded.add(rid)
                         self.emit('REEVALUATION', task, did, rid, reason=response.reason,
                                   detail={'next_decision_will_refresh': True})
@@ -112,7 +112,7 @@ class DeterministicSelector:
                     'observation_distance_m': distance, 'observation_max_m': 2000,
                     'distance_limit_is_simulation_assumption': True,
                 })
-                return Selection(Decision(did, task.task_id, env.timestamp, [assignment]), 'UGV', response)
+                return Selection(Decision(did, task.task_id, env.simulation_time_s, [assignment]), 'UGV', response)
             except (ValueError, TypeError, KeyError, OSError, RuntimeError) as exc:
                 return self.manual(task, did, 'OBSERVATION_FEASIBILITY_UNKNOWN', detail={'error': str(exc)})
         return self.manual(task, did, 'NO_AUTONOMOUS_CANDIDATE', detail={'message': '재평가 보호 상한 도달'})

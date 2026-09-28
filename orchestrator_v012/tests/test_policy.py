@@ -16,7 +16,7 @@ def resource(rid, lat=38.1, lon=128.1, kind='UAV'):
 class PolicyTests(unittest.TestCase):
     def setUp(self):
         self.task = FireTask('TASK_ONE', 0, target_lat=38.1, target_lon=128.1, target_node='F1')
-        self.env = Mock(); self.env.snapshot.return_value = SimpleNamespace(wind_speed=5, timestamp=0)
+        self.env = Mock(); self.env.snapshot.return_value = SimpleNamespace(wind_speed=5, simulation_time_s=0)
         self.uav = Mock(); self.uav.get_status.return_value = []
         self.ground = Mock(); self.ground.statuses.return_value = []
         self.ground.position_of_node.return_value = (38.1, 128.1)
@@ -78,7 +78,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(excluded), 4)
 
     def test_refresh_can_switch_to_ground_after_reject(self):
-        self.env.snapshot.side_effect = [SimpleNamespace(wind_speed=5, timestamp=1), SimpleNamespace(wind_speed=10, timestamp=2)]
+        self.env.snapshot.side_effect = [SimpleNamespace(wind_speed=5, simulation_time_s=1), SimpleNamespace(wind_speed=10, simulation_time_s=2)]
         self.aerial([resource('A-uav1'), resource('B-uav1')], {'A-uav1': ('REJECT', 'HIGH_WIND')})
         self.ground_candidates({'B-ugv1': 20})
         choice = self.selector.select(self.task, set())
