@@ -9,7 +9,7 @@
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements-integrated.txt
+python -m pip install -r requirements-integrated.txt   # Windows 에서 pip.exe 가 막히면 이 형태로
 python run_integrated.py            # 기본 8스텝 (python run_integrated.py 15 처럼 스텝 지정 가능)
 ```
 
@@ -24,16 +24,17 @@ python run_integrated.py            # 기본 8스텝 (python run_integrated.py 1
 |---|---|---|
 | 환경·산불 모델 | 김은주 | `environment/`의 **실제 CA 산불 확산 모델**을 매 스텝 진행.<br>`rasterio`+지형 데이터가 없으면 **내장 stateful 산불 모델로 자동 전환**(그래도 불이 실제로 번짐). |
 | UAV | 김동현 | `uav/uav-agent` **FastAPI 서버(MockDrone)를 서브프로세스로 기동**(포트 8000·8001).<br>이원규님 실제 HTTP 커넥터가 `/evaluate`·`/execute`를 **진짜 HTTP로 호출**. |
-| UGV | 박유홍 | **실제 도로 그래프 + Dijkstra**로 도달성·ETA·도로차단 재탐색. |
+| UGV | 박유홍 | **실제 도로망(roads_clipped.gpkg, 노드 534) + Dijkstra**로 도달성·ETA·도로차단 재탐색.<br>통합 실행은 in-process(`bridge_ugv`), UGV 서버(`ugv/server.py`, :8100)는 `UGV_CONNECTION_MODE="real"`로 전환 가능. |
 | 통합·재평가 | 이원규 | `main.process_task`의 폐루프·재평가·Decision ID를 그대로 사용. |
-| 총괄·Safety | 박수진 | 계약 기반 Mock 후보선택·Safety 분기(현재 설계 산출물). |
+| 총괄·Safety | 박수진 | 폐루프는 계약 기반 Mock 후보선택(**UAV만 후보**)·Safety 분기.<br>Orchestrator v0.1.2(`orchestrator_v012/`, UAV→UGV 전환 포함)는 병합됐으나 폐루프 연결은 합의 대기. |
 
 실행하면 다음이 순서대로 보입니다:
 1. UAV 서버 2대 기동 → 준비 완료 로그
 2. 폐루프 8스텝: 화재 셀 수가 **매 스텝 늘어나고**(stateful), 각 Task가 UAV 판단→Safety→실행→환경갱신을 거침
 3. **재평가 시연**: step 2에서 A-uav1 배터리를 낮춰 → A-uav1 거절 → **A-uav2가 인계**(실제 HTTP 재평가)
-4. UGV 경로탐색 시연: `A→F1` 정상 → E3 차단 시 우회 → 더 차단 시 도달 불가 + 원인 도로 역추적
-5. 이벤트 로그 위치 안내(`logs/simulation_log.jsonl`)
+4. UGV 경로탐색 시연: `A→B` 정상 → 도로 차단 시 우회 → 단일 도로 차단 시 도달 불가 + 원인 도로 역추적
+5. 커넥터 경유 UGV 판단: 마지막 Task 화재 좌표로 ACCEPT/REJECT
+6. 이벤트 로그 위치 안내(`logs/simulation_log.jsonl`)
 
 ---
 
@@ -54,22 +55,27 @@ python run_integrated.py            # 기본 8스텝 (python run_integrated.py 1
 
 ## 아직 mock/미연동인 부분 (다음 통합 과제)
 
-- **총괄·Safety(박수진)**: 실제 자원 평가정책·Safety 임계값은 아직 계약 Mock. 그래서 폐루프의 자원 선택은 UAV 우선입니다.
-- **계약 확정 필요**: `timestamp`(경과 초 vs ISO8601), `resource_id` vs `uav_id`, `risk_score` 범위 — 3종 합의가 되면 실연동이 더 매끄러워집니다.
+- **총괄·Safety(박수진)**: 폐루프는 아직 계약 Mock(UAV만 후보). 그래서 UAV가 COUNTER/REJECT하면
+  UGV가 수락 가능한 상황에서도 `NO_CANDIDATE`로 실패합니다. v0.1.2 연결 여부는 합의 대기.
+- **공통데이터규약 반영 현황** (`docs/common/ADAIR_공통데이터규약_위험우선순위_합의안.md`)
+  - §1 시간: 반영 완료 — 데이터·로그는 `simulation_time_s`(경과초) + `timestamp`(ISO 8601, 로그 전용)
+  - §2 resource_id: 반영 완료 — `{거점}-{uav|ugv|fire}{번호}` (소방차 `A-fire1`). UAV 서버의 `uav_id`는 커넥터가 변환
+  - §3·§5 risk_score 책임 경계: 반영 완료. **risk_score 범위·임계값(현재 0.4)은 합의 대기**
 - **PX4/Gazebo 실비행**: 이 zip 범위 밖(별도 시뮬레이터 스택·CPU 필요). 통합 실행은 그 없이 도는 것이 목적입니다.
 
 ---
 
 ## 자주 나는 문제
 
-- `ModuleNotFoundError: fastapi/uvicorn/requests` → `pip install -r requirements-integrated.txt`
+- `ModuleNotFoundError: fastapi/uvicorn/requests/httpx/numpy/rasterio` → `python -m pip install -r requirements-integrated.txt`
+- Windows 에서 `pip.exe` 실행이 차단됨 → `python -m pip ...` 형태로 실행
 - UAV 서버가 안 뜸 → 포트 8000·8001 사용 중일 수 있음. `logs/uav_A-uav1.log` 확인.
 - 환경이 "내장 산불 모델로 전환"으로 뜸 → 정상입니다. `rasterio` 설치 시 김은주님 실모델로 자동 전환됩니다.
 - `python: command not found` → `python3 run_integrated.py`
 
 ---
 
-## Gazebo 3D 지형 연동 (gazebo/, gz_bridge.py) — 추가됨
+## Gazebo 3D 지형 연동 (uav/gazebo/, gz_bridge.py)
 
 환경 모델의 실측 강원 DEM(인제 원통·기린)을 **Gazebo(gz sim) 3D 지형**으로 올리고,
 CA 격자·환경모델·PX4/gz 좌표를 **하나의 datum**으로 정렬하는 계층입니다. 통합 실행
@@ -77,14 +83,15 @@ CA 격자·환경모델·PX4/gz 좌표를 **하나의 datum**으로 정렬하는
 
 | 파일 | 역할 |
 |---|---|
-| `gazebo/kangwon.sdf` | gz sim 월드 — 강원 heightmap 지형 + spherical_coordinates(datum) + PX4 플러그인 |
-| `gazebo/kangwon_heightmap.png` | 513×513 16-bit heightmap (DEM 172~1449 m, 태백산맥 능선 포함) |
-| `gazebo/kangwon_terrain_preview.png` | 음영기복 미리보기(사람 확인용) |
-| `gazebo/README_gazebo.md` | PX4-gz 실행법·단일 datum 규칙·좌표 사용 예 |
+| `uav/gazebo/kangwon.sdf`, `kangwon_fire.sdf` | gz sim 월드 — 강원 지형(+ 산불 연출) + spherical_coordinates(datum) (김동현) |
+| `uav/gazebo/build_world.py`, `models/kangwon/` | DEM → heightmap·텍스처 생성 도구와 결과물 |
+| `uav/etc/px4-start-kangwon.sh` | PX4 SITL + 강원 월드 기동 (`--gui`, `--fire`) |
+| `uav/README.md` | PX4-gz 실행 순서 |
 | `gz_bridge.py` (루트) | WGS84 ↔ EPSG:5186 ↔ gz 로컬 ENU + **CA 격자(col,row) 변환** |
 
 **단일 datum**(= PX4_HOME = gz 원점): lat 38.011200, lon 128.122643, alt 172.1 m.
-`kangwon.sdf`·`PX4_HOME_*`·`gz_bridge.DATUM_*` 세 곳이 모두 같아야 좌표가 맞물립니다.
+`uav/gazebo/kangwon.sdf`·`PX4_HOME_*`·`gz_bridge.DATUM_*` 세 곳이 모두 같아야 좌표가 맞물립니다.
+(이전의 루트 `gazebo/`(멘토 패치)는 datum이 같고 더 최신·비행 검증된 `uav/gazebo/`로 통일하며 삭제했습니다.)
 
 **bridge_fire 화재셀 → 드론 명령** (격자 x,y 를 위경도/gz 로컬로):
 ```python
@@ -93,7 +100,7 @@ c = gb.fire_cell_grid_to_gz(env_state.fire_cells[0])   # {x,y,...} → +lat,lon,
 # MAVSDK:  drone.goto(c['lat'], c['lon'], alt)
 ```
 격자→위경도 변환은 실 DEM 과 오차 0 으로 검증됨. PX4-gz 로 월드를 띄우는 실행 명령과
-주의사항은 `gazebo/README_gazebo.md` 참고. (월드 로드·드론 스폰은 팀 PX4-gz 환경에서 테스트)
+주의사항은 `uav/README.md`, `uav/NOTE.md` 참고.
 
 ---
 
@@ -103,12 +110,14 @@ c = gb.fire_cell_grid_to_gz(env_state.fire_cells[0])   # {x,y,...} → +lat,lon,
 감지→출동→진화→재확산이 도는 완전 자동 폐루프. FastAPI 게이트웨이(:8080)가 gz_bridge(좌표)·
 fire_connector(환경 CA)·ugv/road_graph(도로 경로)를 감싸고, uav-agent(:8000, real)로 실제 PX4 제어.
 
-실행 (repo 루트에서, PX4+gz+uav-agent real 기동 후):
-    source ~/uav-venv/bin/activate
-    pip install fastapi uvicorn httpx
-    uvicorn web.app:app --host 0.0.0.0 --port 8080
+실행 (repo 루트에서, uav-agent(:8000) 기동 후 — mock 이면 PX4 불필요):
+    python -m pip install -r requirements-integrated.txt
+    python -m uvicorn web.app:app --host 127.0.0.1 --port 8080
     # 브라우저 http://localhost:8080 → "자동 시작"
+
+현재 한계(표현 주의): UAV는 uav-agent HTTP로 실제 호출하지만, **UGV 목록은 커넥터 mock 상태이고
+화면의 UGV 이동은 도로 경로를 따라 브라우저에서 보간한 표시**입니다(UGV 서버 실주행 연동 아님).
 
 파일: web/app.py(게이트웨이+UI+자동 폐루프), web/static/auto.js(자동 프론트),
      gz_bridge.py(좌표), ugv/graph_data_demo.py(도로망), connectors/fire_connector.py(강원 CA real),
-     gazebo/kangwon.sdf(default 기반, GPS 정합 성공버전) + kangwon_heightmap.png.
+     uav/gazebo/kangwon.sdf(강원 월드, datum 동일).

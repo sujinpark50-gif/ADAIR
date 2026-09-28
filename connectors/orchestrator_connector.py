@@ -17,7 +17,7 @@ import ids
 from interfaces.schema import Task, Decision, Assignment
 
 
-def create_task(timestamp: float, env_state) -> Task:
+def create_task(sim_time_s: float, env_state) -> Task:
     """환경 상태/사건으로부터 Task를 생성한다 (기본 실행 흐름 1단계)
 
     타깃 확정 규칙 (fail-closed):
@@ -28,7 +28,7 @@ def create_task(timestamp: float, env_state) -> Task:
       - 화재셀이 없으면 target_resolved=False(NO_FIRE_TARGET) → CANCELLED.
     """
     task_id = ids.new_task_id()
-    kw = dict(task_id=task_id, created_at=timestamp, state="READY")
+    kw = dict(task_id=task_id, created_at=sim_time_s, state="READY")
 
     if not env_state.fire_cells:
         return Task(**kw, description="관측 대상 없음",
@@ -53,21 +53,21 @@ def create_task(timestamp: float, env_state) -> Task:
                     target_resolved=False, unresolved_reason="TARGET_UNRESOLVED")
 
 
-def propose(timestamp: float, task: Task, env_state, resource_pool, exclude_ids: set = None) -> Decision:
+def propose(sim_time_s: float, task: Task, env_state, resource_pool, exclude_ids: set = None) -> Decision:
     """오케스트레이터의 후보 평가와 자원 선택 (1차 제안)"""
     if config.ORCHESTRATOR_CONNECTION_MODE == "mock":
-        return _propose_mock(timestamp, task, resource_pool, exclude_ids or set())
+        return _propose_mock(sim_time_s, task, resource_pool, exclude_ids or set())
     raise NotImplementedError("오케스트레이터 실제 연동이 아직 구현되지 않았습니다.")
 
 
-def reevaluate(timestamp: float, task: Task, env_state, resource_pool, exclude_ids: set) -> Decision:
+def reevaluate(sim_time_s: float, task: Task, env_state, resource_pool, exclude_ids: set) -> Decision:
     """REJECT/COUNTER/Safety REJECT 이후 재평가 — 반드시 새 decision_id 부여"""
     if config.ORCHESTRATOR_CONNECTION_MODE == "mock":
-        return _propose_mock(timestamp, task, resource_pool, exclude_ids)
+        return _propose_mock(sim_time_s, task, resource_pool, exclude_ids)
     raise NotImplementedError("오케스트레이터 재평가 로직이 아직 구현되지 않았습니다.")
 
 
-def _propose_mock(timestamp: float, task: Task, resource_pool, exclude_ids: set) -> Decision:
+def _propose_mock(sim_time_s: float, task: Task, resource_pool, exclude_ids: set) -> Decision:
     decision_id = ids.new_decision_id()
 
     candidates = [
@@ -89,4 +89,4 @@ def _propose_mock(timestamp: float, task: Task, resource_pool, exclude_ids: set)
             )
         )
 
-    return Decision(decision_id=decision_id, task_id=task.task_id, simulation_time_s=timestamp, assignments=assignments)
+    return Decision(decision_id=decision_id, task_id=task.task_id, simulation_time_s=sim_time_s, assignments=assignments)

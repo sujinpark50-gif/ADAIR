@@ -37,7 +37,7 @@ def _engine():
         eng.ignite_at(ix,iy)
     _api=api; return _api
 
-def get_environment_state(timestamp: float, advance: bool = True) -> EnvironmentState:
+def get_environment_state(sim_time_s: float, advance: bool = True) -> EnvironmentState:
     """환경 상태 조회.
 
     advance=True  : CA 를 한 스텝 진행한 뒤 읽는다 (시뮬레이션 시계를 가진 쪽만 호출).
@@ -45,7 +45,7 @@ def get_environment_state(timestamp: float, advance: bool = True) -> Environment
     advance=False : 진행 없이 현재 상태만 읽는다 (재평가·자동배정·표시용 재조회).
     같은 sim_step 값이면 같은 환경 상태다.
     """
-    if config.FIRE_CONNECTION_MODE=="mock": return _mock_state(timestamp)
+    if config.FIRE_CONNECTION_MODE=="mock": return _mock_state(sim_time_s)
     global _tick
     api=_engine()
     if advance:
@@ -66,7 +66,7 @@ def get_environment_state(timestamp: float, advance: bool = True) -> Environment
             lat,lon=gb.grid_cell_to_latlon(c["x"],c["y"]); c["location_lat"]=round(lat,6); c["location_lon"]=round(lon,6)
     except Exception: pass
     sp=api.get_spread_direction()
-    return EnvironmentState(simulation_time_s=timestamp,fire_cells=fire,risk_zone=rz,
+    return EnvironmentState(simulation_time_s=sim_time_s,fire_cells=fire,risk_zone=rz,
         wind_speed=float(sp.get("wind_speed_ms",0.0)),wind_direction=float(sp.get("wind_direction_deg",0.0)),
         spread_direction=sp.get("primary_cardinal","N"),env_updated=False,
         sim_step=max(_tick-1,0))
@@ -113,9 +113,9 @@ def update_environment(env_state: EnvironmentState, observations: list) -> Envir
     env_state.env_updated=applied
     return env_state
 
-def _mock_state(timestamp):
+def _mock_state(sim_time_s):
     import random
-    return EnvironmentState(simulation_time_s=timestamp,
+    return EnvironmentState(simulation_time_s=sim_time_s,
         fire_cells=[{"cell_id":"50_50","x":50,"y":50,"fire_state":"BURNING","risk_score":0.8}],
         risk_zone=[{"cell_id":"51_50","x":51,"y":50,"risk_score":0.6}],
         wind_speed=3.0,wind_direction=270.0,spread_direction="E",env_updated=False)

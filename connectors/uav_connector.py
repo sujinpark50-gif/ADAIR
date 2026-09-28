@@ -56,7 +56,7 @@ def send_uav_command(
     return _send_uav_command_real(task_id, decision_id, assignment, wind_ms)
 
 
-def get_uav_observation(resource_id: str, timestamp: float, task_id: str = None,
+def get_uav_observation(resource_id: str, sim_time_s: float, task_id: str = None,
                          decision_id: str = None, assignment=None) -> Observation:
     """
     real 모드에서는 이 호출 시점(Safety ALLOW 이후)에 /execute를 트리거하고
@@ -71,13 +71,13 @@ def get_uav_observation(resource_id: str, timestamp: float, task_id: str = None,
             resource_id=resource_id,
             location_lat=obs_lat,
             location_lon=obs_lon,
-            simulation_time_s=timestamp,
+            simulation_time_s=sim_time_s,
             observation_type="FIRE_BOUNDARY",
             value={"fire_state": "BURNING", "note": "mock observation @ target"},
             task_id=task_id,
             decision_id=decision_id,
         )
-    return _get_uav_observation_real(resource_id, timestamp, task_id, decision_id, assignment)
+    return _get_uav_observation_real(resource_id, sim_time_s, task_id, decision_id, assignment)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ def _send_uav_command_real(task_id: str, decision_id: str, assignment, wind_ms: 
     )
 
 
-def _get_uav_observation_real(resource_id, timestamp, task_id, decision_id, assignment,
+def _get_uav_observation_real(resource_id, sim_time_s, task_id, decision_id, assignment,
                                 poll_interval_sec=1.0, timeout_sec=30.0) -> Observation:
     """POST /execute 로 실행 시작 → GET /task 폴링 → 완료 시 관측 결과 반환"""
     url = _endpoint_for(resource_id)
@@ -229,7 +229,7 @@ def _get_uav_observation_real(resource_id, timestamp, task_id, decision_id, assi
                 resource_id=resource_id,
                 location_lat=pos.get("lat"),
                 location_lon=pos.get("lon"),
-                simulation_time_s=timestamp,
+                simulation_time_s=sim_time_s,
                 observation_type=obs.get("sensor_type", "THERMAL"),
                 value=obs.get("values", {}),
                 task_id=task_id,

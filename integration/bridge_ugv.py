@@ -106,7 +106,7 @@ def send_ugv_command(task_id: str, assignment, force_response=None, force_reason
     return LocalResponse(resource_id=assignment.resource_id, response="REJECT", reason="TARGET_UNREACHABLE")
 
 
-def get_ugv_observation(resource_id: str, timestamp: float, task_id: str = None, decision_id: str = None) -> Observation:
+def get_ugv_observation(resource_id: str, sim_time_s: float, task_id: str = None, decision_id: str = None) -> Observation:
     # 도로 상태 관측. 목적지별 ETA·경로는 send_ugv_command(evaluate) 에서만 산출한다.
     # (이전 동작: 고정 노드 F1 까지 경로 → 실제 도로망에는 F1 이 없다)
     g = _g()
@@ -116,7 +116,7 @@ def get_ugv_observation(resource_id: str, timestamp: float, task_id: str = None,
         resource_id=resource_id,
         location_lat=node.lat,
         location_lon=node.lon,
-        simulation_time_s=timestamp,
+        simulation_time_s=sim_time_s,
         observation_type="ROAD_STATUS",
         value={"node_id": node.node_id, "blocked_roads": blocked},
         task_id=task_id,

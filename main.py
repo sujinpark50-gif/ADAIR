@@ -32,7 +32,7 @@ from connectors import fire_connector, uav_connector, ugv_connector, orchestrato
 from logger import EventLogger
 
 
-def get_all_resources(timestamp: float) -> ResourcePool:
+def get_all_resources(sim_time_s: float) -> ResourcePool:
     return ResourcePool(
         base_a=uav_connector.get_uav_status("A") + ugv_connector.get_ugv_status("A"),
         base_b=uav_connector.get_uav_status("B") + ugv_connector.get_ugv_status("B"),
@@ -47,50 +47,50 @@ def _send_command(task_id, decision_id, assignment, env_state, force_response=No
     return ugv_connector.send_ugv_command(task_id, assignment, force_response, force_reason)
 
 
-def _get_observation(resource_id, timestamp, task_id, decision_id, assignment):
+def _get_observation(resource_id, sim_time_s, task_id, decision_id, assignment):
     if "uav" in resource_id:
-        return uav_connector.get_uav_observation(resource_id, timestamp, task_id, decision_id, assignment)
-    return ugv_connector.get_ugv_observation(resource_id, timestamp, task_id, decision_id)
+        return uav_connector.get_uav_observation(resource_id, sim_time_s, task_id, decision_id, assignment)
+    return ugv_connector.get_ugv_observation(resource_id, sim_time_s, task_id, decision_id)
 
 
-def _refresh_for_reevaluation(timestamp, env_state, resource_pool):
+def _refresh_for_reevaluation(sim_time_s, env_state, resource_pool):
     """재평가 직전에 환경·자원 상태를 다시 읽는다 (R04).
 
     환경은 advance=False 로 읽어 재조회가 불 확산을 추가로 일으키지 않게 한다.
     조회에 실패하면 이전 상태를 그대로 쓴다(재평가 자체는 계속).
     """
     try:
-        env_state = fire_connector.get_environment_state(timestamp, advance=False)
+        env_state = fire_connector.get_environment_state(sim_time_s, advance=False)
     except Exception as e:
         print(f"[main] 재평가용 환경 재조회 실패, 이전 상태 사용: {e}")
     try:
-        resource_pool = get_all_resources(timestamp)
+        resource_pool = get_all_resources(sim_time_s)
     except Exception as e:
         print(f"[main] 재평가용 자원 재조회 실패, 이전 상태 사용: {e}")
     return env_state, resource_pool
 
 
-def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp: float, forced_responses: dict = None):
+def process_task(task, env_state, resource_pool, logger: EventLogger, sim_time_s: float, forced_responses: dict = None):
     """
     Task 하나를 '자원 선택 → Local 확인 → Safety → 실행 → 관측 → 환경 갱신'까지
     끝까지 처리한다. forced_responses는 테스트에서 특정 시나리오를 강제할 때 쓴다.
     형식: {resource_id: (response, reason)}
     """
     forced_responses = forced_responses or {}
-    logger.log_event("TASK_CREATED", timestamp, task_id=task.task_id, result=task.state,
+    logger.log_event("TASK_CREATED", sim_time_s, task_id=task.task_id, result=task.state,
                      detail={"target_source": getattr(task, "target_source", "")})
 
     # fail-closed: 타깃 좌표를 확정하지 못한 Task 는 자원에 배정하지 않는다
     if not getattr(task, "target_resolved", True):
         reason = getattr(task, "unresolved_reason", None) or "TARGET_UNRESOLVED"
         task.state = "CANCELLED" if reason == "NO_FIRE_TARGET" else "FAILED"
-        logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result=task.state, reason=reason)
+        logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result=task.state, reason=reason)
         return task, env_state
 
     exclude_ids = set()
-    decision = orchestrator_connector.propose(timestamp, task, env_state, resource_pool, exclude_ids)
+    decision = orchestrator_connector.propose(sim_time_s, task, env_state, resource_pool, exclude_ids)
     logger.log_event(
-        "CANDIDATE_EVALUATED", timestamp,
+        "CANDIDATE_EVALUATED", sim_time_s,
         decision_id=decision.decision_id, task_id=task.task_id,
         result="PROPOSED", detail={"assignments": [a.resource_id for a in decision.assignments]},
     )
@@ -100,7 +100,7 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
     while True:
         if not decision.assignments:
             task.state = "FAILED"
-            logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result="FAILED", reason="NO_CANDIDATE")
+            logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="FAILED", reason="NO_CANDIDATE")
             return task, env_state
 
         assignment = decision.assignments[0]
@@ -109,7 +109,7 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
 
         local_response = _send_command(task.task_id, decision.decision_id, assignment, env_state, force_response, force_reason)
         logger.log_event(
-            "LOCAL_RESPONSE", timestamp,
+            "LOCAL_RESPONSE", sim_time_s,
             decision_id=decision.decision_id, task_id=task.task_id, resource_id=assignment.resource_id,
             result=local_response.response, reason=local_response.reason,
         )
@@ -120,12 +120,12 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
             reevaluation_count += 1
             if reevaluation_count > config.MAX_REEVALUATION_RETRIES:
                 task.state = "FAILED"
-                logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result="FAILED", reason="MAX_REEVALUATION_EXCEEDED")
+                logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="FAILED", reason="MAX_REEVALUATION_EXCEEDED")
                 return task, env_state
-            env_state, resource_pool = _refresh_for_reevaluation(timestamp, env_state, resource_pool)
-            decision = orchestrator_connector.reevaluate(timestamp, task, env_state, resource_pool, exclude_ids)
+            env_state, resource_pool = _refresh_for_reevaluation(sim_time_s, env_state, resource_pool)
+            decision = orchestrator_connector.reevaluate(sim_time_s, task, env_state, resource_pool, exclude_ids)
             logger.log_event(
-                "REEVALUATION", timestamp,
+                "REEVALUATION", sim_time_s,
                 decision_id=decision.decision_id, task_id=task.task_id,
                 result="NEW_CANDIDATE", reason=local_response.reason,
             )
@@ -135,7 +135,7 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
         verdict = safety_connector.verify(decision)
         decision.safety_verdict = verdict
         logger.log_event(
-            "SAFETY_JUDGEMENT", timestamp,
+            "SAFETY_JUDGEMENT", sim_time_s,
             decision_id=decision.decision_id, task_id=task.task_id,
             result=verdict.response, reason=verdict.reason,
         )
@@ -143,23 +143,23 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
         if verdict.response == "ALLOW":
             task.state = "RUNNING"
             logger.log_event(
-                "EXECUTION", timestamp,
+                "EXECUTION", sim_time_s,
                 decision_id=decision.decision_id, task_id=task.task_id,
                 resource_id=assignment.resource_id, result="STARTED",
             )
 
-            observation = _get_observation(assignment.resource_id, timestamp, task.task_id, decision.decision_id, assignment)
+            observation = _get_observation(assignment.resource_id, sim_time_s, task.task_id, decision.decision_id, assignment)
             logger.log_event(
-                "OBSERVATION", timestamp,
+                "OBSERVATION", sim_time_s,
                 decision_id=decision.decision_id, task_id=task.task_id, resource_id=assignment.resource_id,
                 result="RECEIVED",
             )
 
             env_state = fire_connector.update_environment(env_state, [observation])
-            logger.log_event("ENVIRONMENT_UPDATE", timestamp, task_id=task.task_id, result="UPDATED")
+            logger.log_event("ENVIRONMENT_UPDATE", sim_time_s, task_id=task.task_id, result="UPDATED")
 
             task.state = "COMPLETED"
-            logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result="COMPLETED")
+            logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="COMPLETED")
             return task, env_state
 
         # Safety REJECT 또는 MODIFY(초기 범위 제외 — REJECT와 동일 처리) → 총괄 재평가
@@ -167,12 +167,12 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, timestamp:
         reevaluation_count += 1
         if reevaluation_count > config.MAX_REEVALUATION_RETRIES:
             task.state = "FAILED"
-            logger.log_event("TASK_COMPLETE", timestamp, task_id=task.task_id, result="FAILED", reason="SAFETY_REJECT_MAX_RETRY")
+            logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="FAILED", reason="SAFETY_REJECT_MAX_RETRY")
             return task, env_state
-        env_state, resource_pool = _refresh_for_reevaluation(timestamp, env_state, resource_pool)
-        decision = orchestrator_connector.reevaluate(timestamp, task, env_state, resource_pool, exclude_ids)
+        env_state, resource_pool = _refresh_for_reevaluation(sim_time_s, env_state, resource_pool)
+        decision = orchestrator_connector.reevaluate(sim_time_s, task, env_state, resource_pool, exclude_ids)
         logger.log_event(
-            "REEVALUATION", timestamp,
+            "REEVALUATION", sim_time_s,
             decision_id=decision.decision_id, task_id=task.task_id,
             result="NEW_CANDIDATE", reason="SAFETY_" + verdict.response,
         )
@@ -186,15 +186,15 @@ def run_simulation(total_steps: int = None):
     print(f"=== 시뮬레이션 시작 (run_id={run_id}, 총 {total_steps} 스텝, Mock 모드) ===\n")
 
     for step in range(total_steps):
-        timestamp = step * config.SIMULATION_TIMESTEP_SEC
+        sim_time_s = step * config.SIMULATION_TIMESTEP_SEC
 
-        env_state = fire_connector.get_environment_state(timestamp)
-        logger.log_event("ENVIRONMENT_CHANGE", timestamp, result="OK")
+        env_state = fire_connector.get_environment_state(sim_time_s)
+        logger.log_event("ENVIRONMENT_CHANGE", sim_time_s, result="OK")
 
-        resource_pool = get_all_resources(timestamp)
-        task = orchestrator_connector.create_task(timestamp, env_state)
+        resource_pool = get_all_resources(sim_time_s)
+        task = orchestrator_connector.create_task(sim_time_s, env_state)
 
-        task, env_state = process_task(task, env_state, resource_pool, logger, timestamp)
+        task, env_state = process_task(task, env_state, resource_pool, logger, sim_time_s)
 
         print(f"[Step {step}] task={task.task_id} state={task.state}")
 

@@ -59,7 +59,7 @@ class _RealEnvBackend:
         finally:
             os.chdir(cwd0)
 
-    def get_state(self, timestamp: float) -> EnvironmentState:
+    def get_state(self, sim_time_s: float) -> EnvironmentState:
         # 매 호출마다 한 스텝 진행 (실제 확산)
         try:
             self._api.step()
@@ -87,7 +87,7 @@ class _RealEnvBackend:
         except Exception:
             pass
         return EnvironmentState(
-            simulation_time_s=timestamp,
+            simulation_time_s=sim_time_s,
             fire_cells=fire_cells[:80],
             risk_zone=[],
             wind_speed=wind_speed,
@@ -141,7 +141,7 @@ class _LightFireBackend:
         seq = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"]
         return seq[step % len(seq)]
 
-    def get_state(self, timestamp: float) -> EnvironmentState:
+    def get_state(self, sim_time_s: float) -> EnvironmentState:
         rng = random.Random(self._seed + self.step_no)
         spread = self._spread_dir(self.step_no)
         dx, dy = self._DIRS[spread]
@@ -197,7 +197,7 @@ class _LightFireBackend:
         wind_dir_map = {"N": 0, "NE": 45, "E": 90, "SE": 135,
                         "S": 180, "SW": 225, "W": 270, "NW": 315}
         return EnvironmentState(
-            simulation_time_s=timestamp,
+            simulation_time_s=sim_time_s,
             fire_cells=fire_cells,
             risk_zone=risk,
             wind_speed=wind_speed,
@@ -228,9 +228,9 @@ def _ensure_backend():
     print(f"[ENV] 환경 백엔드 = {_backend_name}")
 
 
-def get_environment_state(timestamp: float) -> EnvironmentState:
+def get_environment_state(sim_time_s: float) -> EnvironmentState:
     _ensure_backend()
-    return _backend.get_state(timestamp)
+    return _backend.get_state(sim_time_s)
 
 
 def update_environment(env_state: EnvironmentState, observations: list) -> EnvironmentState:

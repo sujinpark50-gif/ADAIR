@@ -48,22 +48,22 @@ def send_ugv_command(task_id: str, assignment, force_response: str = None, force
     return _send_ugv_command_real(task_id, decision_id, assignment)
 
 
-def get_ugv_observation(resource_id: str, timestamp: float, task_id: str = None, decision_id: str = None) -> Observation:
+def get_ugv_observation(resource_id: str, sim_time_s: float, task_id: str = None, decision_id: str = None) -> Observation:
     if config.UGV_CONNECTION_MODE == "integrated":
         from integration import bridge_ugv
-        return bridge_ugv.get_ugv_observation(resource_id, timestamp, task_id, decision_id)
+        return bridge_ugv.get_ugv_observation(resource_id, sim_time_s, task_id, decision_id)
     if config.UGV_CONNECTION_MODE == "mock":
         return Observation(
             resource_id=resource_id,
             location_lat=config.BASE_A_LAT,
             location_lon=config.BASE_A_LON,
-            simulation_time_s=timestamp,
+            simulation_time_s=sim_time_s,
             observation_type="ROAD_STATUS",
             value={"note": "mock observation"},
             task_id=task_id,
             decision_id=decision_id,
         )
-    return _get_ugv_observation_real(resource_id, timestamp, task_id, decision_id)
+    return _get_ugv_observation_real(resource_id, sim_time_s, task_id, decision_id)
 
 
 def _get_ugv_status_mock(base: str) -> list:
@@ -190,7 +190,7 @@ def _send_ugv_command_real(task_id: str, decision_id: str, assignment) -> LocalR
     )
 
 
-def _get_ugv_observation_real(resource_id, timestamp, task_id, decision_id,
+def _get_ugv_observation_real(resource_id, sim_time_s, task_id, decision_id,
                               poll_interval_sec=1.0, timeout_sec=None) -> Observation:
     """ACCEPT 된 task 면 POST /execute → GET /task 폴링 → 도착 관측 반환.
     evaluate 기록이 없으면 현재 위치의 도로 상태만 조회한다 (주행하지 않음)."""
@@ -202,7 +202,7 @@ def _get_ugv_observation_real(resource_id, timestamp, task_id, decision_id,
         resp.raise_for_status()
         d = resp.json()
         return Observation(resource_id=resource_id, location_lat=d["location_lat"],
-                           location_lon=d["location_lon"], simulation_time_s=timestamp,
+                           location_lon=d["location_lon"], simulation_time_s=sim_time_s,
                            observation_type=d["observation_type"], value=d["value"],
                            task_id=task_id, decision_id=decision_id)
 
@@ -225,7 +225,7 @@ def _get_ugv_observation_real(resource_id, timestamp, task_id, decision_id,
             pos = obs.get("position") or {}
             # 지상자원 관측은 도로 상태다. 화재 관측으로 쓰지 않는다 (fire_connector 는 ROAD_STATUS 를 반영하지 않음)
             return Observation(resource_id=resource_id, location_lat=pos.get("lat"),
-                               location_lon=pos.get("lon"), simulation_time_s=timestamp,
+                               location_lon=pos.get("lon"), simulation_time_s=sim_time_s,
                                observation_type=obs.get("observation_type", "ROAD_STATUS"),
                                value={"arrived_node": obs.get("arrived_node"), "fuel_pct": obs.get("fuel_pct"),
                                       "eta_sec_planned": evaluated.get("eta_sec")},
