@@ -1,0 +1,62 @@
+## uORB battery_status (PX4 내부 원값, remaining 은 0~1)
+TOPIC: battery_status
+ battery_status
+    timestamp: 4662572000 (0.012000 seconds ago)
+    voltage_v: 15.30000
+    current_a: -1.00000
+    current_average_a: 0.00000
+    discharged_mah: 0.00000
+    remaining: 0.50003
+    scale: 1.05882
+    time_remaining_s: nan
+    temperature: nan
+    voltage_cell_v: [0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000, 0.00000]
+    max_cell_voltage_delta: 0.00000
+    full_charge_capacity_wh: 0.00000
+    remaining_capacity_wh: nan
+    nominal_voltage: nan
+    internal_resistance_estimate: 0.00500
+    ocv_estimate: 15.28000
+    ocv_estimate_filtered: 16.18000
+    volt_based_soc_estimate: 0.98889
+    voltage_prediction: 0.00000
+    prediction_error: 0.00000
+    estimation_covariance_norm: 6.01332
+    capacity: 0
+    cycle_count: 0
+    average_time_to_empty: 0
+    manufacture_date: 0
+    state_of_health: 0
+    max_error: 0
+    interface_error: 0
+    faults: 0
+    over_discharge_count: 0
+    connected: True
+    cell_count: 4
+    source: 0
+    priority: 0
+    id: 1
+    is_powering_off: False
+    is_required: False
+    warning: 0
+
+## 배터리·풍속 관련 파라미터
+x     SIM_BAT_DRAIN [907,1501] : 60.0000
+x     SIM_BAT_MIN_PCT [908,1502] : 50.0000
+x     BAT1_CAPACITY [6,39] : -1.0000
+x     BAT1_N_CELLS [8,41] : 4
+x     COM_WIND_MAX [335,535] : -1.0000
+
+## PX4 버전
+HW arch: PX4_SITL
+PX4 git-hash: 61907962c9220437ec01a98fa26bfbf5cbb254b5
+PX4 version: 1.18.0 80 (17956992)
+PX4 git-branch: main
+OS: Linux
+OS version: Release 6.18.33 (101851647)
+Build datetime: Sep 11 2026 00:55:54
+Build uri: localhost
+Build variant: default
+Toolchain: GNU GCC, 13.3.0
+PX4GUID: 1006554d49534954414c44494e4f30303030
+UNKNOWN MCU

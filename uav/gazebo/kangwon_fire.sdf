@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <world name="kangwon_fire">
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+    <scene>
+      <grid>false</grid>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.62 0.78 0.92 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <model name="kangwon_terrain_collision">
+      <static>true</static>
+      <pose>13365.87 752.10 0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><heightmap>
+            <uri>model://kangwon/heightmap.png</uri>
+            <size>28970.04 28970.04 1297.49</size><pos>0 0 0</pos>
+          </heightmap></geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="kangwon_terrain_visual">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><heightmap>
+            <use_terrain_paging>false</use_terrain_paging>
+            <texture>
+              <diffuse>model://kangwon/texture.png</diffuse>
+              <normal>model://kangwon/normal.png</normal>
+              <size>28970.04</size>
+            </texture>
+            <uri>model://kangwon/heightmap.png</uri>
+            <size>28970.04 28970.04 1297.49</size><pos>13365.87 752.10 0.05</pos>
+          </heightmap></geometry>
+        </visual>
+      </link>
+    </model>
+    <model name="fire_1">
+      <static>true</static>
+      <pose>11539.5 3482.4 580.5 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_1_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_2">
+      <static>true</static>
+      <pose>11739.0 3379.5 573.7 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_2_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_3">
+      <static>true</static>
+      <pose>11335.1 3472.3 549.2 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_3_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_4">
+      <static>true</static>
+      <pose>11631.3 3693.2 681.0 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_4_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_5">
+      <static>true</static>
+      <pose>11392.5 3326.0 512.1 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_5_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_6">
+      <static>true</static>
+      <pose>11761.3 3631.3 670.9 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_6_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_7">
+      <static>true</static>
+      <pose>11678.7 3571.5 649.1 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_7_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_8">
+      <static>true</static>
+      <pose>11445.6 3229.3 531.2 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_8_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="smoke_1">
+      <static>true</static>
+      <pose>11402.1 3627.0 652.7 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="smoke_1_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 80 80</size>
+          <particle_size>45 45 45</particle_size>
+          <lifetime>22</lifetime>
+          <rate>4</rate>
+          <min_velocity>5</min_velocity>
+          <max_velocity>9</max_velocity>
+          <scale_rate>5</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/smoke.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/smoke_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="smoke_2">
+      <static>true</static>
+      <pose>11679.0 3528.5 655.2 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="smoke_2_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 80 80</size>
+          <particle_size>45 45 45</particle_size>
+          <lifetime>22</lifetime>
+          <rate>4</rate>
+          <min_velocity>5</min_velocity>
+          <max_velocity>9</max_velocity>
+          <scale_rate>5</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/smoke.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/smoke_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="smoke_3">
+      <static>true</static>
+      <pose>11574.2 3379.6 571.5 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="smoke_3_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 80 80</size>
+          <particle_size>45 45 45</particle_size>
+          <lifetime>22</lifetime>
+          <rate>4</rate>
+          <min_velocity>5</min_velocity>
+          <max_velocity>9</max_velocity>
+          <scale_rate>5</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/smoke.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>/opt/px4-gazebo/share/gz/models/kangwon/materials/textures/smoke_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+    <light name="sunUTC" type="directional">
+      <pose>0 0 500 0 -0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1</intensity>
+      <direction>0.001 0.625 -0.78</direction>
+      <diffuse>0.904 0.904 0.904 1</diffuse>
+      <specular>0.271 0.271 0.271 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <linear>0</linear>
+        <constant>1</constant>
+        <quadratic>0</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0</inner_angle>
+        <outer_angle>0</outer_angle>
+        <falloff>0</falloff>
+      </spot>
+    </light>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>38.0112</latitude_deg>
+      <longitude_deg>128.122643</longitude_deg>
+      <elevation>172.1</elevation>
+    </spherical_coordinates>
+  </world>
+</sdf>
