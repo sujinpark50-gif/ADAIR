@@ -114,6 +114,16 @@ class EnvironmentGrid:
         self._fuel_type, fuel_meta = _read_raster(self._project_root / raster_cfg["fuel_path"], nodata_fill=0.0)
         self._roads, roads_meta = _read_raster(self._project_root / raster_cfg["roads_path"], nodata_fill=0.0)
 
+        # Buildings raster is optional — if not configured, building_type defaults to 0 (no building).
+        buildings_path = raster_cfg.get("buildings_path")
+        if buildings_path:
+            self._buildings, buildings_meta = _read_raster(
+                self._project_root / buildings_path, nodata_fill=0.0
+            )
+        else:
+            self._buildings = None
+            buildings_meta = None
+
         # --- validate raster alignment (shape, CRS, transform) -------------------
         metas = {
             "dem": dem_meta,
@@ -122,6 +132,8 @@ class EnvironmentGrid:
             "fuel_type": fuel_meta,
             "roads": roads_meta,
         }
+        if buildings_meta is not None:
+            metas["buildings"] = buildings_meta
 
         # 1. Shape validation
         shapes = {name: meta["shape"] for name, meta in metas.items()}
@@ -199,12 +211,14 @@ class EnvironmentGrid:
     # ------------------------------------------------------------------
     def _build_grid(self) -> None:
         """Populate ``self._grid`` with Cell objects from raster data."""
+        has_buildings = self._buildings is not None
         cell_id = 0
         for row in range(self._rows):
             row_cells: List[Cell] = []
             for col in range(self._cols):
                 ft = int(self._fuel_type[row, col])     # 현재 픽셀의 연료 유형 코드를 가져옴
                 fa = self._fuel_type_to_amount.get(ft, self._default_fuel_amount)
+                bt = int(self._buildings[row, col]) if has_buildings else 0
 
                 cell = Cell(
                     cell_id=cell_id,
@@ -215,6 +229,7 @@ class EnvironmentGrid:
                     fuel_type=ft,
                     fuel_amount=fa,
                     moisture=self._default_moisture,
+                    building_type=bt,
                     fire_state=FireState.UNBURNED,
                     risk_score=0.0,
                 )

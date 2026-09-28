@@ -56,6 +56,12 @@ class Cell:
     fuel_amount: float  # physical parameter — from config mapping, NOT hardcoded
     moisture: float     # physical parameter — from config default, NOT hardcoded
 
+    # --- building attributes (from buildings raster) ---
+    # Categorical building type code from buildings_inje.tif:
+    #   0 = no building, 1 = RESIDENTIAL, 2 = IMPORTANT, 3 = CRITICAL,
+    #   4 = SECONDARY_HAZARD, 5 = COMMERCIAL, 6 = INDUSTRIAL, 7 = OTHER
+    building_type: int = field(default=0)
+
     # --- simulation state ---
     fire_state: FireState = field(default=FireState.UNBURNED)
     risk_score: float = field(default=0.0)
