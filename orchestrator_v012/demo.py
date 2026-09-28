@@ -44,7 +44,7 @@ def mock_servers(log_dir):
             proc = subprocess.Popen([
                 sys.executable, '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1',
                 '--port', str(port), '--log-level', 'warning',
-            ], cwd=ROOT / 'px4/uav-agent', env=env, stdout=log, stderr=log)
+            ], cwd=ROOT / 'uav/uav-agent', env=env, stdout=log, stderr=log)
             processes.append(proc)
             deadline = time.monotonic() + 20
             while True:

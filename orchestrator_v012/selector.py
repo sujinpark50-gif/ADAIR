@@ -9,7 +9,7 @@ UGV_OBSERVATION_MAX_DISTANCE_M = 2000
 
 
 def haversine_m(lat1, lon1, lat2, lon2):
-    # px4/uav-agent/evaluator.py의 기존 공식 재사용. config import 충돌을 피한다.
+    # uav/uav-agent/evaluator.py의 기존 공식 재사용. config import 충돌을 피한다.
     for lat, lon in ((lat1, lon1), (lat2, lon2)):
         if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
             raise ValueError('유효하지 않은 위경도')

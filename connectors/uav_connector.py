@@ -3,9 +3,9 @@
 connectors/uav_connector.py
 ==============================
 UAV Connector. Mock 모드에 더해, 김동현님이 올리신 UAV Local Agent
-(px4/uav-agent, FastAPI 서버)와 실제로 통신하는 real 모드를 구현했다.
+(uav/uav-agent, FastAPI 서버)와 실제로 통신하는 real 모드를 구현했다.
 
-실제 서버 엔드포인트 (px4/uav-agent/README.md 기준):
+실제 서버 엔드포인트 (uav/API_DEFINE.md 기준):
   GET  /uav/{uav_id}/state              — 상태 조회
   POST /uav/{uav_id}/evaluate           — 수행가능성 판단 (ACCEPT/REJECT/COUNTER)
   POST /uav/{uav_id}/execute            — 실행 시작 (Safety ALLOW 이후에만 호출)
@@ -121,7 +121,7 @@ def _send_uav_command_mock(assignment, force_response, force_reason) -> LocalRes
 
 
 # ---------------------------------------------------------------------------
-# Real 구현 — px4/uav-agent REST API 연동
+# Real 구현 — uav/uav-agent REST API 연동
 # ---------------------------------------------------------------------------
 
 def _endpoint_for(resource_id: str) -> str:
@@ -154,7 +154,10 @@ def _get_uav_status_real(base: str) -> list:
                 base=base,
                 location_lat=data["position"]["lat"],
                 location_lon=data["position"]["lon"],
-                state="OFFLINE" if data["health"]["failsafe"] else "READY",
+                # /state 가 응답했으면 READY. health.failsafe·link_quality 는 real 모드에서
+                # 고정값이라 가용성 근거로 쓰지 않는다 (docs/uav/R01_R05.md 1-4, 6-3).
+                # 원값은 capability 에 그대로 남기고, 실제 가용 여부는 /evaluate 판정으로 확인한다.
+                state="READY",
                 capability={
                     "battery_pct": data["battery"]["percent"],
                     "px4_failsafe": data["health"]["failsafe"],

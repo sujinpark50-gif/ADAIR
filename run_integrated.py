@@ -10,7 +10,7 @@ ADAIR 산불 대응 멀티에이전트 — 5개 파트를 하나로 묶어 실�
 무엇이 '진짜'로 도는가 (PX4·Gazebo·GPU·ROS 전부 불필요):
   · 환경(김은주)  : environment/의 실제 산불 CA 모델을 매 스텝 확산.
                     rasterio/데이터가 없으면 내장 stateful 산불 모델로 자동 전환.
-  · UAV(김동현)   : px4/uav-agent FastAPI 서버(MockDrone)를 서브프로세스로 띄우고,
+  · UAV(김동현)   : uav/uav-agent FastAPI 서버(MockDrone)를 서브프로세스로 띄우고,
                     이원규님 실제 HTTP 커넥터가 evaluate/execute를 HTTP로 호출.
   · UGV(박유홍)   : 실제 도로 그래프 + Dijkstra로 도달성·ETA·도로차단 재탐색.
   · 통합/재평가(이원규) : main.process_task의 폐루프·재평가·Decision ID를 그대로 사용.

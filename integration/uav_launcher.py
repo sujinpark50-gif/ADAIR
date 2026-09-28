@@ -2,7 +2,7 @@
 """
 integration/uav_launcher.py
 ===========================
-김동현님의 UAV Local Agent(px4/uav-agent, FastAPI)를 UAV 1대 = 프로세스 1개 = 포트 1개
+김동현님의 UAV Local Agent(uav/uav-agent, FastAPI)를 UAV 1대 = 프로세스 1개 = 포트 1개
 구조 그대로 서브프로세스로 띄운다. 각 서버는 UAV_MODE=mock(MockDrone)이라 PX4/Gazebo가
 필요 없다. 서버가 준비되면 config.UAV_ENDPOINTS를 채우고 UAV_CONNECTION_MODE='real'로 바꾼다.
 
@@ -26,7 +26,7 @@ except ImportError:
 import config
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_UAV_DIR = _REPO_ROOT / "px4" / "uav-agent"
+_UAV_DIR = _REPO_ROOT / "uav" / "uav-agent"
 
 # 띄울 UAV: 재평가(REJECT→다른 후보) 시연을 위해 base A에 2대
 _UAV_PLAN = [

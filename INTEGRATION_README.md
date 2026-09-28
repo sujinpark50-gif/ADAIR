@@ -23,7 +23,7 @@ python run_integrated.py            # 기본 8스텝 (python run_integrated.py 1
 | 파트 | 담당 | 통합 실행에서 | 
 |---|---|---|
 | 환경·산불 모델 | 김은주 | `environment/`의 **실제 CA 산불 확산 모델**을 매 스텝 진행.<br>`rasterio`+지형 데이터가 없으면 **내장 stateful 산불 모델로 자동 전환**(그래도 불이 실제로 번짐). |
-| UAV | 김동현 | `px4/uav-agent` **FastAPI 서버(MockDrone)를 서브프로세스로 기동**(포트 8000·8001).<br>이원규님 실제 HTTP 커넥터가 `/evaluate`·`/execute`를 **진짜 HTTP로 호출**. |
+| UAV | 김동현 | `uav/uav-agent` **FastAPI 서버(MockDrone)를 서브프로세스로 기동**(포트 8000·8001).<br>이원규님 실제 HTTP 커넥터가 `/evaluate`·`/execute`를 **진짜 HTTP로 호출**. |
 | UGV | 박유홍 | **실제 도로 그래프 + Dijkstra**로 도달성·ETA·도로차단 재탐색. |
 | 통합·재평가 | 이원규 | `main.process_task`의 폐루프·재평가·Decision ID를 그대로 사용. |
 | 총괄·Safety | 박수진 | 계약 기반 Mock 후보선택·Safety 분기(현재 설계 산출물). |

@@ -26,7 +26,7 @@ GitHub에서 해당 브랜치의 Compare & pull request를 선택합니다. 저�
 ## 설치·실행
 
 검증 환경은 Linux / Python 3.12.14입니다. Windows 및 Python 3.14에서의 실행은 미검증입니다.
-기존 환경 Raster 원본 파일과 environment, ugv, px4/uav-agent, interfaces, connectors, logger.py, config.py가 필요합니다.
+기존 환경 Raster 원본 파일과 environment, ugv, uav/uav-agent, interfaces, connectors, logger.py, config.py가 필요합니다.
 ZIP에는 기존 팀 코드와 대용량 Raster가 들어 있지 않습니다. 기존 저장소에 추가해서 사용하세요.
 
 Windows PowerShell 예시(저장소 루트):

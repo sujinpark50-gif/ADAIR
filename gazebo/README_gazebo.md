@@ -72,6 +72,6 @@ python3 -W ignore demo_fly_to_fire.py --col 15 --row 115
 `--col/--row` 로 화재 격자셀 지정, 또는 인자 없이 실 환경 최고위험셀 자동 선택.
 
 ## 주의
-- **2 vCPU 는 빠듯**(px4/NOTE.md). load 5+ 면 `-e PX4_SIM_SPEED_FACTOR=0.5` 추가하거나 EC2(4 vCPU↑) 권장.
+- **2 vCPU 는 빠듯**(uav/NOTE.md). load 5+ 면 `-e PX4_SIM_SPEED_FACTOR=0.5` 추가하거나 EC2(4 vCPU↑) 권장.
 - datum(홈)을 옮기려면 heightmap 모델 `pose.z = 172.1 − 새홈고도` 로 바꾸고 세 곳 datum 갱신.
 - 경로 중간 능선 회피는 미구현(직선 goto). 타깃 고도만 지형+여유 반영.
