@@ -27,7 +27,7 @@ process_task()가 한 Task의 전체 흐름을 처리하며, IT-01/IT-02 테스�
 
 import config
 import ids
-from interfaces.schema import ResourcePool
+from interfaces.schema import ResourcePool, is_registered_reason
 from connectors import fire_connector, uav_connector, ugv_connector, orchestrator_connector, safety_connector
 from logger import EventLogger
 
@@ -108,10 +108,18 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, sim_time_s
         force_response, force_reason = forced if forced else (None, None)
 
         local_response = _send_command(task.task_id, decision.decision_id, assignment, env_state, force_response, force_reason)
+        response_detail = {}
+        if local_response.evidence:
+            response_detail["evidence"] = local_response.evidence
+        if not is_registered_reason(local_response.reason):
+            # 공통 목록에 없는 사유 — 막지 않고 원문 그대로 두되 표시한다
+            response_detail["reason_unregistered"] = True
+            print(f"[warn] 공통 사유 목록에 없는 코드: {local_response.reason} ({assignment.resource_id})")
         logger.log_event(
             "LOCAL_RESPONSE", sim_time_s,
             decision_id=decision.decision_id, task_id=task.task_id, resource_id=assignment.resource_id,
             result=local_response.response, reason=local_response.reason,
+            detail=response_detail or None,
         )
 
         if local_response.response != "ACCEPT":

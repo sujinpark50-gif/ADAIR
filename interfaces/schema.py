@@ -18,7 +18,7 @@ interfaces/schema.py
 """
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, get_args
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +153,20 @@ class LocalResponse:
     reason: Optional[RejectReason] = None      # REJECT일 때만
     counter_alternative: Optional[dict] = None  # COUNTER일 때 대안 (초기 범위 제외, 자리만 확보)
     counter_constraint: Optional[dict] = None   # COUNTER일 때 제한조건 (〃)
+    # 판정 근거 (박수진님 문서 H "판정 근거 — 공통 타입에서 정보 생략" 항목)
+    # Local Agent 가 판단에 쓴 근거를 버리지 않고 총괄·로그로 전달한다. ETA 도 여기(eta_sec 키)에 담는다.
+    # 정식 eta_sec 필드 추가(R01)는 총괄 설계(orchestrator_v012 의 UavEvaluation 확장)와 맞물려 합의 대기.
+    evidence: Optional[dict] = None             # UAV: eta_sec/constraints/detail, UGV: eta_sec/target_node/경로
+
+
+def is_registered_reason(reason) -> bool:
+    """공통 사유 목록(RejectReason)에 등록된 코드인지.
+
+    박수진님 문서 H "reason — 모델 선언과 실제 발생 코드 구분":
+    Local Agent 가 목록에 없는 코드를 보내도 막지 않고(원문 보존) 로그에 표시만 한다.
+    등록 여부 결정 전의 새 코드(예: UGV 의 STALLED, OFF_ROUTE)를 놓치지 않기 위한 장치.
+    """
+    return reason is None or reason in get_args(RejectReason)
 
 
 # ---------------------------------------------------------------------------

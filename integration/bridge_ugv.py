@@ -95,15 +95,21 @@ def send_ugv_command(task_id: str, assignment, force_response=None, force_reason
     if goal is None or snap_m > limit:
         # 목표 근처에 도로 노드가 없다 → 임의 노드(F1)로 대체하지 않고 거절 (fail-closed)
         return LocalResponse(resource_id=assignment.resource_id, response="REJECT",
-                             reason="TARGET_UNREACHABLE")
+                             reason="TARGET_UNREACHABLE",
+                             evidence={"target_node": goal, "snap_m": snap_m, "snap_limit_m": limit})
     # goal == start 는 '이미 목표 노드에 있음'이므로 그대로 둔다 (ETA 0)
     route = g.find_route(start, goal)
 
+    evidence = {"start_node": start, "target_node": goal, "snap_m": round(snap_m, 1),
+                "path_len": len(route.path) if route.path else None}
     if route.reachable:
-        return LocalResponse(resource_id=assignment.resource_id, response="ACCEPT")
+        return LocalResponse(resource_id=assignment.resource_id, response="ACCEPT",
+                             evidence={**evidence, "eta_sec": route.eta_s})
     if route.blocked_road_id is not None:
-        return LocalResponse(resource_id=assignment.resource_id, response="REJECT", reason="ROAD_BLOCKED")
-    return LocalResponse(resource_id=assignment.resource_id, response="REJECT", reason="TARGET_UNREACHABLE")
+        return LocalResponse(resource_id=assignment.resource_id, response="REJECT", reason="ROAD_BLOCKED",
+                             evidence={**evidence, "blocked_road_id": route.blocked_road_id})
+    return LocalResponse(resource_id=assignment.resource_id, response="REJECT", reason="TARGET_UNREACHABLE",
+                         evidence=evidence)
 
 
 def get_ugv_observation(resource_id: str, sim_time_s: float, task_id: str = None, decision_id: str = None) -> Observation:

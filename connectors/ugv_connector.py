@@ -179,14 +179,14 @@ def _send_ugv_command_real(task_id: str, decision_id: str, assignment) -> LocalR
     else:
         _evaluated.pop((task_id, rid), None)
 
-    # LocalResponse 에는 eta·path 칸이 없어 counter_constraint 에 판단 근거로 싣는다 (R01 확장 전 임시)
+    # 판단 근거는 evidence 로 전달한다 (이전: counter_constraint 에 임시 적재)
     return LocalResponse(
         resource_id=rid,
         response=data["verdict"],
         reason=data.get("reason"),
-        counter_constraint={"eta_sec": data.get("eta_sec"), "target_node": data.get("target_node"),
-                            "path_len": len(data["path"]) if data.get("path") else None,
-                            "detail": data.get("detail")},
+        evidence={"eta_sec": data.get("eta_sec"), "target_node": data.get("target_node"),
+                  "path_len": len(data["path"]) if data.get("path") else None,
+                  "detail": data.get("detail")},
     )
 
 

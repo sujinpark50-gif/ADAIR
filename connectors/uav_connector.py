@@ -193,6 +193,8 @@ def _send_uav_command_real(task_id: str, decision_id: str, assignment, wind_ms: 
         reason=data.get("reason"),
         counter_alternative=data.get("counter_offer"),
         counter_constraint=data.get("constraints"),
+        evidence={"eta_sec": data.get("eta_sec"), "constraints": data.get("constraints"), "detail": data.get("detail"),
+                  "counter_offer": data.get("counter_offer")},
     )
 
 
