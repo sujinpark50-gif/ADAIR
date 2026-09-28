@@ -151,7 +151,9 @@ def auto_toggle():
     return {"on": _AUTO["on"]}
 
 @app.post("/api/auto/tick")  # ▶ 변경: 함수 전체 재작성
-async def auto_tick():
+# async 가 아닌 일반 함수로 둔다: 안의 process_task 가 UAV 서버를 동기 HTTP 로 부르므로(수 초),
+# async 로 두면 그동안 서버 전체가 멈춰 "자동 중지"·지도 갱신 요청까지 대기하게 된다.
+def auto_tick():
     if not _AUTO["on"]:
         return {"on": False, "events": []}
     ev = []
