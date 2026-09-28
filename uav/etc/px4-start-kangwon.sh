@@ -50,13 +50,39 @@ docker run -d --name px4 \
   -e PX4_GZ_MODEL_POSE="$PX4_GZ_MODEL_POSE" \
   px4io/px4-sitl-gazebo:latest
 
+# 기동 대기 — 고정 sleep 을 쓰지 않는다.
+# 강원 지형 월드는 heightmap 로딩이 무거워 2 vCPU 에서 40초를 넘기는 경우가 있고,
+# 부팅이 덜 끝난 상태에서 px4-param 을 때리면 MAVLink 가 소켓만 열고 죽는다
+# (px4-mavlink status 가 빈 출력, 14540 으로 패킷 0개). 실제로 뜰 때까지 기다린다.
 echo "기동 대기..."
-sleep 40   # 지형 로딩 때문에 기본 월드(30초)보다 길게 둔다
+for i in $(seq 1 90); do
+  # offboard 링크(14580)가 열리고 PX4 셸이 응답하면 부팅 완료로 본다.
+  if ss -uln 2>/dev/null | grep -q ':14580' \
+     && timeout 5 docker exec px4 /opt/px4-gazebo/bin/px4-commander status >/dev/null 2>&1; then
+    echo "PX4 기동 완료 (${i}초)"
+    break
+  fi
+  sleep 1
+  [ "$i" = 90 ] && { echo "⚠️  90초 내 기동 실패 — docker logs px4 확인"; exit 1; }
+done
 
 # GCS(QGC) 없이 시동을 걸기 위한 안전장치 해제. ⚠️ 시뮬레이션 전용 — 실기체 금지.
 PX4_BIN=/opt/px4-gazebo/bin/px4-param
 docker exec px4 $PX4_BIN set NAV_RCL_ACT 0      # RC 끊겨도 failsafe 동작 안 함
 docker exec px4 $PX4_BIN set NAV_DLL_ACT 0      # datalink(GCS) 끊겨도 failsafe 동작 안 함
 docker exec px4 $PX4_BIN set COM_RCL_EXCEPT 4   # RC 상실 예외 처리 — offboard 모드 허용
+
+# MAVLink 가 실제로 14540 으로 송신하는지 확인한다. Agent 는 udpin://0.0.0.0:14540 으로 받는다.
+echo "MAVLink 확인..."
+python3 - <<'EOF' || echo "⚠️  14540 으로 패킷이 오지 않음 — ./px4-stop.sh 후 재기동 필요"
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", 14540)); s.settimeout(15)
+try:
+    s.recvfrom(2048); print("  → 14540 수신 확인")
+except socket.timeout:
+    sys.exit(1)
+EOF
 
 docker ps --format '{{.Names}} | {{.Status}}'

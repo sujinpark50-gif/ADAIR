@@ -174,16 +174,17 @@ MAVSDK 연결 타임아웃의 대부분은 14550 을 잘못 쓴 경우다. **Age
 ## 3. Python 환경
 
 ```bash
-python3 -m venv ~/uav-venv4
-source ~/uav-venv4/bin/activate
-pip install --upgrade pip
-pip install "mavsdk>=4,<5" fastapi uvicorn pydantic
+./uav/etc/setup-venv.sh        # repo 루트에 .venv 생성 + requirements.txt 설치
+source .venv/bin/activate
 ```
+
+venv 는 git 에 올리지 않는다. `bin/activate` 에 생성 당시의 절대경로가 박히고 `lib/` 는
+플랫폼별 바이너리라서, 커밋해도 다른 머신에서 그대로 깨진다. 재현성은 requirements.txt 가 맡는다.
 
 **현재 코드는 MAVSDK 4.x(네이티브 바인딩) 전용이다** (Python 3.14.4, mavsdk 4.0.0, fastapi 0.141.1).
 초기(09-15)에는 mavsdk 3.17.x(gRPC)를 썼으나, 3.x 의 `System().connect()` / `drone.telemetry.*`
 방식은 4.x 에서 동작하지 않아 `drone.py` 를 4.x 방식(`Mavsdk` + `TelemetryAsync`)으로 옮겼다.
-`~/uav-venv`(3.x)로 real 모드를 띄우면 실패한다.
+mavsdk 3.x 가 깔린 환경으로 real 모드를 띄우면 실패한다.
 
 ---
 
@@ -418,8 +419,8 @@ asyncio.run(main())
 ```
 
 ```bash
-source ~/uav-venv/bin/activate
-python ~/uav-agent/check.py
+source .venv/bin/activate
+python uav/uav-agent/check.py
 ```
 
 **실측 확인됨 (2026-09-15)** — 위 스크립트로 연결·위치·배터리·health 조회 성공.

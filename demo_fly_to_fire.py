@@ -7,7 +7,7 @@ demo_fly_to_fire.py  ·  강원 kangwon 월드에서 드론을 '화재 셀'로 �
 
 전제 (팀 EC2/WSL, 아래 런북 순서대로):
   1) PX4 SITL + Gazebo 가 kangwon 월드로 떠 있고 (PX4_HOME = datum),
-  2) 이 스크립트를 실행하는 환경에 mavsdk 설치 (uav-venv),
+  2) 이 스크립트를 실행하는 환경에 mavsdk 설치 (.venv),
   3) 저장소 루트에서 실행 (gz_bridge import 위해).
 
 주의: 이 스크립트는 현재 개발 컨테이너에서 실행/검증되지 않았다(문법만 확인).
@@ -28,7 +28,7 @@ import sys
 try:
     from mavsdk import System
 except ImportError:
-    print("mavsdk 가 없습니다. uav-venv 활성화 후:  pip install mavsdk", file=sys.stderr)
+    print("mavsdk 가 없습니다. .venv 활성화 후: ./uav/etc/setup-venv.sh", file=sys.stderr)
     sys.exit(1)
 
 import gz_bridge

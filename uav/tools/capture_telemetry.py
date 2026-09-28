@@ -6,8 +6,8 @@
   가공  UAV Agent GET /state, POST /evaluate (evaluate 는 판단만 하며 기체를 움직이지 않는다)
 
 실행 (PX4 + UAV Agent real 모드가 떠 있는 상태):
-  ~/uav-venv4/bin/python uav/tools/capture_telemetry.py
-  ~/uav-venv4/bin/python uav/tools/capture_telemetry.py --agent http://3.37.210.229:8000
+  .venv/bin/python uav/tools/capture_telemetry.py
+  .venv/bin/python uav/tools/capture_telemetry.py --agent http://3.37.210.229:8000
 
 MAVSDK 는 기본으로 PX4 의 GCS 링크(14550)에 붙는다. UAV Agent 가 쓰는 14540 에 같이 붙으면
 포트 경합으로 Agent 텔레메트리가 튄다(NOTE.md 6-2).
