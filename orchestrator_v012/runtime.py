@@ -12,13 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class EnvironmentAdapter:
     def __init__(self, config_path=None):
-        # 환경 모듈의 기존 src.environment import 경로를 제공한다.
+        # 환경 모듈의 기존 src import 경로를 제공한다.
         env_dir = str(ROOT / 'environment')
         if env_dir not in sys.path:
             sys.path.insert(0, env_dir)
-        from src.environment.grid import EnvironmentGrid
-        from src.environment.fire_model import WildfireCAEngine
-        from src.environment.api import EnvironmentModelAPI
+        from src.grid import EnvironmentGrid
+        from src.fire_model import WildfireCAEngine
+        from src.api import EnvironmentModelAPI
         path = str(config_path or ROOT / 'environment/config/environment_config.yaml')
         grid = EnvironmentGrid(path, seed=42)
         engine = WildfireCAEngine(grid, config_path=path, seed=42)

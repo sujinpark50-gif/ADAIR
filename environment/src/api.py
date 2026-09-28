@@ -23,12 +23,12 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
-from src.environment.cell import Cell, FireState
-from src.environment.observation import ObservationReport, ObservationUpdateHandler
+from src.cell import Cell, FireState
+from src.observation import ObservationReport, ObservationUpdateHandler
 
 if TYPE_CHECKING:
-    from src.environment.fire_model import WildfireCAEngine
-    from src.environment.grid import EnvironmentGrid
+    from src.fire_model import WildfireCAEngine
+    from src.grid import EnvironmentGrid
 
 
 class EnvironmentModelAPI:

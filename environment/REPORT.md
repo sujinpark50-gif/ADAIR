@@ -9,10 +9,10 @@
 ## 1. 담당 작업
 - **전체 시스템에서의 역할**: 환경 / 산불 모델링
 - **핵심 역할 및 구현 방식**:
-  - **GIS 2D 환경 격자 구축 (`src/environment/grid.py`)**: 인제 원통-기린 지역 등 실제 GIS raster 데이터(`dem_clipped.tif`, `slope_5186.tif`, `aspect_5186.tif`, `fuel_type.tif`, `roads_raster.tif`)를 입력 처리하여 90m 셀 해상도의 2D `EnvironmentGrid` 생성.
-  - **Cellular Automata 산불 확산 엔진 (`src/environment/fire_model.py`)**: Rothermel 표면 확산 모델의 영향을 반영한 확산 확률 기반 CA 엔진으로, 지형(경사), 기상(풍향/풍속), 식생(연료량), 습도를 반영하여 `UNBURNED -> BURNING -> BURNED` 상태 전이를 계산.
-  - **위험도 산출 (`src/environment/risk.py`)**: 화재 상태, Downwind 유효 범위, 경사도 및 연료량 등을 조합해 셀 단위 `risk_score`를 계산.
-  - **외부 연동 API 및 현장 관측 반영 (`src/environment/api.py`, `observation.py`)**: 총괄 Orchestrator, UAV/UGV 및 통합 시스템 연동용 `EnvironmentModelAPI` 제공 및 외부 관측 보고서(`ObservationReport`)를 입력받아 화재 상태/바람/습도 값을 모델에 반영할 수 있도록 구성.
+  - **GIS 2D 환경 격자 구축 (`src/grid.py`)**: 인제 원통-기린 지역 등 실제 GIS raster 데이터(`dem_clipped.tif`, `slope_5186.tif`, `aspect_5186.tif`, `fuel_type.tif`, `roads_raster.tif`)를 입력 처리하여 90m 셀 해상도의 2D `EnvironmentGrid` 생성.
+  - **Cellular Automata 산불 확산 엔진 (`src/fire_model.py`)**: Rothermel 표면 확산 모델의 영향을 반영한 확산 확률 기반 CA 엔진으로, 지형(경사), 기상(풍향/풍속), 식생(연료량), 습도를 반영하여 `UNBURNED -> BURNING -> BURNED` 상태 전이를 계산.
+  - **위험도 산출 (`src/risk.py`)**: 화재 상태, Downwind 유효 범위, 경사도 및 연료량 등을 조합해 셀 단위 `risk_score`를 계산.
+  - **외부 연동 API 및 현장 관측 반영 (`src/api.py`, `observation.py`)**: 총괄 Orchestrator, UAV/UGV 및 통합 시스템 연동용 `EnvironmentModelAPI` 제공 및 외부 관측 보고서(`ObservationReport`)를 입력받아 화재 상태/바람/습도 값을 모델에 반영할 수 있도록 구성.
 
 ---
 
