@@ -108,16 +108,17 @@ c = gb.fire_cell_grid_to_gz(env_state.fire_cells[0])   # {x,y,...} → +lat,lon,
 
 브라우저에서 강원 지형·산불(CA)·드론·지상자원(UGV/소방차)을 실시간으로 보고, 버튼 하나로
 감지→출동→진화→재확산이 도는 완전 자동 폐루프. FastAPI 게이트웨이(:8080)가 gz_bridge(좌표)·
-fire_connector(환경 CA)·ugv/road_graph(도로 경로)를 감싸고, uav-agent(:8000, real)로 실제 PX4 제어.
+fire_connector(환경 CA)·ugv/graph_gpkg(실제 도로망)를 감싸고, uav-agent(:8000, real)로 실제 PX4 제어.
 
 실행 (repo 루트에서, uav-agent(:8000) 기동 후 — mock 이면 PX4 불필요):
     python -m pip install -r requirements-integrated.txt
     python -m uvicorn web.app:app --host 127.0.0.1 --port 8080
     # 브라우저 http://localhost:8080 → "자동 시작"
 
-현재 한계(표현 주의): UAV는 uav-agent HTTP로 실제 호출하지만, **UGV 목록은 커넥터 mock 상태이고
-화면의 UGV 이동은 도로 경로를 따라 브라우저에서 보간한 표시**입니다(UGV 서버 실주행 연동 아님).
+현재 한계(표현 주의): UAV는 uav-agent HTTP로 실제 호출합니다. UGV 목록·경로는 박유홍님 **실제 도로망
+(integrated 브리지)** 기준이지만, **화면의 UGV 이동은 그 경로를 따라 브라우저에서 보간한 표시**이고
+UGV 서버(ugv/server.py) 실주행과는 연결되어 있지 않습니다. 자동 폐루프의 후보는 아직 UAV만입니다.
 
 파일: web/app.py(게이트웨이+UI+자동 폐루프), web/static/auto.js(자동 프론트),
-     gz_bridge.py(좌표), ugv/graph_data_demo.py(도로망), connectors/fire_connector.py(강원 CA real),
+     gz_bridge.py(좌표), ugv/graph_gpkg.py(실제 도로망), connectors/fire_connector.py(강원 CA real),
      uav/gazebo/kangwon.sdf(강원 월드, datum 동일).

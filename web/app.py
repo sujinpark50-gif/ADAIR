@@ -8,6 +8,8 @@ from pydantic import BaseModel
 import config
 config.FIRE_CONNECTION_MODE = "real"
 config.UAV_CONNECTION_MODE = "real"          # ▶ 변경: auto_tick이 uav_connector로 실제 서버에 붙게 함
+# UGV 목록·위치는 박유홍님 실제 도로망 기반 브리지(integrated)에서 가져온다 (이전: 커넥터 mock 좌표)
+config.UGV_CONNECTION_MODE = "integrated"
 config.UAV_ENDPOINTS = {
     os.environ.get("UAV_ID", "A-uav1"): os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
 }                                             # ▶ 변경
@@ -19,7 +21,8 @@ import ids                                   # ▶ 변경
 import gz_bridge as gb
 import math
 from ugv.road_graph import RoadGraph
-from ugv.graph_data_demo import NODES, ROADS
+# 경로 그리기도 실제 도로망(roads_clipped.gpkg, 노드 534)을 쓴다 (이전: 데모 6노드 그래프)
+from ugv.graph_gpkg import NODES, ROADS
 from connectors import ugv_connector
 from ugv.geo import distance_m
 _RG = RoadGraph(NODES, ROADS)
@@ -35,7 +38,7 @@ def _nearest_node(lat, lon):
 UAV_AGENT = os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
 UAV_ID    = os.environ.get("UAV_ID", "A-uav1")
 WIND_MS   = float(os.environ.get("WEB_WIND_MS", "3.0"))
-PREVIEW   = os.path.join(os.path.dirname(__file__), "..", "gazebo", "kangwon_terrain_preview.png")
+PREVIEW   = os.path.join(os.path.dirname(__file__), "static", "kangwon_terrain_preview.png")   # 강원 DEM 음영기복 (CA 격자 범위와 동일)
 COLS, ROWS = 308, 236
 
 from fastapi.staticfiles import StaticFiles
@@ -87,7 +90,7 @@ def cell(lat: float, lon: float):
 
 @app.get("/api/ugv")
 def ugv(col: int = 60, row: int = 70):
-    # 자원 목록(mock): UGV/소방차 위치·capability
+    # 자원 목록: UGV/소방차 위치·capability (integrated — 실제 거점 노드)
     try:
         res = ugv_connector.get_ugv_status("A")
     except Exception:
@@ -204,7 +207,12 @@ async def fly(req: FlyReq):
     tid = "WEB-"+uuid.uuid4().hex[:8]; did = "DEC-"+uuid.uuid4().hex[:8]
     base = {"task_id": tid, "decision_id": did, "target": target, "observation_type": "THERMAL"}
     async with httpx.AsyncClient(timeout=30) as cx:
-        ev = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/evaluate", json={**base,"wind_ms":WIND_MS})).json()
+        # 풍속은 환경모델 값을 싣는다 (김동현님 R01_R05 6-2). 조회 실패 시에만 WEB_WIND_MS 사용
+        try:
+            wind = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False).wind_speed
+        except Exception:
+            wind = WIND_MS
+        ev = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/evaluate", json={**base,"wind_ms":wind})).json()
         if ev.get("verdict") != "ACCEPT":
             return {"ok": False, "verdict": ev.get("verdict"), "reason": ev.get("reason"), "target": target}
         ex = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)).json()
