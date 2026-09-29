@@ -5,7 +5,8 @@ orchestrator/priority.py
 임무 우선순위 판단 근거 (요청서 §8, 사용자 결정 2026-09-29).
 
 입력 (같은 환경 snapshot 안에서만)
-- risk_cells      : 화선 주변 UNBURNED 위험 셀. cell_id, lat, lon, cell_size_m, risk_score
+- risk_cells      : 화선 주변 UNBURNED 위험 셀. cell_id, lat, lon, cell_size_m, risk_score,
+                    인명 노출(human_exposure bool 또는 building_type, 1=주거 — 환경팀 제공 합의 2026-09-30)
 - protected_sites : 보호대상 registry. site_id, site_type, boundary[[lat,lon],...] 또는 location{lat,lon},
                     official_priority_rank(공식 문서에 순위가 있을 때만), official_source{...}
 
@@ -13,13 +14,13 @@ orchestrator/priority.py
 - 각 위험 셀(정사각형)과 각 보호대상 경계의 최소 거리(m). 좌표가 없으면 계산하지 않는다.
 - 임무별 기준: 위험도(높을수록), 보호대상까지 거리(가까울수록), 가장 가까운 보호대상의 공식 순위(높을수록)
 
-비교 규칙 — 가중치·합성식 없음
-- 모든 기준에서 같거나 낫고 하나 이상 더 나으면 먼저 (우월 관계). 이 관계로 층(front)을 나눈다.
-- 같은 층 안의 임무는 서로 엇갈리는 것이다. 자원이 모자라 둘 중 하나만 갈 수 있을 때
-  총괄이 임의로 고르지 않고 "사람 판단 필요"로 보류한다 (엔진 dispatch_pending).
-- 기준 값이 없는 임무: 위험도 누락은 사용자 결정대로 그 기준에서 가장 뒤로 보고 기록한다.
-  거리·공식 순위는 모든 임무에 값이 있을 때만 비교 기준으로 쓴다.
-- 완전히 같은 경우에만 접수 순서로 정한다 (사용자 결정 6번째 기준).
+비교 규칙 (사용자 결정 2026-09-30) — 가중치·합성식 없음
+- 인명피해 예상 지역이 항상 먼저 (소방청 SOP 인명 보호 최우선).
+- 그다음 위험도(조금이라도 높은 쪽) → 보호대상 거리 → 공식 순위 → 접수 순서.
+- 인명 여부가 같은 임무끼리 위험도 차이가 기준(0.1) 이내이거나 기준이 엇갈리면 "선택 묶음"으로
+  화면에 나란히 표시한다. 사람 선택 버전은 자원이 모자랄 때 사람이 고를 때까지 대기,
+  자동 버전은 위 순서대로 바로 보내고 '자동 결정'으로 표시한다 (engine.dispatch_pending).
+- 위험도 누락은 가장 뒤로 보고 기록한다. 거리·공식 순위는 모든 임무에 값이 있을 때만 쓴다.
 
 공간 계산: 대상들의 중심 위도 기준 국지 평면 근사(등장방형). 방법을 결과에 기록한다.
 """
@@ -102,8 +103,22 @@ def polygon_distance_m(a: List[Tuple[float, float]], b: List[Tuple[float, float]
 # 위험 셀 ↔ 보호대상 거리 표
 # ---------------------------------------------------------------------------
 
+# 환경 코드(environment/src/risk.py)의 건물 유형 코드: 0 없음, 1 주거, 2 중요시설, 3 핵심시설
+RESIDENTIAL_BUILDING_TYPE = 1
+
+
+def _human_flag(cell: dict) -> Optional[bool]:
+    """셀의 인명 노출 여부. 환경이 준 값만 쓴다: human_exposure(bool) 또는 building_type(1=주거)."""
+    if isinstance(cell.get("human_exposure"), bool):
+        return cell["human_exposure"]
+    bt = cell.get("building_type")
+    if isinstance(bt, int) and not isinstance(bt, bool):
+        return bt == RESIDENTIAL_BUILDING_TYPE
+    return None
+
+
 def risk_context(snapshot: Snapshot) -> dict:
-    cells, sites = snapshot.risk_cells, snapshot.protected_sites
+    cells, sites = snapshot.fire_cells + snapshot.risk_cells, snapshot.protected_sites
     lats = [c["lat"] for c in cells if c.get("lat") is not None] + \
            [s.get("location", {}).get("lat") for s in sites if s.get("location")] + \
            [p[0] for s in sites for p in (s.get("boundary") or [])]
@@ -117,6 +132,7 @@ def risk_context(snapshot: Snapshot) -> dict:
         g, kind = _site_geometry(proj, s)
         ctx["sites"][s["site_id"]] = {"site_type": s.get("site_type"), "geometry": kind,
                                       "official_priority_rank": s.get("official_priority_rank"),
+                                      "human_occupied": s.get("human_occupied"),
                                       "official_source": s.get("official_source")}
         if g is None:
             ctx["missing"].append({"site_id": s["site_id"], "reason": "SITE_GEOMETRY_MISSING"})
@@ -124,7 +140,8 @@ def risk_context(snapshot: Snapshot) -> dict:
             geoms[s["site_id"]] = g
     for c in cells:
         poly = _cell_polygon(proj, c)
-        entry = {"risk_score": c.get("risk_score"), "fire_state": c.get("fire_state"), "distances": []}
+        entry = {"risk_score": c.get("risk_score"), "fire_state": c.get("fire_state"),
+                 "human_exposure": _human_flag(c), "building_type": c.get("building_type"), "distances": []}
         if poly is None:
             ctx["missing"].append({"cell_id": c.get("cell_id"), "reason": "CELL_GEOMETRY_MISSING"})
         else:
@@ -140,7 +157,7 @@ def risk_context(snapshot: Snapshot) -> dict:
 # ---------------------------------------------------------------------------
 
 def task_evidence(task: Task, ctx: dict) -> dict:
-    """임무 대상 셀들의 기준 값. 값이 없으면 None 으로 둔다."""
+    """임무 대상 셀들의 기준 값. 값이 없으면 None 으로 둔다 (지어내지 않음)."""
     ids = list(task.area_cell_ids or ([task.target.cell_id] if task.target.cell_id else []))
     entries = [(cid, ctx["cells"][cid]) for cid in ids if cid in ctx["cells"]]
     scores = [e["risk_score"] for _, e in entries if isinstance(e.get("risk_score"), (int, float))]
@@ -148,12 +165,28 @@ def task_evidence(task: Task, ctx: dict) -> dict:
     for cid, e in entries:
         if e["distances"] and (nearest is None or e["distances"][0]["distance_m"] < nearest["distance_m"]):
             nearest = {"cell_id": cid, **e["distances"][0]}
-    rank = None
     if nearest:
-        rank = ctx["sites"].get(nearest["site_id"], {}).get("official_priority_rank")
+        nearest["site_type"] = ctx["sites"].get(nearest["site_id"], {}).get("site_type")
+    rank = ctx["sites"].get(nearest["site_id"], {}).get("official_priority_rank") if nearest else None
+    # 인명피해 예상: 환경 셀의 human_exposure, 또는 사람이 있는 보호대상과 셀이 겹침(거리 0)
+    human_sources = []
+    flags = [e.get("human_exposure") for _, e in entries]
+    for cid, e in entries:
+        if e.get("human_exposure") is True:
+            human_sources.append({"cell_id": cid, "source": "ENV_CELL_RESIDENTIAL" if e.get("building_type") == 1
+                                  else "ENV_CELL_HUMAN_EXPOSURE"})
+        for d in e["distances"]:
+            if d["distance_m"] == 0.0 and ctx["sites"].get(d["site_id"], {}).get("human_occupied") is True:
+                human_sources.append({"cell_id": cid, "site_id": d["site_id"], "source": "OVERLAPS_OCCUPIED_SITE"})
+    if human_sources:
+        human = True
+    elif flags and all(f is False for f in flags):
+        human = False
+    else:
+        human = None                         # 정보 없음 — 인명 없음으로 단정하지 않고 기록
     return {"task_id": task.task_id, "cells_used": [c for c, _ in entries],
-            "risk_score": max(scores) if scores else None,
-            "risk_score_missing": not scores,
+            "human_risk": human, "human_risk_sources": human_sources,
+            "risk_score": max(scores) if scores else None, "risk_score_missing": not scores,
             "nearest_protected": nearest, "distance_m": nearest["distance_m"] if nearest else None,
             "official_priority_rank": rank}
 
@@ -180,24 +213,70 @@ def _dominates(a, b, crit) -> bool:
     return all(x <= y for x, y in zip(ka, kb)) and any(x < y for x, y in zip(ka, kb))
 
 
-def order_tasks(tasks: List[Task], snapshot: Snapshot) -> dict:
-    """{fronts: [[task_id,...], ...], evidence: {...}, criteria: [...], context: ...}
-    front 안은 접수 순서. 같은 front 에서 기준 값이 서로 다르면 엇갈림(conflict)으로 표시한다."""
+def order_tasks(tasks: List[Task], snapshot: Snapshot, similar_delta: Optional[float] = None) -> dict:
+    """우선순위 계획.
+
+    auto_order : 인명 예상 → 위험도(조금이라도 높은 쪽) → 거리 → 공식 순위 → 접수 순서 (자동 버전)
+    groups     : 사람 판단이 필요할 수 있는 묶음. 인명 여부가 같은 Task 끼리
+                 - 위험도 차이가 similar_delta 이내 (SIMILAR)
+                 - 기준이 엇갈림 (CONFLICT, 우월 관계 없음)
+    units      : 배정 단위 순서. 묶음은 한 단위, 나머지는 한 Task 씩. auto_order 에서 가장 앞선
+                 구성원의 위치로 정렬한다.
+    """
     ctx = risk_context(snapshot)
     evs = {t.task_id: task_evidence(t, ctx) for t in tasks}
     crit = _criteria(list(evs.values()))
     created = {t.task_id: (t.created_wall, t.task_id) for t in tasks}
-    remaining, fronts = list(evs), []
-    while remaining:
-        front = [a for a in remaining if not any(_dominates(evs[b], evs[a], crit) for b in remaining if b != a)]
-        front.sort(key=lambda tid: created[tid])
-        fronts.append(front)
-        remaining = [t for t in remaining if t not in front]
-    conflicts = []
-    for f in fronts:
-        vals = {tuple(_key(evs[t], c) for c in crit) for t in f}
-        if len(vals) > 1:
-            conflicts.append(f)
-    return {"fronts": fronts, "conflicting_fronts": conflicts, "criteria": crit, "evidence": evs,
-            "rule": "PARETO_DOMINANCE_NO_WEIGHTS; equal → created order; risk missing → last",
+
+    def human_rank(tid):
+        return 0 if evs[tid]["human_risk"] is True else 1
+
+    auto_order = sorted(evs, key=lambda tid: (human_rank(tid), *(_key(evs[tid], c) for c in crit), created[tid]))
+    pos = {tid: i for i, tid in enumerate(auto_order)}
+
+    parent = {tid: tid for tid in evs}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    kinds = {}
+    ids = list(evs)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            if human_rank(a) != human_rank(b):
+                continue                         # 인명 예상 지역은 항상 먼저 — 묶지 않는다
+            ea, eb = evs[a], evs[b]
+            why = set()
+            if (similar_delta is not None and ea["risk_score"] is not None and eb["risk_score"] is not None
+                    and abs(ea["risk_score"] - eb["risk_score"]) <= similar_delta + 1e-12):
+                why.add("SIMILAR")
+            same = all(_key(ea, c) == _key(eb, c) for c in crit)
+            if crit and not same and not _dominates(ea, eb, crit) and not _dominates(eb, ea, crit):
+                why.add("CONFLICT")
+            if why:
+                ra, rb = find(a), find(b)
+                parent[ra] = rb
+                kinds.setdefault(frozenset((a, b)), set()).update(why)
+    comps = {}
+    for tid in ids:
+        comps.setdefault(find(tid), []).append(tid)
+    groups, units = [], []
+    for members in comps.values():
+        members.sort(key=lambda t: pos[t])
+        if len(members) > 1:
+            k = set()
+            for pair, why in kinds.items():
+                if pair <= set(members):
+                    k |= why
+            groups.append({"task_ids": members, "kinds": sorted(k), "auto_choice": members[0]})
+        units.append(members)
+    units.sort(key=lambda m: pos[m[0]])
+    groups.sort(key=lambda g: pos[g["task_ids"][0]])
+    return {"auto_order": auto_order, "units": units, "groups": groups, "criteria": crit,
+            "similar_delta": similar_delta, "evidence": evs,
+            "rule": "HUMAN_RISK_FIRST; then risk_score desc, distance asc, official rank; equal → created order; "
+                    "risk missing → last; groups = same human class & (risk diff <= delta or crossing criteria)",
             "context": {k: ctx[k] for k in ("snapshot", "crs", "method", "registry_present", "missing")}}

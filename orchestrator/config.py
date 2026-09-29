@@ -57,6 +57,15 @@ COUNTER_ROUNDS_PER_RESOURCE = 2
 COUNTER_SUPPORTED_FIELDS = {"UAV": {"target_agl_m"}, "UGV": set()}
 
 # ---------------------------------------------------------------------------
+# 우선순위 (사용자 결정 2026-09-30)
+#   HUMAN_CHOICE      비슷하거나 엇갈리는 후보를 화면에 나란히 보여주고, 자원이 모자라면 사람이 고를 때까지 대기
+#   AUTO_HIGHER_RISK  인명 → 위험도가 조금이라도 높은 곳 순으로 바로 보내고 '자동 결정'으로 표시
+# ---------------------------------------------------------------------------
+PRIORITY_MODE = os.getenv("ORCH_PRIORITY_MODE", "HUMAN_CHOICE")
+PRIORITY_MODES = ("HUMAN_CHOICE", "AUTO_HIGHER_RISK")
+PRIORITY_SIMILAR_RISK_DELTA = 0.1     # 위험도 차이가 이 값 이내면 '비슷함' (risk_score 0~1 기준)
+
+# ---------------------------------------------------------------------------
 # UAV 고도 (UAV_CODE) — 비행고도 = 지면 AMSL + target_agl_m + 10m 는 UAV 가 계산.
 # 총괄은 alt_m_amsl 에 지면고도만 넣고 80m·10m 를 더하지 않는다 (요청서 §4.1).
 # ---------------------------------------------------------------------------

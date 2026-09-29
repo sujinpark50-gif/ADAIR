@@ -33,6 +33,7 @@ class Orchestrator:
     def __init__(self, ledger: Ledger, env, uav=None, ugv=None):
         self.ledger, self.env, self.uav, self.ugv = ledger, env, uav, ugv
         self.gate = SnapshotGate()
+        self.priority_mode = config.PRIORITY_MODE
 
     # ------------------------------------------------------------------
     # 접수
@@ -185,48 +186,83 @@ class Orchestrator:
                                       age_of=lambda v: client_of[v.resource_id].source_age_s(v))
         return {v.resource_id for _, v in ranked}
 
-    def dispatch_pending(self) -> dict:
-        """대기 Task 를 우선순위 층(front) 순서로 배정한다.
+    def set_priority_mode(self, mode: str, reason: str = "") -> dict:
+        if mode not in config.PRIORITY_MODES:
+            return {"status": "REFUSED", "reason": "UNKNOWN_MODE", "modes": list(config.PRIORITY_MODES)}
+        self.ledger.log("PRIORITY_MODE_CHANGED", result=mode, reason=reason or None,
+                        detail={"previous": self.priority_mode})
+        self.priority_mode = mode
+        return {"status": "OK", "mode": mode}
 
-        같은 층 안에서 기준이 엇갈리는 Task 들이 쓸 수 있는 자원 수보다 많으면, 누구를 먼저
-        보낼지 정할 합의된 규칙이 없으므로 그 층 전체를 사람 판단 대기로 보류한다 (요청서 §8).
-        사전 점검 뒤에도 같은 층 Task 가 자원을 먼저 가져가 밀린 경우 역시 보류한다.
+    def dispatch_pending(self) -> dict:
+        """대기 Task 를 우선순위 단위(unit) 순서로 배정한다 (priority.order_tasks).
+
+        선택 묶음(비슷함·엇갈림)의 처리는 모드에 따른다.
+          HUMAN_CHOICE     묶음이 쓸 수 있는 자원이 묶음 크기보다 적으면 묶음 전체를 사람 선택 대기로 보류.
+                           자원이 충분하면 모두 보낸다 (선택할 필요 없음). 사전 점검 뒤 같은 묶음 Task 가
+                           자원을 가져가 밀린 경우도 보류.
+          AUTO_HIGHER_RISK 인명 → 위험도가 조금이라도 높은 순으로 바로 보내고, 묶음을 '자동 결정'으로 기록.
         """
         snap = self.env.read()
         tasks = [t for t in self.ledger.list_tasks(["PENDING", "HOLD"])
                  if not (t.purpose_status == "HOLD" and t.resume_condition == MANUAL)]
         if not tasks:
-            return {"fronts": [], "results": {}}
-        plan = priority.order_tasks(tasks, snap)
-        self.ledger.log("PRIORITY_ORDER", sim_time_s=snap.simulation_time_s, result="ORDERED",
-                        detail={k: plan[k] for k in ("fronts", "conflicting_fronts", "criteria", "rule",
-                                                     "evidence", "context")})
+            return {"mode": self.priority_mode, "units": [], "groups": [], "results": {}}
+        plan = priority.order_tasks(tasks, snap, config.PRIORITY_SIMILAR_RISK_DELTA)
         by_id = {t.task_id: t for t in tasks}
-        results = {}
-        for front in plan["fronts"]:
-            conflicting = front in plan["conflicting_fronts"]
-            if conflicting:
-                pool = set().union(*(self._candidate_ids(by_id[t], snap) for t in front))
-                if len(pool) < len(front):
-                    for tid in front:
-                        results[tid] = self._hold(by_id[tid], "PRIORITY_CONFLICT", MANUAL,
+        group_of = {tid: g for g in plan["groups"] for tid in g["task_ids"]}
+        results, group_status = {}, {}
+        for unit in plan["units"]:
+            g = group_of.get(unit[0])
+            if g and self.priority_mode == "HUMAN_CHOICE":
+                pool = set().union(*(self._candidate_ids(by_id[t], snap) for t in unit))
+                if len(pool) < len(unit):
+                    for tid in unit:
+                        results[tid] = self._hold(by_id[tid], "AWAITING_PRIORITY_CHOICE", MANUAL,
                                                   snap.simulation_time_s,
-                                                  detail={"front": front, "available_resources": sorted(pool),
-                                                          "evidence": {t: plan["evidence"][t] for t in front},
-                                                          "criteria": plan["criteria"]})
+                                                  detail={"group": unit, "kinds": g["kinds"],
+                                                          "available_resources": sorted(pool),
+                                                          "evidence": {t: plan["evidence"][t] for t in unit}})
+                    group_status[tuple(unit)] = "AWAITING_CHOICE"
                     continue
-            for tid in front:
+            for tid in unit:
                 results[tid] = self.dispatch(tid)
-            if conflicting:
-                taken = {r.get("resource_id") for r in (results[t] for t in front) if r.get("resource_id")}
-                for tid in front:
-                    r = results[tid]
-                    if r.get("status") == "HOLD" and any(
-                            reason == "OCCUPIED" and rid in taken for rid, reason in (r.get("excluded") or {}).items()):
-                        results[tid] = self._hold(self.ledger.get_task(tid), "PRIORITY_CONFLICT", MANUAL,
+            if g:
+                taken = {r.get("resource_id") for r in (results[t] for t in unit) if r.get("resource_id")}
+                starved = [t for t in unit if results[t].get("status") == "HOLD" and any(
+                    reason == "OCCUPIED" and rid in taken for rid, reason in (results[t].get("excluded") or {}).items())]
+                if self.priority_mode == "HUMAN_CHOICE" and starved:
+                    for tid in starved:
+                        results[tid] = self._hold(self.ledger.get_task(tid), "AWAITING_PRIORITY_CHOICE", MANUAL,
                                                   snap.simulation_time_s,
-                                                  detail={"front": front, "taken_by_front_mates": sorted(taken)})
-        return {"fronts": plan["fronts"], "conflicting_fronts": plan["conflicting_fronts"], "results": results}
+                                                  detail={"group": unit, "taken_by_group_mates": sorted(taken)})
+                    group_status[tuple(unit)] = "PARTIAL_AWAITING_CHOICE"
+                elif self.priority_mode == "AUTO_HIGHER_RISK":
+                    group_status[tuple(unit)] = "AUTO_DECIDED"
+                else:
+                    group_status[tuple(unit)] = "ALL_DISPATCHED"
+        groups = [{**g, "status": group_status.get(tuple(g["task_ids"]), "UNKNOWN")} for g in plan["groups"]]
+        self.ledger.log("PRIORITY_ORDER", sim_time_s=snap.simulation_time_s, result=self.priority_mode,
+                        detail={"mode": self.priority_mode, "groups": groups,
+                                **{k: plan[k] for k in ("auto_order", "units", "criteria", "similar_delta",
+                                                        "rule", "evidence", "context")}})
+        return {"mode": self.priority_mode, "units": plan["units"], "groups": groups, "results": results}
+
+    def choose_priority(self, order: List[str], reason: str) -> dict:
+        """사람이 선택 묶음에서 먼저 보낼 순서를 정함. 목록의 Task 만 순서대로 배정하고, 빠진 Task 는 대기 유지.
+        사람이 골라도 Local·Safety 관문은 그대로 거친다."""
+        results = {}
+        self.ledger.log("MANUAL_PRIORITY_CHOICE", result="ORDER", reason=reason, detail={"order": order})
+        for tid in order:
+            t = self.ledger.get_task(tid)
+            if t is None or t.purpose_status != "HOLD" or t.hold_reason != "AWAITING_PRIORITY_CHOICE":
+                results[tid] = {"status": "REFUSED", "reason": "NOT_AWAITING_PRIORITY_CHOICE"}
+                continue
+            t.purpose_status, t.resume_condition = "PENDING", None
+            t.hold_reason = "HUMAN_PRIORITY_CHOSEN"
+            self.ledger.save_task(t)
+            results[tid] = self.dispatch(tid)
+        return {"results": results}
 
     def _approve_and_send(self, task, view, client, snap, did, evaluated, local, mods) -> dict:
         rid = view.resource_id

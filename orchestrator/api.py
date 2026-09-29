@@ -21,10 +21,11 @@ import threading
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import config
+from .board import BOARD_HTML
 from .engine import Orchestrator
 from .env_adapter import FixtureEnv
 from .ledger import Ledger, RequestConflict
@@ -62,6 +63,16 @@ class ResolveIn(BaseModel):
     attempt_id: Optional[str] = None
 
 
+class ModeIn(BaseModel):
+    mode: str = Field(..., description="HUMAN_CHOICE / AUTO_HIGHER_RISK")
+    reason: str = ""
+
+
+class ChooseIn(BaseModel):
+    order: List[str] = Field(..., description="먼저 보낼 Task 순서. 빠진 Task 는 계속 대기")
+    reason: str
+
+
 class EventIn(BaseModel):
     event_id: str
     type: str = Field(..., description="ENV_UPDATED / RESOURCE_CHANGED / ...")
@@ -69,9 +80,33 @@ class EventIn(BaseModel):
     payload: dict = {}
 
 
+def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
+    """Task 의 가장 최근 관측과 환경 반영 결과 요약 (화면 표시용)"""
+    obs = ack = None
+    for e in orch.ledger.events(task_id):
+        if e["event_type"] == "OBSERVATION":
+            obs, ack = e, None
+        elif e["event_type"] == "ENVIRONMENT_APPLY" and obs is not None:
+            ack = e
+    if obs is None:
+        return None
+    d = obs["detail"] or {}
+    fp = d.get("footprint") or {}
+    return {"result": obs["result"], "source": d.get("source"), "sensor_status": d.get("sensor_status"),
+            "sensor_type": d.get("sensor_type"), "failure_reason": d.get("failure_reason"),
+            "covered_cells": d.get("covered_cells"), "detections": d.get("detections"),
+            "target_covered": d.get("target_covered"), "resource_id": obs["resource_id"],
+            "footprint": {k: fp.get(k) for k in ("width_m", "height_m", "agl_m")} if fp else None,
+            "simulation_time_s": d.get("simulation_time_s"), "observed_wall": d.get("observed_wall"),
+            "is_fire_observation": d.get("is_fire_observation", True),
+            "env_apply": None if ack is None else {"result": ack["result"],
+                                                   "state_version": (ack["detail"] or {}).get("state_version")}}
+
+
 def _task_view(orch: Orchestrator, task) -> dict:
     d = task.to_dict()
     d["attempts"] = orch.ledger.list_attempts(task.task_id)
+    d["observation"] = observation_summary(orch, task.task_id)
     return d
 
 
@@ -177,6 +212,53 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     def dispatch_pending():
         with lock:
             return orch.dispatch_pending()
+
+    @app.get("/priority/board")
+    def priority_board():
+        """관제 화면용: 최근 우선순위 판단의 선택 묶음과 각 Task 의 현재 상태·근거"""
+        last = next((e for e in reversed(orch.ledger.events()) if e["event_type"] == "PRIORITY_ORDER"), None)
+        detail = (last or {}).get("detail") or {}
+        evidence = detail.get("evidence", {})
+
+        def row(tid):
+            t = orch.ledger.get_task(tid)
+            ev = evidence.get(tid, {})
+            atts = orch.ledger.list_attempts(tid)
+            return {"task_id": tid, "kind": t.kind if t else None, "cell_id": t.target.cell_id if t else None,
+                    "purpose_status": t.purpose_status if t else None, "hold_reason": t.hold_reason if t else None,
+                    "human_risk": ev.get("human_risk"), "human_risk_sources": ev.get("human_risk_sources"),
+                    "risk_score": ev.get("risk_score"), "distance_m": ev.get("distance_m"),
+                    "nearest_protected": ev.get("nearest_protected"),
+                    "resource_id": atts[-1]["resource_id"] if atts else None,
+                    "observation": observation_summary(orch, tid)}
+        groups = [{**g, "tasks": [row(t) for t in g["task_ids"]],
+                   "awaiting": [t for t in g["task_ids"]
+                                if (orch.ledger.get_task(t) or None) and orch.ledger.get_task(t).hold_reason
+                                == "AWAITING_PRIORITY_CHOICE"]} for g in detail.get("groups", [])]
+        results = []
+        for t in orch.ledger.list_tasks():
+            o = observation_summary(orch, t.task_id)
+            if o:
+                results.append({**row(t.task_id), "observation": o})
+        results.sort(key=lambda r: r["observation"].get("observed_wall") or "", reverse=True)
+        return {"mode": orch.priority_mode, "modes": list(config.PRIORITY_MODES), "results": results,
+                "similar_delta": config.PRIORITY_SIMILAR_RISK_DELTA, "decided_seq": (last or {}).get("seq"),
+                "auto_order": [row(t) for t in detail.get("auto_order", [])], "groups": groups,
+                "criteria": detail.get("criteria"), "rule": detail.get("rule")}
+
+    @app.post("/priority/mode")
+    def priority_mode(body: ModeIn):
+        with lock:
+            return orch.set_priority_mode(body.mode, body.reason)
+
+    @app.post("/priority/choose")
+    def priority_choose(body: ChooseIn):
+        with lock:
+            return orch.choose_priority(body.order, body.reason)
+
+    @app.get("/board", response_class=HTMLResponse)
+    def board():
+        return BOARD_HTML
 
     @app.post("/poll")
     def poll():
