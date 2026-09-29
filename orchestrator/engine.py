@@ -567,13 +567,16 @@ class Orchestrator:
         """예측이 주거지·사람 있는 보호대상에 닿는 곳. 보호대상(없으면 주거 셀)마다 하나로 묶는다."""
         ctx = priority.risk_context(snap)
         by_key = {}
+        site_of_cell = {th["cell_id"]: th["site_id"] for th in ctx.get("forecast_threats", []) if th.get("site_id")}
         for th in ctx.get("forecast_threats", []):
-            key = th.get("site_id") or th["cell_id"]
+            # 보호대상 안에 있는 주거 칸은 그 보호대상 묶음으로 (같은 곳을 두 번 감시하지 않음)
+            key = th.get("site_id") or site_of_cell.get(th["cell_id"]) or th["cell_id"]
             cur = by_key.get(key)
             if cur is None:
-                cur = by_key[key] = {"key": key, "site_id": th.get("site_id"), "cells": [], "basis": set(),
+                cur = by_key[key] = {"key": key, "site_id": th.get("site_id") or site_of_cell.get(th["cell_id"]), "cells": [], "basis": set(),
                                      "earliest_arrival_s": None, "target_cell": None}
-            cur["cells"].append(th["cell_id"])
+            if th["cell_id"] not in cur["cells"]:
+                cur["cells"].append(th["cell_id"])
             cur["basis"].add(th["basis"])
             eta = th.get("expected_arrival_s")
             if eta is not None and (cur["earliest_arrival_s"] is None or eta < cur["earliest_arrival_s"]):

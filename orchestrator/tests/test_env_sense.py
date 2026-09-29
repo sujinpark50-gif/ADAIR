@@ -178,3 +178,15 @@ def test_board_shows_forecast_and_weather(world):
     w = [r for r in b["results"] if r["task_id"] == t.task_id][0]["observation"]
     assert w["values"]["temperature_c"] == 18.0 and w["scope"] == "GLOBAL_FIELD"
     assert "확산 예측" in c.get("/board").text
+
+
+def test_residential_threat_inside_site_is_grouped_with_site(world):
+    orch = world["orch"]
+    _forecast(world)
+    # 마을(VIL) 안에 있는 주거 칸이 예측에 들어옴 → 마을 묶음 하나로
+    world["env"].spread_forecast.append(dict(cell("F-IN-VIL", 0, 400, 0.4), building_type=1,
+                                             expected_arrival_s=1200.0))
+    cands = orch.preemptive_candidates(world["env"].read())
+    vil = [c for c in cands if c["key"] == "VIL"][0]
+    assert set(vil["cells"]) == {"F-VIL", "F-IN-VIL"} and "F-IN-VIL" not in [c["key"] for c in cands]
+    assert vil["basis"] == ["FORECAST_REACHES_OCCUPIED_SITE", "FORECAST_REACHES_RESIDENTIAL"]
