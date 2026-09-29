@@ -2,7 +2,49 @@
 
 - 작성: 2026-09-30
 - 기준 요청서: `docs/orchestration/ADAIR_오케스트레이터_구현요청_코드대조_수정본 (1).md` (이하 "요청서")
-- 성격: 요청서 §0 시작 절차의 기록과 구현 설계안. **이 문서 작성 시점에는 총괄 코드를 변경하지 않았다.**
+- 성격: 요청서 §0 시작 절차의 기록과 구현 설계안(§0~§6), 그리고 구현 결과 현황(아래 "구현 현황").
+- 팀별 요청: `docs/common/ADAIR_총괄_팀별_요청서.md`
+
+## 구현 현황 (2026-09-30 기준)
+
+분류(요청서 §12): **A** 구현 완료 · **B** fixture 로만 시험 · **C** 팀 계약 대기 · **D** 최종 발표 미완료
+
+| 기능 | 상태 | 비고 |
+| --- | --- | --- |
+| SQLite 장부: 멱등 접수, 원자 예약, 송신 전 선저장, 재시작 복구 | A | `ledger.py` |
+| 물리 사전필터, 규칙 Safety(정보 누락 시 ALLOW 금지, 80/10m 중복 가산 차단) | A | `prefilter.py`, `safety.py` |
+| 출동·불명(UNKNOWN)·고장(FAULTED)·수동 해소, 복귀·READY 확인 후 반납 | A | `engine.py` |
+| UAV 연동 (지면고도 + 임무 AGL) | A | 실제 UAV Agent(mock) 시험 3개 통과 |
+| UGV 연동 (도로 상황 임무, 도달 불가 보류, 동시 배정) | A | 실제 UGV 서버(sim) 시험 4개 통과 |
+| COUNTER 3A (구체 수정필드만 재평가, 예산 2) | A / C | 실제 UAV COUNTER 는 실을 칸이 없어 실행 불가 (UAV-02) |
+| 우선순위: 인명 항상 먼저 → 위험도 → 보호대상 거리, 비슷함(0.1)·엇갈림 묶음, 사람 선택/자동 모드 | A / B | 위험 칸·보호대상 데이터는 fixture (ENV-02, ENV-04) |
+| LLM(gpt-5.6-luna) 묶음 순서 제안 + 결정론적 검증·fallback (30초, 50회) | A | 실제 호출 검증 통과 |
+| 판단 화면 `/board` (한글, 정찰·측정 결과, 확산 예측, 아는 상황) | A | 기존 `web/app.py` 연결은 INT-03 |
+| 진짜 세계 / 총괄이 아는 세계 분리 (정답지 방지) | A | 신고·정찰·측정·관측만 판단에 사용 |
+| 기상청 ASOS 시간자료 재생 (그 시각까지만, 가까운 관측소) | A | `data/weather/` |
+| 현장 환경 측정 자동 생성 + 모의 기상 센서 | A / B | 실제 기상 센서 없음 (UAV-05, UGV-02) |
+| 확산 예측 활용 (표시·인명 우선 반영) | B / C | 예측은 fixture (ENV-04) |
+| 사전 감시 임무 생성 | A (꺼 둠) | `ORCH_PREEMPTIVE_MONITOR=1` 로 켬. 부하 문제 해결 후 |
+| 환경 READ/ADVANCE/APPLY, 관측 반영 ACK | B / C | ENV-01, ENV-05 |
+| 물리 출동 1회 보장 | C | UAV-01 |
+| 웹관제 → 총괄 경유, 도착 즉시 소화 제거 | C | INT-01, INT-02 |
+| F1 공식 출동 기준, F2 진화 효과 | D | ENV-07, 공식 자료 확보 전 |
+
+### 실행 방법
+
+```powershell
+# 저장소 루트, 가상환경 .venv (fastapi, uvicorn, httpx, openai, pytest)
+.\.venv\Scripts\python -m pytest orchestrator/tests -q            # 단위 시험 (실제 서버·API 시험은 건너뜀)
+.\.venv\Scripts\python -m orchestrator.api                          # 총괄 서버 127.0.0.1:8200 → /board
+# 선택: ORCH_ENV_FIXTURE=시나리오.json, ORCH_PREEMPTIVE_MONITOR=1, ORCH_PRIORITY_MODE=AUTO_HIGHER_RISK
+# 실제 서버 시험: ORCH_LIVE_UAV=1 / ORCH_LIVE_UGV=1 / ORCH_LIVE_LLM=1 (각 서버·키 필요)
+```
+
+비밀값은 `.env`(git 제외): `OPENAI_API_KEY`, `DATA_GO_KR_SERVICE_KEY`. 형식은 `.env.example`.
+
+---
+
+아래 §0~§6 은 구현 시작 전(2026-09-30 오전) 기록이다.
 
 ## 0. 시작 절차 기록 (요청서 §0)
 
