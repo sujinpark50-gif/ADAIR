@@ -5,30 +5,31 @@
 - 성격: 요청서 §0 시작 절차의 기록과 구현 설계안(§0~§6), 그리고 구현 결과 현황(아래 "구현 현황").
 - 팀별 요청: `docs/common/ADAIR_총괄_팀별_요청서.md`
 
-## 구현 현황 (2026-09-30 기준)
+## 구현 현황 (2026-09-30 기준, 피드백 반영 재분류)
 
-분류(요청서 §12): **A** 구현 완료 · **B** fixture 로만 시험 · **C** 팀 계약 대기 · **D** 최종 발표 미완료
+분류: **A** 코드와 시험으로 확인 · **B** fixture 에서만 확인 · **C** 타 팀 계약·연동 대기 · **D** 최종 발표 미완료.
+건너뛴 시험(실제 서버·실제 API 호출)은 통과로 세지 않는다. 모의 센서·가짜 환경 ACK 로 끝난 Task 완료는 **시뮬레이션 시험 완료**이며 실제 센서 관측·실제 환경 연동 완료가 아니다.
 
-| 기능 | 상태 | 비고 |
+| 기능 | 분류 | 근거·한계 |
 | --- | --- | --- |
-| SQLite 장부: 멱등 접수, 원자 예약, 송신 전 선저장, 재시작 복구 | A | `ledger.py` |
-| 물리 사전필터, 규칙 Safety(정보 누락 시 ALLOW 금지, 80/10m 중복 가산 차단) | A | `prefilter.py`, `safety.py` |
-| 출동·불명(UNKNOWN)·고장(FAULTED)·수동 해소, 복귀·READY 확인 후 반납 | A | `engine.py` |
-| UAV 연동 (지면고도 + 임무 AGL) | A | 실제 UAV Agent(mock) 시험 3개 통과 |
-| UGV 연동 (도로 상황 임무, 도달 불가 보류, 동시 배정) | A | 실제 UGV 서버(sim) 시험 4개 통과 |
-| COUNTER 3A (구체 수정필드만 재평가, 예산 2) | A / C | 실제 UAV COUNTER 는 실을 칸이 없어 실행 불가 (UAV-02) |
-| 우선순위: 인명 항상 먼저 → 위험도 → 보호대상 거리, 비슷함(0.1)·엇갈림 묶음, 사람 선택/자동 모드 | A / B | 위험 칸·보호대상 데이터는 fixture (ENV-02, ENV-04) |
-| LLM(gpt-5.6-luna) 묶음 순서 제안 + 결정론적 검증·fallback (30초, 50회) | A | 실제 호출 검증 통과 |
-| 판단 화면 `/board` (한글, 정찰·측정 결과, 확산 예측, 아는 상황) | A | 기존 `web/app.py` 연결은 INT-03 |
-| 진짜 세계 / 총괄이 아는 세계 분리 (정답지 방지) | A | 신고·정찰·측정·관측만 판단에 사용 |
-| 기상청 ASOS 시간자료 재생 (그 시각까지만, 가까운 관측소) | A | `data/weather/` |
-| 현장 환경 측정 자동 생성 + 모의 기상 센서 | A / B | 실제 기상 센서 없음 (UAV-05, UGV-02) |
-| 확산 예측 활용 (표시·인명 우선 반영) | B / C | 예측은 fixture (ENV-04) |
-| 사전 감시 임무 생성 | A (꺼 둠) | `ORCH_PREEMPTIVE_MONITOR=1` 로 켬. 부하 문제 해결 후 |
-| 환경 READ/ADVANCE/APPLY, 관측 반영 ACK | B / C | ENV-01, ENV-05 |
-| 물리 출동 1회 보장 | C | UAV-01 |
-| 웹관제 → 총괄 경유, 도착 즉시 소화 제거 | C | INT-01, INT-02 |
-| F1 공식 출동 기준, F2 진화 효과 | D | ENV-07, 공식 자료 확보 전 |
+| SQLite 장부: 멱등 접수, 원자 예약, 송신 전 선저장 | A | `test_ledger`, `test_flow` |
+| PREPARED 재시작 복구 (송신 증명 불가 → UNKNOWN·점유 유지, 제공자가 같은 시도 보고 시 재개) | A | `test_recovery` 5건. **물리 명령 최대 1회는 보장하지 않음** (C, UAV-01) |
+| 물리 사전필터, 규칙 Safety | A | `test_flow`. 기체 제원·datum 출처는 C |
+| 출동·불명·고장·수동 해소, 복귀·READY 확인 후 반납 | A | `test_flow`, `test_live_*`(실행 시에만) |
+| UAV·UGV HTTP 계약 | A (mock/sim) | UAV Agent `UAV_MODE=mock`, UGV 서버 `UGV_DRIVER=sim` 대상 시험. PX4/Gazebo 실비행은 D |
+| COUNTER 3A 규칙 | A / C | 실제 UAV COUNTER 는 실을 칸이 없어 실행 불가 (UAV-02) |
+| 정보 경계: 판단 화면은 신고·정찰·관측·현장 모의 측정만 | A | `test_info_boundary`, `test_knowledge`. 2026-09-30 이전 `FixtureAnalysis` 가 진짜 위험·확산을 복사하던 누출을 수정함 |
+| 위험 칸·확산 예측 값 | B | `InjectedAnalysis` 시험 주입값 (`TEST_INJECTED`, 관측으로 계산한 예측 아님). 산출은 ENV-04 (C) |
+| 우선순위 규칙 (인명 우선·비슷함 0.1·엇갈림·두 모드) | A (규칙) / B (데이터) | 위험 칸·보호대상은 주입·fixture |
+| LLM 제안 + 결정론적 검증·fallback | A | `test_llm`(가짜 모델). 실제 gpt-5.6-luna 호출은 `ORCH_LIVE_LLM=1` 로 1회 확인(기본 시험에서는 건너뜀) |
+| 기상청 ASOS 시간자료 재생 (그 시각까지만) | A | `test_knowledge`, `test_info_boundary` |
+| 현장 환경 측정 + 모의 기상 센서 | B | `SIMULATED / TEST_ONLY`. 환경 기상이 지도 전체 한 값이면 `GLOBAL_FIELD` 로 표시, 공간 차이를 만들지 않음. 실제 센서 C |
+| Task 완료 | B | `evidence_level=SIMULATION_TEST` (모의 센서 + FixtureEnv ACK) |
+| 판단 화면 `/board` | A (총괄 내장) | 기존 웹관제 연결은 C (INT-01~03) |
+| 사전 감시 임무 생성 | A (꺼 둠) | `ORCH_PREEMPTIVE_MONITOR=1`. 입력 예측이 주입값이라 실효는 B |
+| 환경 연결 | B | `build_default()` 는 `FixtureEnv`. 팀 공유 환경 실행 아님 (`/health` `truth_env.shared_team_env=false`). ENV-01·05 는 C |
+| 웹관제 경유·도착 즉시 소화 제거 | C | 통합 코드 수정 필요 (INT-01, INT-02 요청서에 현 코드·이유·계약·영향·수락 시험 기재) |
+| F1 2026 공식 출동 기준, F2 진화 효과 | D | 원문·팀 계약·연동 시험 없음 |
 
 ### 실행 방법
 

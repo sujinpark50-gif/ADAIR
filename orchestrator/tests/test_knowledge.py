@@ -5,7 +5,7 @@ from pathlib import Path
 
 from orchestrator.engine import Orchestrator
 from orchestrator.env_adapter import FixtureEnv
-from orchestrator.knowledge import FixtureAnalysis, KmaAsosReplay
+from orchestrator.knowledge import InjectedAnalysis, KmaAsosReplay
 from orchestrator.ledger import Ledger
 from orchestrator.resources import UavClient, UgvClient
 
@@ -27,7 +27,7 @@ def _world(tmp_path, **env_kw):
                      scenario_start_kst="2019-04-04T14:00:00+09:00", **env_kw)
     lg = Ledger(str(tmp_path / "k.db"))
     orch = Orchestrator(lg, env, UavClient(uav.endpoints(), uav.client()), UgvClient("http://ugv", FakeUgv().client()),
-                        analysis=FixtureAnalysis(env), weather_feeds=[KmaAsosReplay(KMA_CSV, KMA_STN)])
+                        analysis=InjectedAnalysis(), weather_feeds=[KmaAsosReplay(KMA_CSV, KMA_STN)])
     return orch, env, uav, lg
 
 

@@ -40,7 +40,7 @@ th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:v
 <div id="groups"></div>
 <h2 style="font-size:16px">총괄이 아는 상황 <small class="id">신고·정찰·관측으로 알게 된 것만 · 시뮬레이션 진짜 상태 아님</small></h2>
 <div id="known" style="margin-bottom:16px"></div>
-<h2 style="font-size:16px">확산 예측 <small class="id">환경 모델 예측 · 관측 아님</small></h2>
+<h2 style="font-size:16px">확산 예측 <small class="id">현재 시험 주입값 · 관측으로 계산한 예측 아님</small></h2>
 <div id="forecast" style="margin-bottom:16px"></div>
 <h2 style="font-size:16px">정찰·측정 결과</h2>
 <div class="cards" id="results" style="margin-bottom:16px"></div>
@@ -62,7 +62,10 @@ const OBS={MEASURED:["측정 완료","clear"],DETECTED:["불 발견","fire"],NOT
 const STATE_KO={BURNING:"불타는 중",BURNED:"탄 곳"};
 function obsShort(o){if(!o)return '<span class="id">아직 없음</span>';const r=OBS[o.result]||[o.result,"warn"];
  const where=o.detections&&o.detections.length?` (${o.detections.map(d=>esc(d.cell_id)).join(", ")})`:"";return `<span class="obs ${r[1]}">${r[0]}${where}</span>`;}
-function obsDetail(o){if(o.sensor_type==="WEATHER"){const v=o.values||{};
+const COMPLETION_KO={SIMULATION_TEST:"시뮬레이션 시험 완료 (모의 센서·가짜 환경 확인)",INTEGRATED:"실제 연동 완료"};
+function completionRow(o){const c=o.completion;return c?`<div class="row"><span>완료 근거</span><span>${COMPLETION_KO[c.evidence_level]||esc(c.evidence_level)}</span></div>`:"";}
+function obsDetail(o){return obsDetail0(o)+completionRow(o);}
+function obsDetail0(o){if(o.sensor_type==="WEATHER"){const v=o.values||{};
   return `<div class="row"><span>결과</span>${obsShort(o)}</div>${Object.keys(WX_LABEL).filter(k=>v[k]!=null).map(k=>`<div class="row"><span>${WX_LABEL[k][0]}</span><span>${v[k]}${WX_LABEL[k][1]}</span></div>`).join("")}
   <div class="row"><span>측정 범위</span><span>${o.scope==="CELL"?"그 칸의 값":"지도 전체 값 (칸별 기상 없음)"}</span></div>
   <div class="row"><span>출처</span><span>모의 측정 (시험용 센서)</span></div>
@@ -116,7 +119,7 @@ async function load(){
 }
 function renderForecast(f){const el=document.getElementById("forecast");
  if(!f||!f.cell_count){el.innerHTML='<p class="note">확산 예측이 아직 없습니다.</p>';return;}
- const ref=f.ref||{};const head=`<p class="note">예측 모델 ${esc(ref.model_version||"미상")} · 예측 칸 ${f.cell_count}개 · 사전 감시 임무 생성: <b>${f.preemptive_monitor_enabled?"켜짐":"꺼짐 (후보만 표시)"}</b></p>`;
+ const ref=f.ref||{};const head=`<p class="note">예측 출처 ${ref.injected?"시험 주입값":"환경 모델"} ${esc(ref.model_version||"")} · 예측 칸 ${f.cell_count}개 · 사전 감시 임무 생성: <b>${f.preemptive_monitor_enabled?"켜짐":"꺼짐 (후보만 표시)"}</b></p>`;
  el.innerHTML=head+(f.threats.length?`<div class="cards">${f.threats.map(t=>`<div class="card"><div class="ctitle">${esc(t.site_id?"보호대상 "+t.site_id:"주거 칸 "+t.key)}</div>
   <div class="row"><span>위험</span><span class="human">${t.basis.map(b=>BASIS_KO[b]||b).join(", ")}</span></div>
   <div class="row"><span>예상 도달</span><span>${mins(t.earliest_arrival_s)} 후</span></div>
@@ -128,7 +131,7 @@ function clock(k,s){if(!k)return `${mins(s)} 경과`;const t=new Date(new Date(k
 function renderKnown(k){const el=document.getElementById("known");if(!k){el.innerHTML="";return;}
  const fires=k.fires.length?k.fires.map(f=>{const s=FIRE_KO[f.status]||[f.status,"warn"];return `<div class="row"><span>${esc(f.cell_id)}</span><span><span class="obs ${s[1]}">${s[0]}</span> · ${esc(SRC_KO[f.source]||f.source)} · ${clock(k.scenario_start_kst,f.sim_time_s)}</span></div>`;}).join(""):'<p class="note">아직 알고 있는 불이 없습니다.</p>';
  const st=k.stations.length?k.stations.map(o=>{const v=o.values||{};return `<div class="row"><span>${esc(o.station_name||o.station_id)}</span><span>${v.wind_ms!=null?v.wind_ms+"m/s ":""}${v.wind_dir_deg!=null?v.wind_dir_deg+"° ":""}${v.temperature_c!=null?v.temperature_c+"℃ ":""}${v.humidity_pct!=null?"습도 "+v.humidity_pct+"%":""} <small class="id">${esc(o.observed_kst||"")} ${esc(SRC_KO[o.source]||o.source)}</small></span></div>`;}).join(""):'<p class="note">관측소 관측값이 없습니다.</p>';
- el.innerHTML=`<p class="note">시나리오 시각: <b>${clock(k.scenario_start_kst,k.simulation_time_s)}</b> · 위험 칸·확산 예측 출처: ${esc(k.analysis_source==="FIXTURE_CANNED"?"시험용 고정값 (환경팀 예측 기능 대기)":k.analysis_source||"없음")}</p>
+ el.innerHTML=`<p class="note">시나리오 시각: <b>${clock(k.scenario_start_kst,k.simulation_time_s)}</b> · 진짜 세계: 시험용 가짜 환경 (팀 공유 환경 아님) · 위험 칸·확산 예측: <b>${esc(k.analysis_source==="TEST_INJECTED"?"시험 주입값 — 관측으로 계산한 예측 아님 (환경팀 분석 기능 대기)":k.analysis_source||"없음")}</b></p>
  <div class="cards"><div class="card"><div class="ctitle">알고 있는 불</div>${fires}</div><div class="card"><div class="ctitle">관측소 최신 관측 (그 시각까지)</div>${st}</div></div>`;}
 const _load=load;load=async function(){await _load();const b=await (await fetch("/priority/board")).json();renderForecast(b.forecast);renderKnown(b.known);};
 load();setInterval(load,2000);

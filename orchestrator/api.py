@@ -29,7 +29,7 @@ from .board import BOARD_HTML
 from .engine import Orchestrator
 from .env_adapter import FixtureEnv
 from .ledger import Ledger, RequestConflict
-from .knowledge import FixtureAnalysis, KmaAsosReplay
+from .knowledge import InjectedAnalysis, KmaAsosReplay
 from .llm import LlmPlanner
 from .resources import UavClient, UgvClient
 
@@ -102,6 +102,8 @@ def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
             "simulation_time_s": d.get("simulation_time_s"), "observed_wall": d.get("observed_wall"),
             "is_fire_observation": d.get("is_fire_observation", True),
             "values": d.get("values"), "scope": d.get("scope"),
+            "completion": next((e["detail"] for e in reversed(orch.ledger.events(task_id))
+                                if e["event_type"] == "TASK_COMPLETE"), None),
             "env_apply": None if ack is None else {"result": ack["result"],
                                                    "state_version": (ack["detail"] or {}).get("state_version")}}
 
@@ -118,6 +120,12 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                   description="총괄 오케스트레이터 — 규칙 판단 + Local/Safety 검증")
     lock = threading.Lock()          # 판단·추적은 한 번에 하나씩 (장부 순서 보장)
     stop = threading.Event()
+
+    @app.on_event("startup")
+    def _recover_on_start():
+        # 송신 전후에 멈춘 PREPARED 시도를 제공자 상태와 대조 (재송신 없음)
+        with lock:
+            orch.recover()
 
     if poll_interval_s:
         def loop():
@@ -139,7 +147,11 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     @app.get("/health")
     def health():
         snap = orch.view()
+        env_source = getattr(orch.env, "source", "UNKNOWN")
         return {"status": "ok", "schema_version": config.SCHEMA_VERSION,
+                "truth_env": {"class": type(orch.env).__name__, "source": env_source,
+                              "shared_team_env": env_source not in ("FIXTURE", "UNKNOWN"),
+                              "note": "시험용 가짜 환경. 팀 공유 환경(ENV-01) 연결 아님" if env_source == "FIXTURE" else None},
                 "env": snap.ref(),
                 "view": {"source": snap.source, "analysis_source": snap.analysis_source,
                          "scenario_start_kst": snap.scenario_start_kst,
@@ -318,16 +330,20 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
 
 def build_default() -> Orchestrator:
     fixture = os.getenv("ORCH_ENV_FIXTURE")
+    injected = {}
     if fixture:
         with open(fixture, encoding="utf-8") as f:
-            env = FixtureEnv(**json.load(f))
+            data = json.load(f)
+        # 분석 시험 주입값은 진짜 세계(환경)와 분리해서 읽는다
+        injected = data.pop("injected_analysis", {}) or {}
+        env = FixtureEnv(**data)
     else:
         env = FixtureEnv()
     feeds = []
     if config.KMA_ASOS_CSV.is_file() and config.KMA_ASOS_STATIONS.is_file():
         feeds.append(KmaAsosReplay(config.KMA_ASOS_CSV, config.KMA_ASOS_STATIONS))
     return Orchestrator(Ledger(config.DB_PATH), env, UavClient(), UgvClient(), llm=LlmPlanner(),
-                        analysis=FixtureAnalysis(env), weather_feeds=feeds)
+                        analysis=InjectedAnalysis(**injected), weather_feeds=feeds)
 
 
 if __name__ == "__main__":

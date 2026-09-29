@@ -79,7 +79,7 @@
 | 금지 | 진짜 불 상태·진짜 바람을 입력으로 쓰지 않음 |
 | 총괄 활용 | 화면 표시, 예측이 주거지·사람 있는 보호대상에 닿으면 인명 우선, 보호대상별 사전 감시(구현 완료, 부하 문제로 꺼 둠) |
 | 수락 시험 | 같은 진짜 상태에서 측정을 더 한 경우와 안 한 경우 예측이 달라짐 |
-| 총괄 상태 | B (`FixtureAnalysis` 는 시험용 고정값) |
+| 총괄 상태 | B (`InjectedAnalysis`: 환경과 분리된 시험 주입값, `requires_known_fire` 로 아는 불에 따라서만 노출, `TEST_INJECTED` 표시. 관측으로 계산한 예측 아님) |
 
 ### ENV-05 관측 반영
 | 항목 | 내용 |
@@ -117,10 +117,28 @@
 
 ## 통합팀
 
+총괄 패키지만 고쳐서 웹 통합을 끝낼 수는 없다. 아래 두 건은 **통합 담당 코드(`web/app.py`, `web/static/auto.js`) 수정**이 필요하며, 수정 전 합의가 필요하다. 총괄은 웹 통합을 완료로 표시하지 않는다 (상태 C).
+
+### INT-01 웹 출동 경로를 새 총괄 경유로
+| 항목 | 내용 |
+|---|---|
+| 현 코드 (2026-09-30 재확인) | ① `/api/fly` (`web/app.py:201`): 화면에서 고른 칸으로 UAV `/evaluate`→`/execute` 를 **직접** 호출 (`:217`, `:220`). 총괄·Safety 를 거치지 않음. ② `/api/auto/tick` (`:153`): 옛 연결 코드 `main.process_task` + `connectors/orchestrator_connector` + `connectors/safety_connector` 사용. 이 Safety 는 배정이 있으면 **항상 ALLOW 하는 mock** 이고, 목표는 환경의 **진짜 불 목록**(`es.fire_cells`)에서 위험점수 최대 칸을 고름 |
+| 수정 이유 | 새 총괄의 Local·규칙 Safety·장부(중복 방지·불명 처리)·정보 경계(아는 세계)를 우회함. 자동 모드는 총괄이 알 수 없는 진짜 불 위치로 출동함 (정답지) |
+| 계약 변화 | 웹 → 총괄 `POST /tasks` (`request_id` 멱등), 진행은 `GET /tasks/{id}`·`/priority/board` 조회. 불을 처음 아는 경로는 신고(`POST /events` `FIRE_REPORT`) 또는 정찰. 자동 모드의 목표 선택은 총괄 `/dispatch_pending` |
+| 기존 시연 영향 | 칸을 눌러 바로 비행하던 동작이 총괄 판단(후보 걸러내기·Safety·보류)을 거치므로 보류·거절이 화면에 나타날 수 있음. 자동 모드는 신고가 있어야 시작됨 |
+| 수락 시험 | 웹 요청 1건 → 총괄 장부에 `TASK_RECEIVED`→`LOCAL_RESPONSE`→`SAFETY_JUDGEMENT`→`EXECUTION_SENT` 가 남고 UAV `/execute` 가 총괄에서만 1회 호출됨. 같은 `request_id` 재전송 시 execute 추가 없음. 신고 없이 자동 모드는 출동하지 않음 |
+
+### INT-02 도착 즉시 불 끄기 제거
+| 항목 | 내용 |
+|---|---|
+| 현 코드 | `/api/extinguish` (`web/app.py:127`) 와 `/api/auto/done` (`:189`) 이 환경에 `fire_state=UNBURNED` 관측을 적용 (`:135`, `:195`). 화면 스크립트는 **이동 애니메이션 진행률**(`_driveT ≥ 0.999`, `web/app.py:366`)만 보고 `/api/extinguish` 를 호출 — 실제 차량 도착 상태가 아님 |
+| 수정 이유 | 도착(그것도 화면 애니메이션)만으로 불이 꺼져 진화 효과처럼 보임. 요청서 §6·§10 위반. 진화 효과는 환경 모델 계산(ENV-07)이어야 함 |
+| 계약 변화 | 두 경로를 제거하거나 "시연 전용" 스위치로 분리해 기본 꺼짐. 진화는 `도착 → 진화 행동(위치·시간·자원량) → 환경 효과 계산 → 새 state_version·ACK → 재관측` |
+| 기존 시연 영향 | 차량이 도착해도 불이 즉시 사라지지 않음. 진화 연동(F2) 전까지 불은 환경 모델대로 진행 |
+| 수락 시험 | UGV/소방차 도착 후에도 해당 칸이 `UNBURNED` 로 바뀌지 않음. 화면 애니메이션 완료가 환경 상태를 바꾸지 않음 |
+
 | ID | 현재 코드 | 요청 |
 |---|---|---|
-| INT-01 | `web/app.py` `/api/fly`, `/api/auto/tick` 이 드론 evaluate→execute 직접 호출 | 총괄 `POST /tasks` 경유 (Local·Safety 관문 통과) |
-| INT-02 | `/api/extinguish`, `/api/auto/done` 이 도착하면 `UNBURNED` 적용 | 제거 또는 "시연용"으로 분리. 진화는 ENV-07 계약으로 |
 | INT-03 | 총괄 포트 미정 (UGV 가 8100 사용) | 총괄 8200(임시) 합의, 배포 위치. 판단 화면은 `/board` 또는 `/priority/board`·`/priority/mode`·`/priority/choose` 를 기존 관제에 연결 |
 | INT-04 | 원통 좌표가 `config.py`·`px4/NOTE.md`·`ugv` 서버·환경에 서로 다름 | 새 인제 맵의 소방서 좌표 하나로 통일 (ENV-02 `stations`) |
 
@@ -130,7 +148,7 @@
 |---|---|---|
 | 아는 세계 장부·신고·관측 기록 | `orchestrator/knowledge.py`, `ledger.py` | A |
 | 기상청 관측 재생 | `KmaAsosReplay` | A |
-| 분석 교체 지점 | `Orchestrator(analysis=...)` — `analyze(belief)` 만 구현하면 됨 | B |
+| 분석 교체 지점 | `Orchestrator(analysis=...)` — `analyze(belief)` 만 구현하면 됨. 현재는 `InjectedAnalysis`(시험 주입값, 환경과 분리, `TEST_INJECTED` 표시) | B |
 | 환경 교체 지점 | `read / advance / apply / map_cells / reports_until` | B |
 | 드론·UGV 연결 | `resources.py` (실제 서버 연동 시험 통과: UAV 3, UGV 4) | A |
 | 판단 화면·API | `/board`, `/priority/*`, `/tasks`, `/events` | A |

@@ -118,7 +118,7 @@ def test_official_rank_only_used_when_all_tasks_have_it():
 # 엔진: 두 버전
 # ---------------------------------------------------------------------------
 def _fire_world(world, cells, sites=()):
-    world["env"].risk_cells = list(cells)
+    world["analysis"].risk_cells = list(cells)      # 분석 주입값 (진짜 세계 아님)
     world["env"].protected_sites = list(sites)
 
 

@@ -161,18 +161,37 @@ class EnvStationFeed:
                           "lat": self.lat, "lon": self.lon, "values": values}}]
 
 
-class FixtureAnalysis:
-    """분석(위험 칸·확산 예측) 자리. 환경팀 예측 기능이 생기면 교체한다.
-    입력으로 '총괄이 아는 세계'만 받는 형태를 먼저 고정하고, 지금은 시험용 고정 답을 돌려준다."""
+class InjectedAnalysis:
+    """분석(위험 칸·확산 예측) 자리의 시험 주입값 (TEST_INJECTED). 환경팀 분석 기능(ENV-04) 전까지 쓴다.
 
-    source = "FIXTURE_CANNED"
+    - 환경(진짜 세계)을 참조하지 않는다. 값은 생성 시 또는 시험이 직접 넣는다 (시나리오 파일의
+      injected_analysis). 따라서 진짜 세계의 화재·위험·확산이 바뀌어도 이 값은 바뀌지 않는다.
+    - 칸마다 requires_known_fire 를 두면, 총괄이 그 불을 알게 된 뒤(신고·정찰 확인)에만 내보낸다.
+    - 내보내는 칸에는 derived_from_observation=False, analysis_source=TEST_INJECTED 를 붙인다.
+      관측으로부터 계산한 예측이 아니며, 이 값으로 총괄 예측 성능이 검증됐다고 표시하지 않는다.
+    """
 
-    def __init__(self, env):
-        self.env = env
+    source = "TEST_INJECTED"
+
+    def __init__(self, risk_cells=None, spread_forecast=None, forecast_ref=None):
+        self.risk_cells = list(risk_cells or [])
+        self.spread_forecast = list(spread_forecast or [])
+        self.forecast_ref = forecast_ref
         self.last_input = None
+
+    def _visible(self, cells, known):
+        out = []
+        for c in cells:
+            need = c.get("requires_known_fire")
+            needs = [need] if isinstance(need, str) else list(need or [])
+            if all(n in known for n in needs):
+                out.append({**c, "derived_from_observation": False, "analysis_source": self.source})
+        return out
 
     def analyze(self, belief: dict) -> dict:
         self.last_input = belief
-        return {"risk_cells": [dict(c) for c in self.env.risk_cells],
-                "spread_forecast": [dict(c) for c in self.env.spread_forecast],
-                "forecast_ref": self.env.forecast_ref, "source": self.source}
+        known = {c["cell_id"] for c in belief.get("known_fires", [])}
+        spread = self._visible(self.spread_forecast, known)
+        return {"risk_cells": self._visible(self.risk_cells, known), "spread_forecast": spread,
+                "forecast_ref": ({**self.forecast_ref, "injected": True} if (self.forecast_ref and spread) else None),
+                "source": self.source, "derived_from_observation": False}

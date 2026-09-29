@@ -3,6 +3,7 @@
 
 import json
 
+from orchestrator.knowledge import EnvStationFeed, InjectedAnalysis
 from orchestrator.llm import LlmPlanner
 
 from .test_priority import LAT0, LON0, _fire_world, _one_uav, _submit_cell, cell
@@ -97,12 +98,11 @@ def test_invalid_llm_outputs_fall_back_to_rule_order(world):
         from .fakes import FakeUav, FakeUgv, normal_flight
         uav = FakeUav()
         uav.default_script = normal_flight()
-        w = {"uav": uav, "env": fire_env(), "ledger": Ledger(":memory:")}
-        from orchestrator.knowledge import EnvStationFeed, FixtureAnalysis
+        w = {"uav": uav, "env": fire_env(), "ledger": Ledger(":memory:"), "analysis": InjectedAnalysis()}
         from .conftest import TARGET
         w["orch"] = Orchestrator(w["ledger"], w["env"], UavClient(uav.endpoints(), uav.client()),
                                  UgvClient("http://ugv", FakeUgv().client()),
-                                 analysis=FixtureAnalysis(w["env"]),
+                                 analysis=w["analysis"],
                                  weather_feeds=[EnvStationFeed(w["env"], TARGET["lat"], TARGET["lon"])])
         fake, ta, tb = _world_with_llm(w, reply)
         out = w["orch"].dispatch_pending()

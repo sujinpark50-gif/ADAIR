@@ -15,7 +15,7 @@ def _setup(world, wind_dir=270.0):
     env.fire_cells = [dict(FIRE)]
     env.wind_dir_deg = wind_dir                          # 서풍(270) → 불은 동쪽(90°)으로
     env.weather = {"temperature_c": 18.0, "humidity_pct": 22.0}
-    env.risk_cells = [cell("EAST", 0, 180, 0.6), cell("NORTH", 180, 0, 0.8), cell("WEST", 0, -180, 0.9)]
+    world["analysis"].risk_cells = [cell("EAST", 0, 180, 0.6), cell("NORTH", 180, 0, 0.8), cell("WEST", 0, -180, 0.9)]
 
 
 def _run(orch, n=4):
@@ -98,8 +98,11 @@ VILLAGE = dict(square_site("VIL", 0, 400, 30), human_occupied=True)
 
 
 def _forecast(world, enabled=False):
+    # 순수 함수 시험(env.read())과 총괄 화면(분석 주입값) 양쪽에 같은 값을 둔다
     world["env"].spread_forecast = [dict(f) for f in FORECAST]
     world["env"].forecast_ref = {"model_version": "FIXTURE-CA-1", "issued_sim_s": 0.0, "horizon_s": 3600.0}
+    world["analysis"].spread_forecast = [dict(f) for f in FORECAST]
+    world["analysis"].forecast_ref = dict(world["env"].forecast_ref)
     world["env"].protected_sites = [VILLAGE]
     config.PREEMPTIVE_MONITOR_ENABLED = enabled
 

@@ -26,7 +26,8 @@ from .models import Requirements, ResourceView, Target, Task
 from .prefilter import filter_candidates, haversine_m
 from .resources import Unreachable
 
-ACTIVE_ATTEMPT = ("REQUESTED", "STARTED", "ARRIVED", "OBSERVED", "APPLIED", "RETURNING", "UNKNOWN", "FAULTED")
+# PREPARED 도 추적한다: 송신 직전·직후 총괄이 종료되면 재시작 후 이 상태로 남는다 (복구 대상)
+ACTIVE_ATTEMPT = ("PREPARED", "REQUESTED", "STARTED", "ARRIVED", "OBSERVED", "APPLIED", "RETURNING", "UNKNOWN", "FAULTED")
 MANUAL = "MANUAL_RESOLUTION"
 MAX_SNAPSHOT_RESTARTS = 2
 
@@ -406,6 +407,19 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # 추적
     # ------------------------------------------------------------------
+    def recover(self) -> dict:
+        """서버 시작 시 호출: 송신 전후에 멈춘 PREPARED 시도를 제공자 상태와 대조한다.
+        재송신·재출동은 하지 않는다. 송신을 증명할 수 없으면 UNKNOWN(점유 유지, 수동 해소 대기)."""
+        pending = self.ledger.list_attempts(substatuses=["PREPARED"])
+        results = []
+        for att in pending:
+            client = self.uav if att["command"]["resource_type"] == "UAV" else self.ugv
+            if client is not None:
+                results.append(self._track(att, client))
+        self.ledger.log("RECOVERY_SCAN", result="DONE", detail={"prepared_found": [a["attempt_id"] for a in pending],
+                                                                "results": results})
+        return {"prepared_found": len(pending), "results": results}
+
     def poll(self) -> List[dict]:
         updates = []
         for att in self.ledger.list_attempts(substatuses=ACTIVE_ATTEMPT):
@@ -433,6 +447,27 @@ class Orchestrator:
                             result=sub, reason=reason, detail={"provider_status": status, "provider": data})
             att["substatus"] = sub
             return {"attempt_id": aid, "substatus": sub, "reason": reason}
+
+        if att["substatus"] == "PREPARED":
+            # 송신 여부를 장부만으로는 알 수 없다. 제공자가 같은 시도를 확실히 보고할 때만 추적을 이어간다.
+            # 제공자가 못 찾는다(404)는 응답만으로 '실행 안 됨'이라 단정하지 않는다 (UAV 상태는 메모리 기반).
+            provider_task_id = (att["command"].get("payload") or {}).get("task_id")
+            rec = {"attempt_id": aid, "provider_task_id": provider_task_id, "task_id": tid,
+                   "decision_id": att["decision_id"], "provider_status": status,
+                   "provider_reported_task_id": (data or {}).get("task_id")}
+            if not (status == "OK" and data.get("task_id") == provider_task_id):
+                self.ledger.log("RECOVERY_PREPARED", task_id=tid, attempt_id=aid, resource_id=rid, result="UNKNOWN",
+                                reason="SEND_UNPROVEN", detail={**rec, "occupancy_kept": True,
+                                                                "automatic_resend": False})
+                return self._unknown(att, task, detail, f"RECOVERY_SEND_UNPROVEN:{status}")
+            self.ledger.log("RECOVERY_PREPARED", task_id=tid, attempt_id=aid, resource_id=rid, result="RESUMED",
+                            detail=rec)
+            detail.update({"recovered_from": "PREPARED", "last_contact_wall": now})
+            self.ledger.set_attempt_status(aid, "STARTED", detail)
+            att["substatus"] = "STARTED"
+            if task and task.purpose_status in ("APPROVED", "HOLD"):
+                task.purpose_status, task.hold_reason, task.resume_condition = "IN_EXECUTION", None, None
+                self.ledger.save_task(task)
 
         if status == "UNREACHABLE":
             last = detail.get("last_contact_wall") or att["created_wall"]
@@ -502,7 +537,7 @@ class Orchestrator:
         self.ledger.log("EXECUTION_UNKNOWN", task_id=att["task_id"], attempt_id=att["attempt_id"],
                         resource_id=att["resource_id"], result="UNKNOWN", reason=reason,
                         detail={"occupancy_kept": True, "automatic_redispatch": False})
-        if task and task.purpose_status == "IN_EXECUTION":
+        if task and task.purpose_status in ("IN_EXECUTION", "APPROVED"):
             task.purpose_status, task.hold_reason, task.resume_condition = "HOLD", reason, MANUAL
             self.ledger.save_task(task)
         return {"attempt_id": att["attempt_id"], "substatus": "UNKNOWN", "reason": reason}
@@ -554,7 +589,8 @@ class Orchestrator:
             self.ledger.log("TASK_COMPLETE", task_id=task.task_id, attempt_id=aid, resource_id=rid,
                             result="COMPLETED", detail={"basis": ["ARRIVED", "SIMULATED_OBSERVATION_TARGET_COVERED",
                                                                   "ENV_ACK" if ack.get("accepted") else "NO_ENV_ACK_REQUIRED"],
-                                                        "resource_released": False})
+                                                        "resource_released": False,
+                                                        **self._evidence_level(obs.get("source"), ack)})
         else:
             self._reopen(task, "OBSERVATION_REQUIREMENT_NOT_MET" if not obs["target_covered"] else "ENV_APPLY_NOT_ACKED")
         if obs["result"] == "DETECTED":
@@ -701,10 +737,20 @@ class Orchestrator:
             self.ledger.save_task(task)
             self.ledger.log("TASK_COMPLETE", task_id=task.task_id, attempt_id=aid, resource_id=rid,
                             result="COMPLETED", detail={"basis": ["ARRIVED", "UGV_ROAD_STATUS" if raw else "ARRIVAL_ONLY_TASK"],
-                                                        "resource_released": False})
+                                                        "resource_released": False,
+                                                        **self._evidence_level("UGV_PROVIDER", None)})
         else:
             self._reopen(task, "ARRIVED_OBSERVATION_PENDING")
         return {"attempt_id": aid, "substatus": "OBSERVED", "task": task.purpose_status}
+
+    def _evidence_level(self, observation_source, ack) -> dict:
+        """완료 근거의 수준. 모의 센서 또는 가짜 환경 ACK 로 끝난 완료는 '시뮬레이션 시험 완료'다.
+        실제 센서 관측·실제(팀 공유) 환경 반영 완료와 구분한다."""
+        env_source = getattr(self.env, "source", "UNKNOWN")
+        simulated = observation_source == "SIMULATED" or env_source == "FIXTURE"
+        return {"evidence_level": "SIMULATION_TEST" if simulated else "INTEGRATED",
+                "evidence": {"observation_source": observation_source, "env_source": env_source,
+                             "env_ack": None if ack is None else bool(ack.get("accepted"))}}
 
     def _reopen(self, task, reason):
         task.purpose_status, task.hold_reason = "PENDING", reason
