@@ -17,6 +17,7 @@ import pytest
 
 from orchestrator.engine import Orchestrator
 from orchestrator.env_adapter import FixtureEnv
+from orchestrator.knowledge import EnvStationFeed
 from orchestrator.ledger import Ledger
 from orchestrator.resources import UavClient
 
@@ -49,6 +50,11 @@ def _env(wind):
     return FixtureEnv(wind_ms=wind, fire_cells=cells)
 
 
+def _orch(lg, env):
+    # 시험 관측소: 환경 풍속을 목표 근처 관측소 값처럼 전달 (HTTP 계약 시험용)
+    return Orchestrator(lg, env, UavClient(ENDPOINTS), weather_feeds=[EnvStationFeed(env, NEAR["lat"], NEAR["lon"])])
+
+
 def _submit(orch, rid="LIVE-1", target=NEAR):
     task, _ = orch.submit_task({"request_id": rid, "incident_id": "INC-LIVE", "kind": "RECON",
                                 "target": dict(target),
@@ -58,7 +64,7 @@ def _submit(orch, rid="LIVE-1", target=NEAR):
 
 def test_live_normal_recon(tmp_path):
     lg = Ledger(str(tmp_path / "live.db"))
-    orch = Orchestrator(lg, _env(3.0), UavClient(ENDPOINTS))
+    orch = _orch(lg, _env(3.0))
     task = _submit(orch)
     out = orch.dispatch(task.task_id)
     print("\ndispatch:", out)
@@ -87,7 +93,7 @@ def test_live_normal_recon(tmp_path):
 def test_live_ridge_counter_not_executable_holds(tmp_path):
     """요청서 §4.2 예시: 능선 목표는 복귀 여유 부족 COUNTER(observe_duration_s) → 실어 보낼 칸이 없어 보류"""
     lg = Ledger(str(tmp_path / "live3.db"))
-    orch = Orchestrator(lg, _env(3.0), UavClient(ENDPOINTS))
+    orch = _orch(lg, _env(3.0))
     out = orch.dispatch(_submit(orch, "LIVE-3", RIDGE).task_id)
     print("\n", out)
     assert out["status"] == "HOLD"
@@ -96,7 +102,7 @@ def test_live_ridge_counter_not_executable_holds(tmp_path):
 
 def test_live_high_wind_holds(tmp_path):
     lg = Ledger(str(tmp_path / "live2.db"))
-    orch = Orchestrator(lg, _env(12.4), UavClient(ENDPOINTS))
+    orch = _orch(lg, _env(12.4))
     out = orch.dispatch(_submit(orch, "LIVE-2").task_id)
     print("\n", out)
     assert out["status"] == "HOLD"

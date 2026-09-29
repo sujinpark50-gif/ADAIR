@@ -98,8 +98,12 @@ def test_invalid_llm_outputs_fall_back_to_rule_order(world):
         uav = FakeUav()
         uav.default_script = normal_flight()
         w = {"uav": uav, "env": fire_env(), "ledger": Ledger(":memory:")}
+        from orchestrator.knowledge import EnvStationFeed, FixtureAnalysis
+        from .conftest import TARGET
         w["orch"] = Orchestrator(w["ledger"], w["env"], UavClient(uav.endpoints(), uav.client()),
-                                 UgvClient("http://ugv", FakeUgv().client()))
+                                 UgvClient("http://ugv", FakeUgv().client()),
+                                 analysis=FixtureAnalysis(w["env"]),
+                                 weather_feeds=[EnvStationFeed(w["env"], TARGET["lat"], TARGET["lon"])])
         fake, ta, tb = _world_with_llm(w, reply)
         out = w["orch"].dispatch_pending()
         g = out["groups"][0]

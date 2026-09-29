@@ -141,6 +141,9 @@ class Snapshot:
     weather: dict = field(default_factory=dict)            # 지도 전체 기상값 (환경이 준 항목만)
     spread_forecast: List[dict] = field(default_factory=list)  # 환경 모델의 확산 예상 셀
     forecast_ref: Optional[dict] = None    # {model_version, issued_sim_s, horizon_s}
+    scenario_start_kst: Optional[str] = None  # 시뮬레이션 0초에 해당하는 실제 시각 (재현 사건 시계)
+    wind_ref: Optional[dict] = None        # 판단에 쓴 풍속의 출처 (view_for)
+    analysis_source: Optional[str] = None  # 위험 칸·확산 예측을 만든 곳
     source: str = "UNKNOWN"          # FIXTURE / IN_PROCESS / TEAM_API
     contract_complete: bool = False  # 요청서 §3 READ 계약을 만족하는 출처인지
 

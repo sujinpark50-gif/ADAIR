@@ -133,6 +133,12 @@ LOCAL_OBSERVATION_TYPE = {"THERMAL": "THERMAL", "RGB": "RGB", "WEATHER": None}
 PREEMPTIVE_MONITOR_ENABLED = os.getenv("ORCH_PREEMPTIVE_MONITOR", "0") == "1"
 
 # ---------------------------------------------------------------------------
+# 기상청 관측 재생 (사용자 결정 2026-09-30). 시나리오 시계(scenario_start_kst)는 환경이 준다.
+# ---------------------------------------------------------------------------
+KMA_ASOS_CSV = Path(os.getenv("ORCH_KMA_ASOS_CSV", str(ROOT / "data/weather/kma_asos_hourly_20190404_20190405.csv")))
+KMA_ASOS_STATIONS = Path(os.getenv("ORCH_KMA_ASOS_STATIONS", str(ROOT / "data/weather/kma_asos_stations.json")))
+
+# ---------------------------------------------------------------------------
 # LLM (요청서 §9: 모델·timeout·호출/비용 한도는 설정값. 임의 기본값 금지)
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = "openai"

@@ -72,6 +72,16 @@ CREATE TABLE IF NOT EXISTS events (
     reason TEXT,
     detail TEXT
 );
+CREATE TABLE IF NOT EXISTS knowledge (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL UNIQUE,
+    subject TEXT,
+    sim_time_s REAL,
+    source TEXT,
+    body TEXT NOT NULL,
+    wall_time REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS ix_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS ix_attempts_task ON attempts(task_id);
 """
@@ -261,6 +271,22 @@ class Ledger:
                       "VALUES (?,?,?,?,?,?)", (time.time(), body.get("simulation_time_s"), "EXTERNAL_EVENT",
                                                body.get("type"), event_id, _dumps(body)))
             return True
+
+    # ------------------------------------------------------------------
+    # 총괄이 아는 세계 (knowledge.py)
+    # ------------------------------------------------------------------
+    def add_knowledge(self, kind: str, key: str, subject: Optional[str], sim_time_s: Optional[float],
+                      source: Optional[str], body: dict) -> bool:
+        """같은 key 는 한 번만. 새로 들어가면 True"""
+        with self._tx() as c:
+            cur = c.execute("INSERT OR IGNORE INTO knowledge (kind, key, subject, sim_time_s, source, body, wall_time) "
+                            "VALUES (?,?,?,?,?,?,?)", (kind, key, subject, sim_time_s, source, _dumps(body), time.time()))
+            return cur.rowcount == 1
+
+    def knowledge(self, kind: str) -> List[dict]:
+        rows = self._conn.execute("SELECT * FROM knowledge WHERE kind=? ORDER BY sim_time_s, seq", (kind,))
+        return [{"seq": r["seq"], "key": r["key"], "subject": r["subject"], "sim_time_s": r["sim_time_s"],
+                 "source": r["source"], "body": _loads(r["body"])} for r in rows]
 
     def events(self, task_id: Optional[str] = None, after_seq: int = 0) -> List[dict]:
         q, args = "SELECT * FROM events WHERE seq>?", [after_seq]

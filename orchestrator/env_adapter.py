@@ -73,7 +73,8 @@ class FixtureEnv:
     def __init__(self, run_id="RUN-FIXTURE", map_version="FIXTURE-MAP-1", wind_ms=3.0,
                  fire_cells=None, risk_cells=None, protected_sites=None,
                  crs="EPSG:4326", vertical_datum="FIXTURE_AMSL", tick_s=60.0,
-                 wind_dir_deg=None, weather=None, spread_forecast=None, forecast_ref=None):
+                 wind_dir_deg=None, weather=None, spread_forecast=None, forecast_ref=None,
+                 scenario_start_kst=None, reports=None):
         self.run_id = run_id
         self.map_version = map_version
         self.wind_ms = wind_ms
@@ -89,6 +90,8 @@ class FixtureEnv:
         self.weather = dict(weather or {})
         self.spread_forecast = list(spread_forecast or [])     # 시험용 가짜 예측 (환경 모델 계약 대기)
         self.forecast_ref = forecast_ref
+        self.scenario_start_kst = scenario_start_kst
+        self.reports = list(reports or [])       # 시나리오 신고 이벤트 [{cell_id, sim_time_s, source}]
         self.applied = {}          # observation_id → ACK (중복 적용 방지)
         self.read_count = 0
 
@@ -103,8 +106,22 @@ class FixtureEnv:
             protected_sites=copy.deepcopy(self.protected_sites),
             wind_dir_deg=self.wind_dir_deg, weather=copy.deepcopy(self.weather),
             spread_forecast=copy.deepcopy(self.spread_forecast), forecast_ref=copy.deepcopy(self.forecast_ref),
+            scenario_start_kst=self.scenario_start_kst,
             source=self.source, contract_complete=True,
         )
+
+    # 지도(변하지 않는 정보): 칸 위치·크기·지면고도·건물 유형. 불·위험·기상 같은 진짜 상태는 뺀다.
+    STATIC_CELL_KEYS = ("cell_id", "lat", "lon", "cell_size_m", "ground_amsl_m", "building_type", "human_exposure")
+
+    def map_cells(self) -> list:
+        out = {}
+        for c in self.fire_cells + self.risk_cells + self.spread_forecast:
+            out.setdefault(c["cell_id"], {k: c[k] for k in self.STATIC_CELL_KEYS if c.get(k) is not None})
+        return list(out.values())
+
+    def reports_until(self, sim_time_s: float) -> list:
+        """그 시각까지 들어온 신고만 (시나리오 이벤트)"""
+        return [r for r in self.reports if r.get("sim_time_s", 0.0) <= sim_time_s]
 
     def advance(self, steps: int = 1) -> Snapshot:
         self.simulation_time_s += self.tick_s * steps

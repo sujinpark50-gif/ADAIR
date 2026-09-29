@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from orchestrator.engine import Orchestrator          # noqa: E402
 from orchestrator.env_adapter import FixtureEnv       # noqa: E402
+from orchestrator.knowledge import EnvStationFeed, FixtureAnalysis  # noqa: E402
 from orchestrator.ledger import Ledger                # noqa: E402
 from orchestrator.resources import UavClient, UgvClient  # noqa: E402
 from orchestrator.tests.fakes import FakeUav, FakeUgv, normal_flight  # noqa: E402
@@ -33,7 +34,9 @@ def world(tmp_path):
     ugv = FakeUgv()
     env = fire_env()
     ledger = Ledger(str(tmp_path / "state.sqlite3"))
-    orch = Orchestrator(ledger, env, UavClient(uav.endpoints(), uav.client()), UgvClient("http://ugv", ugv.client()))
+    orch = Orchestrator(ledger, env, UavClient(uav.endpoints(), uav.client()), UgvClient("http://ugv", ugv.client()),
+                        analysis=FixtureAnalysis(env),
+                        weather_feeds=[EnvStationFeed(env, TARGET["lat"], TARGET["lon"])])
     return {"uav": uav, "ugv": ugv, "env": env, "ledger": ledger, "orch": orch, "db": str(tmp_path / "state.sqlite3")}
 
 

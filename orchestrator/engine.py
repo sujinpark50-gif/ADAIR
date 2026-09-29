@@ -14,11 +14,13 @@ resolve(...)       사람의 수동 해소 (재평가도 Local·Safety 관문을
 - 도착만으로 관측 완료, 관측만으로 진화 효과를 만들지 않는다.
 """
 
+import dataclasses
 import time
 from typing import Dict, List, Optional
 
 from . import config, negotiation, observation, priority, safety
 from .env_adapter import SnapshotGate, missing_snapshot_fields
+from .knowledge import Knowledge
 from .ledger import Ledger, ReservationConflict, new_id
 from .models import Requirements, ResourceView, Target, Task
 from .prefilter import filter_candidates, haversine_m
@@ -30,8 +32,11 @@ MAX_SNAPSHOT_RESTARTS = 2
 
 
 class Orchestrator:
-    def __init__(self, ledger: Ledger, env, uav=None, ugv=None, llm=None):
+    def __init__(self, ledger: Ledger, env, uav=None, ugv=None, llm=None, analysis=None, weather_feeds=()):
         self.ledger, self.env, self.uav, self.ugv, self.llm = ledger, env, uav, ugv, llm
+        self.kb = Knowledge(ledger)
+        self.analysis = analysis              # 위험 칸·확산 예측 (입력은 총괄이 아는 세계만)
+        self.weather_feeds = list(weather_feeds)
         self.gate = SnapshotGate()
         self.priority_mode = config.PRIORITY_MODE
 
@@ -78,6 +83,53 @@ class Orchestrator:
         return views, unreachable, client_of
 
     # ------------------------------------------------------------------
+    # 총괄이 보는 화면 (진짜 세계를 직접 보지 않는다)
+    # ------------------------------------------------------------------
+    def _sync_knowledge(self, truth) -> None:
+        """그 시각까지의 신고·기상 관측을 아는 세계에 넣는다 (중복은 key 로 무시)."""
+        now = truth.simulation_time_s or 0.0
+        for r in getattr(self.env, "reports_until", lambda t: [])(now):
+            self.kb.report_fire(r["cell_id"], r.get("sim_time_s", now), r.get("source", "REPORT"),
+                                key=f"REPORT:{truth.run_id}:{r['cell_id']}:{r.get('sim_time_s', now)}",
+                                detail={"note": r.get("note")})
+        for feed in self.weather_feeds:
+            for o in feed.observations(now, truth.scenario_start_kst):
+                self.kb.add_weather(o["key"], o["sim_time_s"], o["source"], o["body"])
+
+    def view(self):
+        """판단용 화면: 지도(변하지 않는 정보) + 아는 세계 + 분석. 불·위험·기상 진짜 값은 들어가지 않는다."""
+        truth = self.env.read()
+        self._sync_knowledge(truth)
+        now = truth.simulation_time_s or 0.0
+        cells = {c["cell_id"]: c for c in getattr(self.env, "map_cells", lambda: [])()}
+        fires = [{**cells.get(cid, {"cell_id": cid}), "fire_state": "BURNING", "risk_score": None,
+                  "knowledge": k} for cid, k in self.kb.known_fires(now).items()]
+        belief = {"run_id": truth.run_id, "simulation_time_s": now, "known_fires": fires,
+                  "fire_states": self.kb.fire_states(now), "station_weather": self.kb.latest_station_obs(now)}
+        an = self.analysis.analyze(belief) if self.analysis else {}
+
+        def geo(c):                           # 분석 결과 칸에 지도 정보를 붙인다
+            return {**cells.get(c["cell_id"], {}), **c}
+        return dataclasses.replace(
+            truth, fire_cells=fires, risk_cells=[geo(c) for c in an.get("risk_cells", [])],
+            spread_forecast=[geo(c) for c in an.get("spread_forecast", [])], forecast_ref=an.get("forecast_ref"),
+            wind_ms=None, wind_dir_deg=None, weather={}, source="ORCHESTRATOR_VIEW",
+            analysis_source=an.get("source"))
+
+    def view_for(self, task: Task, base=None):
+        """Task 판단용 화면: 목표 칸의 현장 측정 → 가까운 관측소 관측으로 풍속·풍향을 채운다."""
+        v = base or self.view()
+        w = self.kb.weather_for(task.target.lat, task.target.lon, task.target.cell_id, v.simulation_time_s or 0.0)
+        if not w:
+            return dataclasses.replace(v, wind_ref={"basis": "NO_WEATHER_KNOWLEDGE"})
+        vals = w.get("values") or {}
+        ref = {k: w.get(k) for k in ("basis", "source", "station_id", "station_name", "cell_id", "distance_m",
+                                     "sim_time_s", "observed_kst")}
+        return dataclasses.replace(v, wind_ms=vals.get("wind_ms"), wind_dir_deg=vals.get("wind_dir_deg"),
+                                   weather={k: vals[k] for k in ("temperature_c", "humidity_pct") if k in vals},
+                                   wind_ref=ref)
+
+    # ------------------------------------------------------------------
     # 요청 payload
     # ------------------------------------------------------------------
     @staticmethod
@@ -108,7 +160,7 @@ class Orchestrator:
         if task.purpose_status == "HOLD" and task.resume_condition == MANUAL:
             return {"status": "SKIPPED", "reason": "WAITING_MANUAL_RESOLUTION"}
 
-        snap = self.env.read()
+        snap = self.view_for(task)
         sim = snap.simulation_time_s
         missing = missing_snapshot_fields(snap)
         if missing:
@@ -124,7 +176,8 @@ class Orchestrator:
             task, snap, views, unreachable, self.ledger.reservations(),
             age_of=lambda v: client_of[v.resource_id].source_age_s(v))
         self.ledger.log("CANDIDATES_FILTERED", task_id=task.task_id, sim_time_s=sim, detail={
-            "snapshot": snap.ref(), "candidates": [[v.resource_id, round(d, 1)] for d, v in ranked],
+            "snapshot": snap.ref(), "wind_ref": snap.wind_ref, "wind_ms": snap.wind_ms,
+            "candidates": [[v.resource_id, round(d, 1)] for d, v in ranked],
             "excluded": excluded, "ordering": "STRAIGHT_LINE_DISTANCE_THEN_ID (정렬용, 도착시간 아님)"})
 
         parent = None
@@ -206,7 +259,7 @@ class Orchestrator:
                            자원을 가져가 밀린 경우도 보류.
           AUTO_HIGHER_RISK 인명 → 위험도가 조금이라도 높은 순으로 바로 보내고, 묶음을 '자동 결정'으로 기록.
         """
-        snap = self.env.read()
+        snap = self.view()
         self._preemptive_monitor(snap)
         tasks = [t for t in self.ledger.list_tasks(["PENDING", "HOLD"])
                  if not (t.purpose_status == "HOLD" and t.resume_condition == MANUAL)]
@@ -220,7 +273,7 @@ class Orchestrator:
         for unit in plan["units"]:
             g = group_of.get(unit[0])
             if g and self.priority_mode == "HUMAN_CHOICE":
-                pool = set().union(*(self._candidate_ids(by_id[t], snap) for t in unit))
+                pool = set().union(*(self._candidate_ids(by_id[t], self.view_for(by_id[t], snap)) for t in unit))
                 if len(pool) < len(unit):
                     for tid in unit:
                         results[tid] = self._hold(by_id[tid], "AWAITING_PRIORITY_CHOICE", MANUAL,
@@ -297,7 +350,7 @@ class Orchestrator:
         rid = view.resource_id
         attempt_id = new_id("ATT")
         command = self._payload(task, view, snap, did, attempt_id, mods)
-        current = self.env.read()
+        current = self.view_for(task)
         try:
             fresh = client.state(rid) if view.resource_type == "UAV" else next(
                 (v for v in client.states() if v.resource_id == rid), None)
@@ -473,6 +526,13 @@ class Orchestrator:
         self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid,
                         result=obs["result"], reason=obs.get("failure_reason"), sim_time_s=snap.simulation_time_s,
                         detail=obs)
+        if sensor == "WEATHER" and obs["result"] == "MEASURED":
+            self.kb.add_weather(f"FIELD:{obs['observation_id']}", snap.simulation_time_s, obs["source"], {
+                "kind": "FIELD", "cell_id": task.target.cell_id, "lat": pos.get("lat"), "lon": pos.get("lon"),
+                "values": obs["values"], "scope": obs.get("scope"), "observation_id": obs["observation_id"],
+                "resource_id": rid})
+        elif sensor == "THERMAL" and obs["result"] != "FAILED":
+            self.kb.record_observation(obs, snap.simulation_time_s)
         if obs["result"] == "FAILED":
             detail["observation_failed"] = obs.get("failure_reason")
             self.ledger.set_attempt_status(aid, "OBSERVED", detail)
@@ -498,7 +558,7 @@ class Orchestrator:
         else:
             self._reopen(task, "OBSERVATION_REQUIREMENT_NOT_MET" if not obs["target_covered"] else "ENV_APPLY_NOT_ACKED")
         if obs["result"] == "DETECTED":
-            self._auto_sense(task, obs, self.env.read())
+            self._auto_sense(task, obs, self.view())
         return {"attempt_id": aid, "substatus": sub, "task": task.purpose_status}
 
     # ------------------------------------------------------------------
@@ -544,7 +604,11 @@ class Orchestrator:
             fire = cells.get(det["cell_id"])
             if not fire or fire.get("lat") is None:
                 continue
-            sp = self.sense_points(fire, snap)
+            # 풍향은 아는 세계에서: 불난 칸 현장 측정 → 가장 가까운 관측소 (진짜 풍향을 보지 않음)
+            w = self.kb.weather_for(fire["lat"], fire["lon"], fire["cell_id"], snap.simulation_time_s or 0.0) or {}
+            sp = self.sense_points(fire, dataclasses.replace(
+                snap, wind_dir_deg=(w.get("values") or {}).get("wind_dir_deg")))
+            sp["wind_ref"] = {k: w.get(k) for k in ("basis", "source", "station_id", "distance_m", "sim_time_s")}
             for c in sp["points"]:
                 t, new = self.submit_task({
                     "request_id": f"AUTO-SENSE:{snap.run_id}:{c['cell_id']}", "incident_id": task.incident_id,
@@ -557,7 +621,7 @@ class Orchestrator:
                     created.append(t.task_id)
             self.ledger.log("ENV_SENSE_PLANNED", task_id=task.task_id, result="CREATED" if created else "EXISTING",
                             detail={"fire_cell": fire["cell_id"], "points": [c["cell_id"] for c in sp["points"]],
-                                    "selection": sp["note"], "created": created})
+                                    "selection": sp["note"], "wind_ref": sp["wind_ref"], "created": created})
         return created
 
     # ------------------------------------------------------------------

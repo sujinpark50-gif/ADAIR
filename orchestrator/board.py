@@ -38,6 +38,8 @@ th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:v
 <p class="note" id="rule"></p>
 <h2 style="font-size:16px">선택 묶음 (비슷하거나 엇갈리는 후보)</h2>
 <div id="groups"></div>
+<h2 style="font-size:16px">총괄이 아는 상황 <small class="id">신고·정찰·관측으로 알게 된 것만 · 시뮬레이션 진짜 상태 아님</small></h2>
+<div id="known" style="margin-bottom:16px"></div>
 <h2 style="font-size:16px">확산 예측 <small class="id">환경 모델 예측 · 관측 아님</small></h2>
 <div id="forecast" style="margin-bottom:16px"></div>
 <h2 style="font-size:16px">정찰·측정 결과</h2>
@@ -120,7 +122,15 @@ function renderForecast(f){const el=document.getElementById("forecast");
   <div class="row"><span>예상 도달</span><span>${mins(t.earliest_arrival_s)} 후</span></div>
   <div class="row"><span>해당 칸</span><span>${t.cells.map(esc).join(", ")}</span></div>
   <div class="row"><span>사전 감시</span><span>${t.monitor_task_id?"임무 생성됨"+small(t.monitor_task_id):(f.preemptive_monitor_enabled?"대기":"후보 (생성 꺼짐)")}</span></div></div>`).join("")}</div>`:'<p class="note">주거지·보호대상에 닿는 예측은 없습니다.</p>');}
-const _load=load;load=async function(){await _load();const b=await (await fetch("/priority/board")).json();renderForecast(b.forecast);};
+const FIRE_KO={REPORTED:["신고됨 (확인 전)","warn"],CONFIRMED:["불 확인","fire"],CONFIRMED_BURNED:["탄 곳 확인","warn"],OBSERVED_CLEAR:["관측 결과 불 없음","clear"]};
+const SRC_KO={"119_CALL":"119 신고",EXTERNAL_REPORT:"외부 신고",SIMULATED:"모의 관측",KMA_ASOS_HOURLY:"기상청 관측소(시간자료)",FIXTURE_STATION:"시험 관측소"};
+function clock(k,s){if(!k)return `${mins(s)} 경과`;const t=new Date(new Date(k).getTime()+s*1000);return t.toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"});}
+function renderKnown(k){const el=document.getElementById("known");if(!k){el.innerHTML="";return;}
+ const fires=k.fires.length?k.fires.map(f=>{const s=FIRE_KO[f.status]||[f.status,"warn"];return `<div class="row"><span>${esc(f.cell_id)}</span><span><span class="obs ${s[1]}">${s[0]}</span> · ${esc(SRC_KO[f.source]||f.source)} · ${clock(k.scenario_start_kst,f.sim_time_s)}</span></div>`;}).join(""):'<p class="note">아직 알고 있는 불이 없습니다.</p>';
+ const st=k.stations.length?k.stations.map(o=>{const v=o.values||{};return `<div class="row"><span>${esc(o.station_name||o.station_id)}</span><span>${v.wind_ms!=null?v.wind_ms+"m/s ":""}${v.wind_dir_deg!=null?v.wind_dir_deg+"° ":""}${v.temperature_c!=null?v.temperature_c+"℃ ":""}${v.humidity_pct!=null?"습도 "+v.humidity_pct+"%":""} <small class="id">${esc(o.observed_kst||"")} ${esc(SRC_KO[o.source]||o.source)}</small></span></div>`;}).join(""):'<p class="note">관측소 관측값이 없습니다.</p>';
+ el.innerHTML=`<p class="note">시나리오 시각: <b>${clock(k.scenario_start_kst,k.simulation_time_s)}</b> · 위험 칸·확산 예측 출처: ${esc(k.analysis_source==="FIXTURE_CANNED"?"시험용 고정값 (환경팀 예측 기능 대기)":k.analysis_source||"없음")}</p>
+ <div class="cards"><div class="card"><div class="ctitle">알고 있는 불</div>${fires}</div><div class="card"><div class="ctitle">관측소 최신 관측 (그 시각까지)</div>${st}</div></div>`;}
+const _load=load;load=async function(){await _load();const b=await (await fetch("/priority/board")).json();renderForecast(b.forecast);renderKnown(b.known);};
 load();setInterval(load,2000);
 </script></body></html>
 """

@@ -29,6 +29,7 @@ from .board import BOARD_HTML
 from .engine import Orchestrator
 from .env_adapter import FixtureEnv
 from .ledger import Ledger, RequestConflict
+from .knowledge import FixtureAnalysis, KmaAsosReplay
 from .llm import LlmPlanner
 from .resources import UavClient, UgvClient
 
@@ -137,9 +138,12 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
 
     @app.get("/health")
     def health():
-        snap = orch.env.read()
+        snap = orch.view()
         return {"status": "ok", "schema_version": config.SCHEMA_VERSION,
                 "env": snap.ref(),
+                "view": {"source": snap.source, "analysis_source": snap.analysis_source,
+                         "scenario_start_kst": snap.scenario_start_kst,
+                         "weather_feeds": [getattr(f, "source", type(f).__name__) for f in orch.weather_feeds]},
                 "uav_endpoints": orch.uav.resource_ids() if orch.uav else [],
                 "ugv_server": getattr(orch.ugv, "base_url", None),
                 "llm": {"provider": config.LLM_PROVIDER, "model": config.LLM_MODEL,
@@ -203,7 +207,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     @app.get("/state")
     def state():
         tasks = orch.ledger.list_tasks()
-        return {"env": orch.env.read().ref(),
+        return {"env": orch.view().ref(),
                 "tasks": {s: [t.task_id for t in tasks if t.purpose_status == s]
                           for s in sorted({t.purpose_status for t in tasks})},
                 "holds": [{"task_id": t.task_id, "reason": t.hold_reason, "resume_condition": t.resume_condition}
@@ -247,7 +251,11 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 results.append({**row(t.task_id), "observation": o})
         results.sort(key=lambda r: r["observation"].get("observed_wall") or "", reverse=True)
         llm_state = orch.llm.status() if orch.llm else "NOT_CONNECTED"
-        snap = orch.env.read()
+        snap = orch.view()
+        now = snap.simulation_time_s or 0.0
+        known = {"fires": [{"cell_id": c, **v} for c, v in sorted(orch.kb.fire_states(now).items())],
+                 "stations": orch.kb.latest_station_obs(now), "scenario_start_kst": snap.scenario_start_kst,
+                 "simulation_time_s": now, "analysis_source": snap.analysis_source}
         premon_tasks = {t.request_key: t.task_id for t in orch.ledger.list_tasks()
                         if (t.request_key or "").startswith("AUTO-PREMON:")}
         forecast = {"ref": snap.forecast_ref, "cell_count": len(snap.spread_forecast),
@@ -257,6 +265,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                                 for c in orch.preemptive_candidates(snap)]}
         return {"mode": orch.priority_mode, "modes": list(config.PRIORITY_MODES), "results": results,
                 "llm": {"model": config.LLM_MODEL, "not_ready_reason": llm_state}, "forecast": forecast,
+                "known": known,
                 "similar_delta": config.PRIORITY_SIMILAR_RISK_DELTA, "decided_seq": (last or {}).get("seq"),
                 "auto_order": [row(t) for t in detail.get("auto_order", [])], "groups": groups,
                 "criteria": detail.get("criteria"), "rule": detail.get("rule")}
@@ -287,7 +296,16 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             if not first:
                 return JSONResponse({"accepted": True, "duplicate": True}, status_code=200)
             redispatched = []
-            if body.type in ("ENV_UPDATED", "RESOURCE_CHANGED"):
+            if body.type == "FIRE_REPORT":
+                # 신고: 총괄이 아는 세계에 '신고됨'으로 추가 (확인 전). payload {cell_id, source?}
+                cid = body.payload.get("cell_id")
+                if not cid:
+                    return JSONResponse({"accepted": False, "reason": "CELL_ID_MISSING"}, status_code=422)
+                now = orch.env.read().simulation_time_s or 0.0
+                orch.kb.report_fire(cid, body.simulation_time_s if body.simulation_time_s is not None else now,
+                                    body.payload.get("source", "EXTERNAL_REPORT"), key=f"EVENT:{body.event_id}",
+                                    detail={"note": body.payload.get("note")})
+            if body.type in ("ENV_UPDATED", "RESOURCE_CHANGED", "FIRE_REPORT"):
                 # 새 입력·자원 변화가 재개 조건인 보류 Task 만 다시 평가한다
                 for t in orch.ledger.list_tasks(["HOLD", "PENDING"]):
                     if t.purpose_status == "PENDING" or t.resume_condition in (
@@ -305,7 +323,11 @@ def build_default() -> Orchestrator:
             env = FixtureEnv(**json.load(f))
     else:
         env = FixtureEnv()
-    return Orchestrator(Ledger(config.DB_PATH), env, UavClient(), UgvClient(), llm=LlmPlanner())
+    feeds = []
+    if config.KMA_ASOS_CSV.is_file() and config.KMA_ASOS_STATIONS.is_file():
+        feeds.append(KmaAsosReplay(config.KMA_ASOS_CSV, config.KMA_ASOS_STATIONS))
+    return Orchestrator(Ledger(config.DB_PATH), env, UavClient(), UgvClient(), llm=LlmPlanner(),
+                        analysis=FixtureAnalysis(env), weather_feeds=feeds)
 
 
 if __name__ == "__main__":

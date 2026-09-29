@@ -12,7 +12,8 @@ BODY = {"request_id": "WEB-1", "incident_id": "INC-INJE", "target": TARGET,
 def test_api_task_lifecycle(world):
     c = TestClient(create_app(world["orch"]))
     h = c.get("/health").json()
-    assert h["status"] == "ok" and h["env"]["source"] == "FIXTURE"
+    assert h["status"] == "ok" and h["env"]["source"] == "ORCHESTRATOR_VIEW"
+    assert h["view"]["analysis_source"] == "FIXTURE_CANNED"
     assert h["f1_official_rule"] == "NOT_READY" and h["f2_suppression"] == "NOT_READY"
 
     r = c.post("/tasks", json=BODY)
