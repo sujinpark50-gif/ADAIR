@@ -76,6 +76,10 @@ class ChooseIn(BaseModel):
     reason: str
 
 
+class ManualIn(BaseModel):
+    reason: str = Field(..., description="사람이 직접 보내는 이유 (기록)")
+
+
 class EventIn(BaseModel):
     event_id: str
     type: str = Field(..., description="ENV_UPDATED / RESOURCE_CHANGED / ...")
@@ -152,7 +156,8 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             while not stop.wait(poll_interval_s):
                 try:
                     with lock:
-                        orch.poll()
+                        if orch.poll() and config.AUTO_DISPATCH_ON_CHANGE:
+                            orch.dispatch_pending()       # 진행 상황이 바뀌면(반납·재대기 등) 대기 임무 배정
                 except Exception as e:  # noqa: BLE001 — 추적 루프는 멈추지 않는다
                     orch.ledger.log("POLL_ERROR", reason=type(e).__name__, detail={"error": str(e)})
 
@@ -195,7 +200,13 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 task, created = orch.submit_task(data)
             except RequestConflict:
                 raise HTTPException(409, "같은 request_id 에 다른 내용이 들어왔습니다")
-            result = orch.dispatch(task.task_id) if (do_dispatch and created) else None
+            result = None
+            if do_dispatch and created:
+                if config.AUTO_DISPATCH_ON_CHANGE:
+                    # 다른 대기 임무와 함께 우선순위 순서로 배정
+                    result = orch.dispatch_pending()["results"].get(task.task_id)
+                else:
+                    result = orch.dispatch(task.task_id)
             task = orch.ledger.get_task(task.task_id)
         return {"accepted": True, "created": created, "task": _task_view(orch, task), "dispatch": result}
 
@@ -223,6 +234,11 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     def dispatch(task_id: str):
         with lock:
             return orch.dispatch(task_id)
+
+    @app.post("/tasks/{task_id}/manual_dispatch")
+    def manual_dispatch(task_id: str, body: ManualIn):
+        with lock:
+            return orch.manual_dispatch(task_id, body.reason)
 
     @app.post("/tasks/{task_id}/resolve")
     def resolve(task_id: str, body: ResolveIn):
@@ -266,6 +282,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             atts = orch.ledger.list_attempts(tid)
             return {"task_id": tid, "kind": t.kind if t else None, "cell_id": t.target.cell_id if t else None,
                     "purpose_status": t.purpose_status if t else None, "hold_reason": t.hold_reason if t else None,
+                    "resume_condition": t.resume_condition if t else None,
                     "human_risk": ev.get("human_risk"), "human_risk_sources": ev.get("human_risk_sources"),
                     "human_risk_basis": ev.get("human_risk_basis"), "forecast_arrival_s": ev.get("forecast_arrival_s"),
                     "risk_score": ev.get("risk_score"), "distance_m": ev.get("distance_m"),
@@ -337,7 +354,10 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 orch.kb.report_fire(cid, body.simulation_time_s if body.simulation_time_s is not None else now,
                                     body.payload.get("source", "EXTERNAL_REPORT"), key=f"EVENT:{body.event_id}",
                                     detail={"note": body.payload.get("note")})
-            if body.type in ("ENV_UPDATED", "RESOURCE_CHANGED", "FIRE_REPORT"):
+            if body.type in ("ENV_UPDATED", "RESOURCE_CHANGED", "FIRE_REPORT") and config.AUTO_DISPATCH_ON_CHANGE:
+                out = orch.dispatch_pending()
+                redispatched = [{"task_id": k, **v} for k, v in out["results"].items()]
+            elif body.type in ("ENV_UPDATED", "RESOURCE_CHANGED", "FIRE_REPORT"):
                 # 새 입력·자원 변화가 재개 조건인 보류 Task 만 다시 평가한다
                 for t in orch.ledger.list_tasks(["HOLD", "PENDING"]):
                     if t.purpose_status == "PENDING" or t.resume_condition in (

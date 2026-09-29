@@ -76,11 +76,15 @@ COUNTER_ROUNDS_PER_RESOURCE = 2
 COUNTER_SUPPORTED_FIELDS = {"UAV": {"target_agl_m"}, "UGV": set()}
 
 # ---------------------------------------------------------------------------
-# 우선순위 (사용자 결정 2026-09-30)
-#   HUMAN_CHOICE      비슷하거나 엇갈리는 후보를 화면에 나란히 보여주고, 자원이 모자라면 사람이 고를 때까지 대기
-#   AUTO_HIGHER_RISK  인명 → 위험도가 조금이라도 높은 곳 순으로 바로 보내고 '자동 결정'으로 표시
+# 우선순위 (사용자 결정 2026-09-30, 기본값은 같은 날 자동으로 변경)
+#   AUTO_HIGHER_RISK  (기본) 애매한 묶음도 검증을 통과한 AI 추천 순서로 바로 보냄.
+#                     AI 실패·검증 실패 시 인명 → 위험도가 조금이라도 높은 곳 순 (규칙)
+#   HUMAN_CHOICE      수동 버전. 애매한 후보를 나란히 보여주고 자원이 모자라면 사람이 고를 때까지 대기
+# 두 모드 모두 화면의 '지금 보내기'로 사람이 직접 보낼 수 있다 (Local·Safety 관문은 그대로).
 # ---------------------------------------------------------------------------
-PRIORITY_MODE = os.getenv("ORCH_PRIORITY_MODE", "HUMAN_CHOICE")
+PRIORITY_MODE = os.getenv("ORCH_PRIORITY_MODE", "AUTO_HIGHER_RISK")
+# 상황이 바뀔 때(새 임무·신고·자원 반납 등) 대기 임무 배정을 자동 실행. 주기 실행은 하지 않는다 (부하)
+AUTO_DISPATCH_ON_CHANGE = os.getenv("ORCH_AUTO_DISPATCH", "1") == "1"
 PRIORITY_MODES = ("HUMAN_CHOICE", "AUTO_HIGHER_RISK")
 PRIORITY_SIMILAR_RISK_DELTA = 0.1     # 위험도 차이가 이 값 이내면 '비슷함' (risk_score 0~1 기준)
 

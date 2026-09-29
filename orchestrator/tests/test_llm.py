@@ -139,3 +139,21 @@ def test_no_llm_call_without_choice_groups(world):
     _submit_cell(world["orch"], "R-A", "A"), _submit_cell(world["orch"], "R-B", "B")
     world["orch"].dispatch_pending()
     assert fake.requests == []                                          # 규칙으로 정해지면 부르지 않음 (비용)
+
+
+def test_llm_recommendation_reused_for_same_group_and_situation(world):
+    from orchestrator import config, priority
+    fake, ta, tb = _world_with_llm(world, prefer_lower_risk, mode="HUMAN_CHOICE")
+    orch = world["orch"]
+
+    def recommend():
+        snap = orch.view()
+        tasks = orch.ledger.list_tasks(["PENDING", "HOLD"])
+        plan = priority.order_tasks(tasks, snap, config.PRIORITY_SIMILAR_RISK_DELTA)
+        return orch._llm_recommend(snap, plan, {t.task_id: t for t in tasks})
+    assert recommend() and recommend()                                 # 같은 묶음·같은 상황 두 번
+    assert len(fake.requests) == 1
+    assert [e for e in world["ledger"].events() if e["event_type"] == "LLM_PLAN_REUSED"]
+    world["env"].advance()                                             # 상황이 바뀌면 다시 호출
+    recommend()
+    assert len(fake.requests) == 2

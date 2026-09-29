@@ -133,6 +133,7 @@ def _one_uav(world):
 
 def test_human_choice_mode_waits_when_resources_short_then_human_picks(world):
     orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    orch.set_priority_mode("HUMAN_CHOICE", "수동 버전 시험")
     _fire_world(world, [cell("A", 0, 0, 0.72), cell("B", 0, 500, 0.65)])
     _one_uav(world)
     ta, tb = _submit_cell(orch, "R-A", "A"), _submit_cell(orch, "R-B", "B")
@@ -149,6 +150,7 @@ def test_human_choice_mode_waits_when_resources_short_then_human_picks(world):
 
 def test_human_choice_mode_dispatches_all_when_resources_enough(world):
     orch = world["orch"]
+    orch.set_priority_mode("HUMAN_CHOICE", "수동 버전 시험")
     _fire_world(world, [cell("A", 0, 0, 0.72), cell("B", 0, 500, 0.65)])
     ta, tb = _submit_cell(orch, "R-A", "A"), _submit_cell(orch, "R-B", "B")
     out = orch.dispatch_pending()
@@ -182,6 +184,8 @@ def test_board_api_and_mode_switch(world):
     from fastapi.testclient import TestClient
     from orchestrator.api import create_app
     c = TestClient(create_app(world["orch"]))
+    assert c.get("/priority/board").json()["mode"] == "AUTO_HIGHER_RISK"      # 기본은 자동
+    assert c.post("/priority/mode", json={"mode": "HUMAN_CHOICE"}).json()["mode"] == "HUMAN_CHOICE"
     _fire_world(world, [cell("A", 0, 0, 0.72), cell("B", 0, 500, 0.65)])
     _one_uav(world)
     ta, tb = _submit_cell(world["orch"], "R-A", "A"), _submit_cell(world["orch"], "R-B", "B")
@@ -216,3 +220,41 @@ def test_board_shows_recon_results(world):
     assert o["source"] == "SIMULATED" and o["env_apply"]["result"] == "ACK"
     assert o["footprint"] == {"width_m": 54.0, "height_m": 45.0, "agl_m": 90.0}
     assert c.get(f"/tasks/{t.task_id}").json()["observation"]["result"] == "DETECTED"
+
+
+# ---------------------------------------------------------------------------
+# 기본 자동 + 수동 보내기 (사용자 결정 2026-09-30)
+# ---------------------------------------------------------------------------
+def test_default_mode_is_auto_and_ambiguous_group_departs(world):
+    orch = world["orch"]
+    assert orch.priority_mode == "AUTO_HIGHER_RISK"
+    _fire_world(world, [cell("A", 0, 0, 0.72), cell("B", 0, 500, 0.65)])
+    _one_uav(world)
+    ta, tb = _submit_cell(orch, "R-A", "A"), _submit_cell(orch, "R-B", "B")
+    out = orch.dispatch_pending()
+    assert out["groups"][0]["status"] == "AUTO_DECIDED"          # AI 없음 → 규칙으로 자동 출발
+    assert out["results"][ta.task_id]["status"] == "STARTED"
+
+
+def test_manual_dispatch_sends_chosen_task_through_local_and_safety(world):
+    orch, lg, uav = world["orch"], world["ledger"], world["uav"]
+    _fire_world(world, [cell("A", 0, 0, 0.9), cell("B", 0, 500, 0.3)])
+    _one_uav(world)
+    ta, tb = _submit_cell(orch, "R-A", "A"), _submit_cell(orch, "R-B", "B")
+    world["uav"].state["A-uav1"]["failsafe"] = True                # 잠시 모든 기체 불가 → 둘 다 보류
+    orch.dispatch_pending()
+    assert lg.get_task(tb.task_id).purpose_status == "HOLD"
+    world["uav"].state["A-uav1"]["failsafe"] = False
+    r = orch.manual_dispatch(tb.task_id, "B 쪽 주민 신고가 먼저 들어옴")   # 사람이 낮은 쪽을 먼저
+    assert r["status"] == "STARTED" and r["resource_id"] == "A-uav1"
+    kinds = [e["event_type"] for e in lg.events(tb.task_id)]
+    assert "MANUAL_DISPATCH" in kinds and "SAFETY_JUDGEMENT" in kinds and "LOCAL_RESPONSE" in kinds
+    assert [e for e in lg.events(tb.task_id) if e["event_type"] == "MANUAL_DISPATCH"][0]["reason"] == "B 쪽 주민 신고가 먼저 들어옴"
+
+
+def test_manual_dispatch_refused_for_unknown_execution(world):
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    uav.execute_mode["A-uav1"] = "timeout"
+    t = submit(orch)
+    orch.dispatch(t.task_id)
+    assert orch.manual_dispatch(t.task_id, "재시도")["status"] == "REFUSED"   # 불명은 수동 해소로만

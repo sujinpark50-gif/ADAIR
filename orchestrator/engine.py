@@ -40,6 +40,7 @@ class Orchestrator:
         self.weather_feeds = list(weather_feeds)
         self.gate = SnapshotGate()
         self.priority_mode = config.PRIORITY_MODE
+        self._llm_memo = {}                   # 같은 묶음·같은 상황이면 AI 추천 재사용 (호출 절약)
 
     # ------------------------------------------------------------------
     # 접수
@@ -315,10 +316,18 @@ class Orchestrator:
         자동 모드에서는 그 순서로 배정 단위를 바꾼다. 실패하면 규칙 순서를 그대로 쓴다 (fallback)."""
         if not plan["groups"] or self.llm is None:
             return False
-        prop = self.llm.propose(snap, plan, by_id)
-        self.ledger.log("LLM_PLAN", sim_time_s=snap.simulation_time_s, result=prop["status"],
-                        reason=prop.get("reason") or (",".join(prop.get("violations", [])) or None),
-                        detail={k: v for k, v in prop.items() if k not in ("orders", "rationales")})
+        memo_key = (tuple(tuple(g["task_ids"]) for g in plan["groups"]), snap.run_id, snap.state_version,
+                    tuple(sorted((c["cell_id"], c["knowledge"]["status"]) for c in snap.fire_cells)))
+        prop = self._llm_memo.get(memo_key)
+        if prop is None:
+            prop = self.llm.propose(snap, plan, by_id)
+            if prop["status"] in ("OK", "INVALID"):
+                self._llm_memo = {memo_key: prop}     # 최근 1건만 보관
+            self.ledger.log("LLM_PLAN", sim_time_s=snap.simulation_time_s, result=prop["status"],
+                            reason=prop.get("reason") or (",".join(prop.get("violations", [])) or None),
+                            detail={k: v for k, v in prop.items() if k not in ("orders", "rationales")})
+        else:
+            self.ledger.log("LLM_PLAN_REUSED", sim_time_s=snap.simulation_time_s, result=prop["status"])
         if prop["status"] != "OK":
             for g in plan["groups"]:
                 g["llm"] = {"status": prop["status"], "fallback": "RULE_ORDER",
@@ -333,6 +342,22 @@ class Orchestrator:
                     if set(unit) == set(g["task_ids"]):
                         unit[:] = g["llm"]["order"]
         return True
+
+    def manual_dispatch(self, task_id: str, reason: str) -> dict:
+        """사람이 '지금 보내기'. 우선순위 순서를 건너뛰지만 Local·Safety 관문은 그대로 거친다.
+        실행 결과가 불명(UNKNOWN)인 임무는 수동 해소(resolve)로만 다시 다룬다."""
+        t = self.ledger.get_task(task_id)
+        if t is None:
+            return {"status": "NOT_FOUND"}
+        self.ledger.log("MANUAL_DISPATCH", task_id=task_id, result="REQUESTED", reason=reason,
+                        detail={"mode": self.priority_mode, "purpose_status": t.purpose_status})
+        if t.purpose_status == "HOLD" and t.hold_reason == "AWAITING_PRIORITY_CHOICE":
+            return self.choose_priority([task_id], reason)["results"][task_id]
+        if t.purpose_status not in ("PENDING", "HOLD") or t.resume_condition == MANUAL:
+            return {"status": "REFUSED", "reason": f"NOT_DISPATCHABLE:{t.purpose_status}:{t.hold_reason}"}
+        t.purpose_status, t.hold_reason, t.resume_condition = "PENDING", "HUMAN_DISPATCHED", None
+        self.ledger.save_task(t)
+        return self.dispatch(task_id)
 
     def choose_priority(self, order: List[str], reason: str) -> dict:
         """사람이 선택 묶음에서 먼저 보낼 순서를 정함. 목록의 Task 만 순서대로 배정하고, 빠진 Task 는 대기 유지.

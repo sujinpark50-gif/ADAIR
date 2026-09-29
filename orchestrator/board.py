@@ -26,6 +26,7 @@ h1{font-size:18px;margin:0}main{padding:16px;max-width:1200px;margin:auto}
 .card.first{outline:2px solid var(--blue)}
 .human{color:var(--red);font-weight:700}.obs{font-weight:700}.obs.fire{color:var(--red)}.obs.clear{color:var(--green)}.obs.warn{color:var(--amber)}.id{color:var(--mute);font-size:11px;font-weight:400}.ctitle{font-weight:700;margin-bottom:6px}.extra{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line)}.ai{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 12%,transparent);font-size:14px}.ai.off{background:transparent;color:var(--mute);padding:0}.row{display:flex;justify-content:space-between;font-size:14px;padding:2px 0}
 .row span:first-child{color:var(--mute)}
+button.mini{padding:4px 8px;border-radius:6px;border:0;background:var(--red);color:#fff;font-size:12px;cursor:pointer}
 .card button{margin-top:8px;width:100%;padding:8px;border-radius:8px;border:0;background:var(--red);color:#fff;font-weight:600;cursor:pointer}
 table{width:100%;border-collapse:collapse;font-size:14px;background:var(--card);border-radius:10px;overflow:hidden}
 th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--mute);font-weight:500}
@@ -45,12 +46,12 @@ th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:v
 <h2 style="font-size:16px">정찰·측정 결과</h2>
 <div class="cards" id="results" style="margin-bottom:16px"></div>
 <h2 style="font-size:16px">전체 판단 순서</h2>
-<div class="wrap"><table><thead><tr><th>순서</th><th>임무</th><th>인명피해</th><th>위험도</th><th>가까운 보호대상</th><th>상태</th><th>배정 자원</th><th>정찰 결과</th></tr></thead><tbody id="order"></tbody></table></div>
+<div class="wrap"><table><thead><tr><th>순서</th><th>임무</th><th>인명피해</th><th>위험도</th><th>가까운 보호대상</th><th>상태</th><th>배정 자원</th><th>정찰 결과</th><th>수동</th></tr></thead><tbody id="order"></tbody></table></div>
 </main>
 <script>
-const MODE_LABEL={HUMAN_CHOICE:"사람이 선택",AUTO_HIGHER_RISK:"자동 (높은 곳 먼저)"};
+const MODE_LABEL={AUTO_HIGHER_RISK:"자동 (AI 추천으로 출발)",HUMAN_CHOICE:"수동 (사람이 선택)"};
 const KIND_LABEL={SIMILAR:"위험도 비슷",CONFLICT:"기준 엇갈림"};
-const STATUS_LABEL={AWAITING_CHOICE:["선택 대기","wait"],PARTIAL_AWAITING_CHOICE:["일부 선택 대기","wait"],AUTO_DECIDED:["자동 결정함 (규칙)","auto"],LLM_DECIDED:["AI 결정함 (검증 통과)","auto"],ALL_DISPATCHED:["자원 충분 · 모두 출동","ok"]};
+const STATUS_LABEL={AWAITING_CHOICE:["선택 대기","wait"],PARTIAL_AWAITING_CHOICE:["일부 선택 대기","wait"],AUTO_DECIDED:["자동 출발 (규칙: 위험도 높은 곳 먼저)","auto"],LLM_DECIDED:["자동 출발 (AI 추천, 검증 통과)","auto"],ALL_DISPATCHED:["자원 충분 · 모두 출동","ok"]};
 const PURPOSE={PENDING:"대기",HOLD:"보류",EVALUATING:"판단 중",APPROVED:"출동 승인",IN_EXECUTION:"출동 중",COMPLETED:"완료",FAILED:"실패",CANCELLED:"취소"};
 const HOLD={AWAITING_PRIORITY_CHOICE:"사람 선택 대기",NO_FEASIBLE_CANDIDATE:"보낼 자원 없음",HUMAN_PRIORITY_CHOSEN:"사람이 선택함",
  EXECUTION_RESPONSE_LOST:"출동 응답 끊김",PROVIDER_LOST_TASK:"기체가 임무 기록 잃음",PROVIDER_OFFLINE:"기체 연락 두절",
@@ -98,6 +99,8 @@ const BASIS_KO={FORECAST_REACHES_RESIDENTIAL:"주거지에 도달 예상",FORECA
 const risk=v=>v==null?"점수 없음":v.toFixed(2);
 const near=t=>t.nearest_protected?`${esc(SITE_TYPE[t.nearest_protected.site_type]||"보호대상")} ${Math.round(t.distance_m)}m${small(t.nearest_protected.site_id)}`:"-";
 async function post(url,body){await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});load();}
+const canSend=t=>(t.purpose_status==="PENDING"||t.purpose_status==="HOLD")&&(t.resume_condition!=="MANUAL_RESOLUTION"||t.hold_reason==="AWAITING_PRIORITY_CHOICE");
+async function sendNow(tid){const reason=prompt("지금 보내는 이유를 적어 주세요 (기록에 남습니다)");if(reason)post(`/tasks/${tid}/manual_dispatch`,{reason});}
 async function choose(tid){const reason=prompt("먼저 보내는 이유를 적어 주세요 (기록에 남습니다)");if(reason)post("/priority/choose",{order:[tid],reason});}
 async function setMode(m){post("/priority/mode",{mode:m,reason:"관제 화면에서 변경"});}
 async function load(){
@@ -113,8 +116,8 @@ async function load(){
    <div class="row"><span>가까운 보호대상</span><span>${near(t)}</span></div><div class="row"><span>상태</span><span>${status(t)}</span></div>
    <div class="row"><span>배정 자원</span><span>${resName(t.resource_id)}</span></div>
    <div class="row"><span>정찰 결과</span>${obsShort(t.observation)}</div>
-   ${g.awaiting.includes(t.task_id)?`<button onclick="choose('${t.task_id}')">이곳 먼저 보내기</button>`:""}</div>`).join("")}</div></div>`}).join(""):'<p class="note">지금은 사람이 고를 묶음이 없습니다.</p>';
- document.getElementById("order").innerHTML=b.auto_order.map((t,i)=>`<tr><td>${i+1}</td><td>${title(t)}${small(t.task_id)}</td><td>${human(t.human_risk,t.human_risk_basis)}</td><td>${risk(t.risk_score)}</td><td>${near(t)}</td><td>${status(t)}</td><td>${resName(t.resource_id)}</td><td>${obsShort(t.observation)}</td></tr>`).join("");
+   ${g.awaiting.includes(t.task_id)?`<button onclick="choose('${t.task_id}')">이곳 먼저 보내기</button>`:(canSend(t)?`<button onclick="sendNow('${t.task_id}')">지금 보내기</button>`:"")}</div>`).join("")}</div></div>`}).join(""):'<p class="note">지금은 사람이 고를 묶음이 없습니다.</p>';
+ document.getElementById("order").innerHTML=b.auto_order.map((t,i)=>`<tr><td>${i+1}</td><td>${title(t)}${small(t.task_id)}</td><td>${human(t.human_risk,t.human_risk_basis)}</td><td>${risk(t.risk_score)}</td><td>${near(t)}</td><td>${status(t)}</td><td>${resName(t.resource_id)}</td><td>${obsShort(t.observation)}</td><td>${canSend(t)?`<button class="mini" onclick="sendNow('${t.task_id}')">지금 보내기</button>`:""}</td></tr>`).join("");
  document.getElementById("results").innerHTML=b.results.length?b.results.map(t=>`<div class="card"><div class="ctitle">${title(t)}${small(t.task_id)}</div>${obsDetail(t.observation)}</div>`).join(""):'<p class="note">아직 정찰 결과가 없습니다.</p>';
 }
 function renderForecast(f){const el=document.getElementById("forecast");
