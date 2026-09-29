@@ -112,21 +112,50 @@ def normal_flight(target_ground=600.0, agl=80.0, margin=10.0):
 
 
 class FakeUgv:
+    """ugv/server.py 형식. scripts[exec task_id] 로 진행을 흉내 낸다."""
+
     def __init__(self, ids=("A-ugv1",)):
         self.units = {rid: {"state": "READY", "lat": 38.11, "lon": 128.19, "current_task_id": None}
                       for rid in ids}
+        self.verdicts = {rid: {"verdict": "ACCEPT", "eta_sec": 300} for rid in ids}
+        self.default_script = None
+        self.scripts = {}
         self.calls = []
 
     def handler(self, request):
         import time
-        self.calls.append((request.method, request.url.path))
-        if request.url.path == "/ugv":
+        path = request.url.path
+        body = json.loads(request.content) if request.content else None
+        self.calls.append((request.method, path, body))
+        if path == "/ugv":
             return httpx.Response(200, json=[{
                 "resource_id": rid, "resource_type": "UGV", "base": "A", "state": u["state"],
                 "position": {"lat": u["lat"], "lon": u["lon"]}, "fuel_pct": 90.0, "current_node": "A",
                 "current_task_id": u["current_task_id"], "driver": "sim", "driver_status": "IDLE",
                 "updated_at": time.time()} for rid, u in self.units.items()])
-        return httpx.Response(404)
+        m = re.match(r"/ugv/([^/]+)/(evaluate|execute|task)(?:/(.+))?", path)
+        rid, op, tid = m.group(1), m.group(2), m.group(3)
+        node = {"node_id": "N1", "lat": 38.07, "lon": 128.20, "snap_m": 10.0}
+        if op == "evaluate":
+            return httpx.Response(200, json={"task_id": body["task_id"], "decision_id": body["decision_id"],
+                                             "resource_id": rid, "detail": None, "target_node": node,
+                                             "path": ["A", "N1"], "reason": None, "eta_sec": None,
+                                             **self.verdicts[rid]})
+        if op == "execute":
+            self.units[rid]["current_task_id"] = body["task_id"]
+            self.units[rid]["state"] = "RUNNING"
+            self.scripts[body["task_id"]] = list(self.default_script(rid)) if self.default_script else []
+            return httpx.Response(200, json={"task_id": body["task_id"], "resource_id": rid, "status": "STARTED",
+                                             "tracking_url": "", "target_node": node, "eta_sec": 300})
+        seq = self.scripts.get(tid)
+        if not seq:
+            return httpx.Response(404, json={"detail": "not found"})
+        cur = seq.pop(0) if len(seq) > 1 else seq[0]
+        eff = cur.pop("_unit", None)
+        if eff:
+            self.units[rid].update(eff)
+        return httpx.Response(200, json={"task_id": tid, "resource_id": rid, "target_node": "N1",
+                                         "progress": None, "observation": None, "error": None, **cur})
 
     def client(self):
         return httpx.Client(transport=httpx.MockTransport(self.handler))

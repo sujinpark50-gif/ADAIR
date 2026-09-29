@@ -24,7 +24,7 @@ from .models import Requirements, ResourceView, Target, Task
 from .prefilter import filter_candidates, haversine_m
 from .resources import Unreachable
 
-ACTIVE_ATTEMPT = ("REQUESTED", "STARTED", "ARRIVED", "OBSERVED", "APPLIED", "RETURNING", "UNKNOWN")
+ACTIVE_ATTEMPT = ("REQUESTED", "STARTED", "ARRIVED", "OBSERVED", "APPLIED", "RETURNING", "UNKNOWN", "FAULTED")
 MANUAL = "MANUAL_RESOLUTION"
 MAX_SNAPSHOT_RESTARTS = 2
 
@@ -302,8 +302,12 @@ class Orchestrator:
                 out = self._maybe_release(att, client, phase, detail, move) or out
             return out
 
+        if sub == "FAULTED":
+            # 운영자가 해제해 READY 로 돌아오면 반납
+            return self._maybe_release(att, client, phase, detail, move)
+
         if pstatus == "FAILED":
-            reason = data.get("reason") or "PROVIDER_FAILED"
+            reason = data.get("reason") or (data.get("error") or "PROVIDER_FAILED").split(":")[0]
             if task and task.purpose_status == "IN_EXECUTION":
                 # 목적 미완료. 인계 필요 — 관측 공백을 남기고 재배정 대기
                 task.purpose_status, task.hold_reason = "PENDING", f"HANDOVER:{reason}"
@@ -314,6 +318,9 @@ class Orchestrator:
                 return move("RETURNING", reason, extra={"failed": True})
             if phase == "DONE":
                 return self._maybe_release(att, client, phase, detail, move)
+            if phase == "FAILED" and att["command"]["resource_type"] != "UAV":
+                # UGV 서버: 이상 확정 → 차를 세우고 UNAVAILABLE. /stop 전까지 재배정 불가
+                return move("FAULTED", reason, extra={"fault": data.get("error")})
             return self._unknown(att, task, detail, f"FAILED_POSITION_UNCONFIRMED:{reason}", reopen=False)
         return None
 
@@ -407,7 +414,9 @@ class Orchestrator:
         if v is not None and v.ready and v.current_task_id is None:
             return move("RELEASED", "RESOURCE_READY_CONFIRMED", release=True,
                         extra={"released_evidence": {"ready": True, "phase": phase}})
-        return move("RETURNING", "LANDED_READY_UNCONFIRMED") if att["substatus"] != "RETURNING" else None
+        if att["substatus"] in ("RETURNING", "FAULTED"):
+            return None                     # 아직 READY 아님 → 점유 유지
+        return move("RETURNING", "LANDED_READY_UNCONFIRMED")
 
     # ------------------------------------------------------------------
     # 수동 해소

@@ -37,6 +37,7 @@ ATTEMPT_SUBSTATUSES = (
     "RETURNING",   # 목적 종료, 기체 복귀 중 (점유 유지)
     "RELEASED",    # 기체 READY/반납 확인 → 예약 해제
     "UNKNOWN",     # 응답 유실·조회 불능. 점유 유지, 재전송 금지
+    "FAULTED",     # 실패 확인 + 기체 정지·사용불가 (예: UGV 주행 이상). 운영자 해제로 READY 될 때까지 점유
     "FAILED",      # 실패가 확인된 경우만
     "NOT_SENT",    # 송신 전 중단이 확인됨 (예약 해제 가능)
     "CANCELLED",

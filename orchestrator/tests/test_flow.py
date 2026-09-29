@@ -12,12 +12,6 @@ def _events(ledger, task_id, etype):
     return [e for e in ledger.events(task_id) if e["event_type"] == etype]
 
 
-def _poll_until_quiet(orch, n=10):
-    for _ in range(n):
-        if not orch.poll():
-            break
-
-
 # ---------------------------------------------------------------------------
 # 시나리오 1: 정상 정찰 폐루프
 # ---------------------------------------------------------------------------
@@ -272,3 +266,45 @@ def test_return_margin_failure_reopens_for_handover_and_keeps_occupancy(world):
     assert lg.get_attempt(out["attempt_id"])["substatus"] == "RETURNING"
     out2 = orch.dispatch(task.task_id)            # 후임 배정
     assert out2["resource_id"] == "A-uav2"
+
+
+# ---------------------------------------------------------------------------
+# UGV (가짜 서버) — 도로상황 임무, 주행 중 고장
+# ---------------------------------------------------------------------------
+UGV_REQ = {"resource_types": ["UGV"], "sensor": "ROAD_STATUS", "needs_env_ack": False}
+
+
+def test_ugv_road_status_task_completes_and_releases(world):
+    orch, ugv, lg = world["orch"], world["ugv"], world["ledger"]
+    ugv.default_script = lambda rid: [
+        {"status": "IN_PROGRESS", "progress": {"phase": "ENROUTE"}},
+        {"status": "COMPLETED", "progress": {"phase": "ARRIVED"},
+         "observation": {"observation_type": "ROAD_STATUS", "arrived_node": "N1"},
+         "_unit": {"state": "READY", "current_task_id": None}}]
+    task = submit(orch, requirements=UGV_REQ)
+    out = orch.dispatch(task.task_id)
+    assert out["resource_id"] == "A-ugv1"
+    for _ in range(3):
+        orch.poll()
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED"
+    assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"
+
+
+def test_ugv_fault_reopens_task_and_keeps_vehicle_until_ready(world):
+    orch, ugv, lg = world["orch"], world["ugv"], world["ledger"]
+    ugv.default_script = lambda rid: [
+        {"status": "FAILED", "progress": {"phase": "FAILED"}, "error": "STALLED: 30초간 이동 0 m",
+         "_unit": {"state": "UNAVAILABLE", "current_task_id": None}}]
+    task = submit(orch, requirements=UGV_REQ)
+    out = orch.dispatch(task.task_id)
+    orch.poll()
+    att = lg.get_attempt(out["attempt_id"])
+    assert att["substatus"] == "FAULTED" and "A-ugv1" in lg.reservations()
+    t = lg.get_task(task.task_id)
+    assert t.purpose_status == "PENDING" and t.hold_reason == "HANDOVER:STALLED"
+    orch.poll()                                   # 아직 UNAVAILABLE → 계속 점유
+    assert "A-ugv1" in lg.reservations()
+    ugv.units["A-ugv1"]["state"] = "READY"        # 운영자가 /stop 으로 해제
+    orch.poll()
+    assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"
+    assert lg.reservations() == {}

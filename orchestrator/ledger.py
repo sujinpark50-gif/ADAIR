@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS ix_attempts_task ON attempts(task_id);
 
 # 이 상태의 실행시도는 자원을 계속 점유한다
 OCCUPYING_SUBSTATUSES = {"PREPARED", "REQUESTED", "STARTED", "ARRIVED", "OBSERVED",
-                         "APPLIED", "RETURNING", "UNKNOWN"}
+                         "APPLIED", "RETURNING", "UNKNOWN", "FAULTED"}
 
 
 class RequestConflict(Exception):
