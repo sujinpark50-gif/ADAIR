@@ -17,7 +17,7 @@ resolve(...)       사람의 수동 해소 (재평가도 Local·Safety 관문을
 import time
 from typing import Dict, List, Optional
 
-from . import config, negotiation, observation, safety
+from . import config, negotiation, observation, priority, safety
 from .env_adapter import SnapshotGate, missing_snapshot_fields
 from .ledger import Ledger, ReservationConflict, new_id
 from .models import Requirements, ResourceView, Target, Task
@@ -46,6 +46,7 @@ class Orchestrator:
             requirements=Requirements(**{k: (tuple(v) if k in ("resource_types", "agl_range_m") and v is not None
                                              else v) for k, v in req.items()}),
             request_key=body.get("request_id"),
+            area_cell_ids=list(body.get("area_cell_ids") or []),
         )
         snap = self.env.read()
         task.created_sim_s = snap.simulation_time_s
@@ -174,6 +175,58 @@ class Orchestrator:
                 break
 
         return self._hold(task, "NO_FEASIBLE_CANDIDATE", "NEW_RESOURCE_OR_INPUT", sim, detail={"excluded": excluded})
+
+    # ------------------------------------------------------------------
+    # 여러 Task 배정 (우선순위 층 순서)
+    # ------------------------------------------------------------------
+    def _candidate_ids(self, task: Task, snap) -> set:
+        views, unreachable, client_of = self._collect(task.requirements.resource_types)
+        ranked, _ = filter_candidates(task, snap, views, unreachable, self.ledger.reservations(),
+                                      age_of=lambda v: client_of[v.resource_id].source_age_s(v))
+        return {v.resource_id for _, v in ranked}
+
+    def dispatch_pending(self) -> dict:
+        """대기 Task 를 우선순위 층(front) 순서로 배정한다.
+
+        같은 층 안에서 기준이 엇갈리는 Task 들이 쓸 수 있는 자원 수보다 많으면, 누구를 먼저
+        보낼지 정할 합의된 규칙이 없으므로 그 층 전체를 사람 판단 대기로 보류한다 (요청서 §8).
+        사전 점검 뒤에도 같은 층 Task 가 자원을 먼저 가져가 밀린 경우 역시 보류한다.
+        """
+        snap = self.env.read()
+        tasks = [t for t in self.ledger.list_tasks(["PENDING", "HOLD"])
+                 if not (t.purpose_status == "HOLD" and t.resume_condition == MANUAL)]
+        if not tasks:
+            return {"fronts": [], "results": {}}
+        plan = priority.order_tasks(tasks, snap)
+        self.ledger.log("PRIORITY_ORDER", sim_time_s=snap.simulation_time_s, result="ORDERED",
+                        detail={k: plan[k] for k in ("fronts", "conflicting_fronts", "criteria", "rule",
+                                                     "evidence", "context")})
+        by_id = {t.task_id: t for t in tasks}
+        results = {}
+        for front in plan["fronts"]:
+            conflicting = front in plan["conflicting_fronts"]
+            if conflicting:
+                pool = set().union(*(self._candidate_ids(by_id[t], snap) for t in front))
+                if len(pool) < len(front):
+                    for tid in front:
+                        results[tid] = self._hold(by_id[tid], "PRIORITY_CONFLICT", MANUAL,
+                                                  snap.simulation_time_s,
+                                                  detail={"front": front, "available_resources": sorted(pool),
+                                                          "evidence": {t: plan["evidence"][t] for t in front},
+                                                          "criteria": plan["criteria"]})
+                    continue
+            for tid in front:
+                results[tid] = self.dispatch(tid)
+            if conflicting:
+                taken = {r.get("resource_id") for r in (results[t] for t in front) if r.get("resource_id")}
+                for tid in front:
+                    r = results[tid]
+                    if r.get("status") == "HOLD" and any(
+                            reason == "OCCUPIED" and rid in taken for rid, reason in (r.get("excluded") or {}).items()):
+                        results[tid] = self._hold(self.ledger.get_task(tid), "PRIORITY_CONFLICT", MANUAL,
+                                                  snap.simulation_time_s,
+                                                  detail={"front": front, "taken_by_front_mates": sorted(taken)})
+        return {"fronts": plan["fronts"], "conflicting_fronts": plan["conflicting_fronts"], "results": results}
 
     def _approve_and_send(self, task, view, client, snap, did, evaluated, local, mods) -> dict:
         rid = view.resource_id

@@ -52,6 +52,7 @@ class TaskIn(BaseModel):
     kind: str = "RECON"
     target: TargetIn
     requirements: RequirementsIn = RequirementsIn()
+    area_cell_ids: List[str] = Field(default_factory=list, description="임무가 다루는 환경 셀 목록")
     dispatch: bool = Field(True, description="접수 직후 배정까지 시도")
 
 
@@ -171,6 +172,11 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 "reservations": orch.ledger.reservations(),
                 "active_attempts": [a for a in orch.ledger.list_attempts()
                                     if a["substatus"] not in ("RELEASED", "NOT_SENT", "FAILED", "CANCELLED")]}
+
+    @app.post("/dispatch_pending")
+    def dispatch_pending():
+        with lock:
+            return orch.dispatch_pending()
 
     @app.post("/poll")
     def poll():

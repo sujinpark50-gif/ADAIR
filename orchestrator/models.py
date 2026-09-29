@@ -79,6 +79,8 @@ class Task:
     kind: str                                  # RECON / MONITOR / RECHECK / GROUND_SUPPORT ...
     target: Target
     requirements: Requirements = field(default_factory=Requirements)
+    # 임무가 다루는 환경 셀들 (위험 셀 여러 칸을 한 임무로 묶을 때). 비면 target.cell_id 만 본다
+    area_cell_ids: List[str] = field(default_factory=list)
     purpose_status: str = "PENDING"
     hold_reason: Optional[str] = None
     resume_condition: Optional[str] = None
@@ -108,6 +110,7 @@ class Task:
             kind=d["kind"],
             target=Target(**d["target"]),
             requirements=Requirements(**req),
+            area_cell_ids=list(d.get("area_cell_ids") or []),
             purpose_status=d.get("purpose_status", "PENDING"),
             hold_reason=d.get("hold_reason"),
             resume_condition=d.get("resume_condition"),
