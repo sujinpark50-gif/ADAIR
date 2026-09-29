@@ -29,6 +29,7 @@ from .board import BOARD_HTML
 from .engine import Orchestrator
 from .env_adapter import FixtureEnv
 from .ledger import Ledger, RequestConflict
+from .llm import LlmPlanner
 from .resources import UavClient, UgvClient
 
 
@@ -142,7 +143,9 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 "ugv_server": getattr(orch.ugv, "base_url", None),
                 "llm": {"provider": config.LLM_PROVIDER, "model": config.LLM_MODEL,
                         "key_present": bool(os.getenv(config.LLM_API_KEY_ENV)),
-                        "ready": bool(os.getenv(config.LLM_API_KEY_ENV)) and config.LLM_TIMEOUT_S is not None},
+                        "timeout_s": config.LLM_TIMEOUT_S, "max_calls": config.LLM_MAX_CALLS_PER_RUN,
+                        "not_ready_reason": orch.llm.status() if orch.llm else "NOT_CONNECTED",
+                        "calls_used": orch.llm.calls if orch.llm else 0},
                 "f1_official_rule": config.OFFICIAL_RULE_SOURCE or "NOT_READY",
                 "f2_suppression": "READY" if config.SUPPRESSION_CONTRACT_READY else "NOT_READY"}
 
@@ -241,7 +244,9 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             if o:
                 results.append({**row(t.task_id), "observation": o})
         results.sort(key=lambda r: r["observation"].get("observed_wall") or "", reverse=True)
+        llm_state = orch.llm.status() if orch.llm else "NOT_CONNECTED"
         return {"mode": orch.priority_mode, "modes": list(config.PRIORITY_MODES), "results": results,
+                "llm": {"model": config.LLM_MODEL, "not_ready_reason": llm_state},
                 "similar_delta": config.PRIORITY_SIMILAR_RISK_DELTA, "decided_seq": (last or {}).get("seq"),
                 "auto_order": [row(t) for t in detail.get("auto_order", [])], "groups": groups,
                 "criteria": detail.get("criteria"), "rule": detail.get("rule")}
@@ -290,7 +295,7 @@ def build_default() -> Orchestrator:
             env = FixtureEnv(**json.load(f))
     else:
         env = FixtureEnv()
-    return Orchestrator(Ledger(config.DB_PATH), env, UavClient(), UgvClient())
+    return Orchestrator(Ledger(config.DB_PATH), env, UavClient(), UgvClient(), llm=LlmPlanner())
 
 
 if __name__ == "__main__":

@@ -20,6 +20,25 @@ import config as team_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def _load_dotenv(path: Path) -> None:
+    """저장소 루트 .env 의 KEY=VALUE 를 환경변수로 읽는다 (.gitignore 대상).
+    이미 설정된 환경변수는 덮어쓰지 않고, 빈 값은 설정하지 않는다."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
+
+if os.getenv("ORCH_SKIP_DOTENV") != "1":
+    _load_dotenv(ROOT / ".env")
+
 # ---------------------------------------------------------------------------
 # 서버 (PROVISIONAL — 통합 담당과 합의 후 교체. 8100 은 UGV 서버가 사용 중)
 # ---------------------------------------------------------------------------
@@ -96,8 +115,8 @@ DEFAULT_SENSOR_PROFILE_ID = "TEST_THERMAL_50M_V1"
 LLM_PROVIDER = "openai"
 LLM_MODEL = os.getenv("ORCH_LLM_MODEL", "gpt-5.6-luna")   # 사용자 결정 2026-09-30
 LLM_API_KEY_ENV = "OPENAI_API_KEY"                         # 키 값은 코드·로그에 남기지 않는다
-LLM_TIMEOUT_S = None             # TBD — None 이면 LLM 을 호출하지 않고 규칙 판단만 한다
-LLM_MAX_CALLS_PER_RUN = None     # TBD
+LLM_TIMEOUT_S = float(os.getenv("ORCH_LLM_TIMEOUT_S", "30"))     # 사용자 결정 2026-09-30 (실제 초)
+LLM_MAX_CALLS_PER_RUN = int(os.getenv("ORCH_LLM_MAX_CALLS", "50"))  # 사용자 결정 2026-09-30 (서버 1회 실행당)
 LLM_TEMPERATURE = None           # TBD — 모델이 지원하는 경우에만 전달
 
 # ---------------------------------------------------------------------------

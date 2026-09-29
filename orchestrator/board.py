@@ -24,7 +24,7 @@ h1{font-size:18px;margin:0}main{padding:16px;max-width:1200px;margin:auto}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
 .card{border:1px solid var(--line);border-radius:10px;padding:10px}
 .card.first{outline:2px solid var(--blue)}
-.human{color:var(--red);font-weight:700}.obs{font-weight:700}.obs.fire{color:var(--red)}.obs.clear{color:var(--green)}.obs.warn{color:var(--amber)}.id{color:var(--mute);font-size:11px;font-weight:400}.ctitle{font-weight:700;margin-bottom:6px}.row{display:flex;justify-content:space-between;font-size:14px;padding:2px 0}
+.human{color:var(--red);font-weight:700}.obs{font-weight:700}.obs.fire{color:var(--red)}.obs.clear{color:var(--green)}.obs.warn{color:var(--amber)}.id{color:var(--mute);font-size:11px;font-weight:400}.ctitle{font-weight:700;margin-bottom:6px}.ai{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 12%,transparent);font-size:14px}.ai.off{background:transparent;color:var(--mute);padding:0}.row{display:flex;justify-content:space-between;font-size:14px;padding:2px 0}
 .row span:first-child{color:var(--mute)}
 .card button{margin-top:8px;width:100%;padding:8px;border-radius:8px;border:0;background:var(--red);color:#fff;font-weight:600;cursor:pointer}
 table{width:100%;border-collapse:collapse;font-size:14px;background:var(--card);border-radius:10px;overflow:hidden}
@@ -46,7 +46,7 @@ th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:v
 <script>
 const MODE_LABEL={HUMAN_CHOICE:"사람이 선택",AUTO_HIGHER_RISK:"자동 (높은 곳 먼저)"};
 const KIND_LABEL={SIMILAR:"위험도 비슷",CONFLICT:"기준 엇갈림"};
-const STATUS_LABEL={AWAITING_CHOICE:["선택 대기","wait"],PARTIAL_AWAITING_CHOICE:["일부 선택 대기","wait"],AUTO_DECIDED:["자동 결정함","auto"],ALL_DISPATCHED:["자원 충분 · 모두 출동","ok"]};
+const STATUS_LABEL={AWAITING_CHOICE:["선택 대기","wait"],PARTIAL_AWAITING_CHOICE:["일부 선택 대기","wait"],AUTO_DECIDED:["자동 결정함 (규칙)","auto"],LLM_DECIDED:["AI 결정함 (검증 통과)","auto"],ALL_DISPATCHED:["자원 충분 · 모두 출동","ok"]};
 const PURPOSE={PENDING:"대기",HOLD:"보류",EVALUATING:"판단 중",APPROVED:"출동 승인",IN_EXECUTION:"출동 중",COMPLETED:"완료",FAILED:"실패",CANCELLED:"취소"};
 const HOLD={AWAITING_PRIORITY_CHOICE:"사람 선택 대기",NO_FEASIBLE_CANDIDATE:"보낼 자원 없음",HUMAN_PRIORITY_CHOSEN:"사람이 선택함",
  EXECUTION_RESPONSE_LOST:"출동 응답 끊김",PROVIDER_LOST_TASK:"기체가 임무 기록 잃음",PROVIDER_OFFLINE:"기체 연락 두절",
@@ -68,6 +68,10 @@ function obsDetail(o){const fp=o.footprint;const src=o.source==="SIMULATED"?"모
  ${o.failure_reason?`<div class="row"><span>실패 사유</span><span>${esc(o.failure_reason)}</span></div>`:""}
  <div class="row"><span>출처</span><span>${src}</span></div><div class="row"><span>환경 반영</span><span>${ack}</span></div>
  <div class="row"><span>관측 자원</span><span>${resName(o.resource_id)}</span></div>`;}
+const LLM_REASON={API_KEY_MISSING:"API 키 없음",TIMEOUT_NOT_CONFIGURED:"대기시간 미설정",CALL_LIMIT_NOT_CONFIGURED:"호출 한도 미설정",CALL_LIMIT_REACHED:"호출 한도 도달",NOT_CONNECTED:"연결 안 됨"};
+function llmBox(g,byId){const l=g.llm;if(!l)return "";
+ if(l.status==="OK"){const first=byId[l.order[0]];return `<div class="ai"><b>AI 추천:</b> ${first?title(first):esc(l.order[0])} 먼저 — ${esc(l.rationale)}</div>`;}
+ const r=Array.isArray(l.reason)?"검증 실패":(LLM_REASON[l.reason]||esc(l.reason));return `<div class="ai off">AI 추천 없음 (${r}) · 규칙 순서 사용</div>`;}
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const small=s=>s?` <small class="id">${esc(s)}</small>`:"";
 function resName(id){if(!id)return "-";const m=/^([A-Z]+)-([a-z]+)(\d+)$/.exec(id);return m?`${m[1]}거점 ${RES_TYPE[m[2]]||m[2]} ${m[3]}호`:esc(id);}
@@ -83,10 +87,10 @@ async function setMode(m){post("/priority/mode",{mode:m,reason:"관제 화면에
 async function load(){
  const b=await (await fetch("/priority/board")).json();
  document.getElementById("mode").innerHTML=b.modes.map(m=>`<button class="${m===b.mode?"on":""}" onclick="setMode('${m}')">${MODE_LABEL[m]}</button>`).join("");
- document.getElementById("rule").textContent=`판단 순서: 인명피해 예상 지역 항상 먼저 → 위험도 → 보호대상까지 거리 → 접수 순서. 위험도 차이가 ${b.similar_delta} 이내이거나 기준이 엇갈리면 한 묶음으로 보여줍니다.`;
+ document.getElementById("rule").textContent=`AI(${b.llm.model}): ${b.llm.not_ready_reason?"사용 안 함 — "+(LLM_REASON[b.llm.not_ready_reason]||b.llm.not_ready_reason):"사용 중"}. 판단 순서: 인명피해 예상 지역 항상 먼저 → 위험도 → 보호대상까지 거리 → 접수 순서. 위험도 차이가 ${b.similar_delta} 이내이거나 기준이 엇갈리면 한 묶음으로 보여줍니다.`;
  document.getElementById("groups").innerHTML=b.groups.length?b.groups.map(g=>{
-  const st=STATUS_LABEL[g.status]||["상태 확인 중","k"];const auto=g.tasks.find(t=>t.task_id===g.auto_choice);
-  return `<div class="group"><div class="ghead"><span class="tag ${st[1]}">${st[0]}</span>${g.kinds.map(k=>`<span class="tag k">${KIND_LABEL[k]||k}</span>`).join("")}${g.status==="AUTO_DECIDED"&&auto?`<span>자동 선택: ${title(auto)}</span>`:""}</div>
+  const st=STATUS_LABEL[g.status]||["상태 확인 중","k"];const auto=g.tasks.find(t=>t.task_id===g.auto_choice);const byId=Object.fromEntries(g.tasks.map(t=>[t.task_id,t]));
+  return `<div class="group"><div class="ghead"><span class="tag ${st[1]}">${st[0]}</span>${g.kinds.map(k=>`<span class="tag k">${KIND_LABEL[k]||k}</span>`).join("")}${g.status==="AUTO_DECIDED"&&auto?`<span>자동 선택: ${title(auto)}</span>`:""}</div>${llmBox(g,byId)}
   <div class="cards">${g.tasks.map(t=>`<div class="card ${t.task_id===g.auto_choice?"first":""}">
    <div class="ctitle">${title(t)}${small(t.task_id)}</div>
    <div class="row"><span>인명피해</span>${human(t.human_risk)}</div><div class="row"><span>위험도</span><span>${risk(t.risk_score)}</span></div>

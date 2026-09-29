@@ -30,8 +30,8 @@ MAX_SNAPSHOT_RESTARTS = 2
 
 
 class Orchestrator:
-    def __init__(self, ledger: Ledger, env, uav=None, ugv=None):
-        self.ledger, self.env, self.uav, self.ugv = ledger, env, uav, ugv
+    def __init__(self, ledger: Ledger, env, uav=None, ugv=None, llm=None):
+        self.ledger, self.env, self.uav, self.ugv, self.llm = ledger, env, uav, ugv, llm
         self.gate = SnapshotGate()
         self.priority_mode = config.PRIORITY_MODE
 
@@ -210,6 +210,7 @@ class Orchestrator:
             return {"mode": self.priority_mode, "units": [], "groups": [], "results": {}}
         plan = priority.order_tasks(tasks, snap, config.PRIORITY_SIMILAR_RISK_DELTA)
         by_id = {t.task_id: t for t in tasks}
+        llm_applied = self._llm_recommend(snap, plan, by_id)
         group_of = {tid: g for g in plan["groups"] for tid in g["task_ids"]}
         results, group_status = {}, {}
         for unit in plan["units"]:
@@ -223,7 +224,7 @@ class Orchestrator:
                                                   detail={"group": unit, "kinds": g["kinds"],
                                                           "available_resources": sorted(pool),
                                                           "evidence": {t: plan["evidence"][t] for t in unit}})
-                    group_status[tuple(unit)] = "AWAITING_CHOICE"
+                    group_status[tuple(g["task_ids"])] = "AWAITING_CHOICE"
                     continue
             for tid in unit:
                 results[tid] = self.dispatch(tid)
@@ -236,17 +237,41 @@ class Orchestrator:
                         results[tid] = self._hold(self.ledger.get_task(tid), "AWAITING_PRIORITY_CHOICE", MANUAL,
                                                   snap.simulation_time_s,
                                                   detail={"group": unit, "taken_by_group_mates": sorted(taken)})
-                    group_status[tuple(unit)] = "PARTIAL_AWAITING_CHOICE"
+                    group_status[tuple(g["task_ids"])] = "PARTIAL_AWAITING_CHOICE"
                 elif self.priority_mode == "AUTO_HIGHER_RISK":
-                    group_status[tuple(unit)] = "AUTO_DECIDED"
+                    group_status[tuple(g["task_ids"])] = "LLM_DECIDED" if llm_applied else "AUTO_DECIDED"
                 else:
-                    group_status[tuple(unit)] = "ALL_DISPATCHED"
+                    group_status[tuple(g["task_ids"])] = "ALL_DISPATCHED"
         groups = [{**g, "status": group_status.get(tuple(g["task_ids"]), "UNKNOWN")} for g in plan["groups"]]
         self.ledger.log("PRIORITY_ORDER", sim_time_s=snap.simulation_time_s, result=self.priority_mode,
                         detail={"mode": self.priority_mode, "groups": groups,
                                 **{k: plan[k] for k in ("auto_order", "units", "criteria", "similar_delta",
                                                         "rule", "evidence", "context")}})
         return {"mode": self.priority_mode, "units": plan["units"], "groups": groups, "results": results}
+
+    def _llm_recommend(self, snap, plan: dict, by_id: dict) -> bool:
+        """선택 묶음이 있으면 LLM 에 순서를 제안받아 검증한다. 검증 통과 시 묶음에 추천을 붙이고,
+        자동 모드에서는 그 순서로 배정 단위를 바꾼다. 실패하면 규칙 순서를 그대로 쓴다 (fallback)."""
+        if not plan["groups"] or self.llm is None:
+            return False
+        prop = self.llm.propose(snap, plan, by_id)
+        self.ledger.log("LLM_PLAN", sim_time_s=snap.simulation_time_s, result=prop["status"],
+                        reason=prop.get("reason") or (",".join(prop.get("violations", [])) or None),
+                        detail={k: v for k, v in prop.items() if k not in ("orders", "rationales")})
+        if prop["status"] != "OK":
+            for g in plan["groups"]:
+                g["llm"] = {"status": prop["status"], "fallback": "RULE_ORDER",
+                            "reason": prop.get("reason") or prop.get("violations")}
+            return False
+        for i, g in enumerate(plan["groups"]):
+            g["llm"] = {"status": "OK", "order": prop["orders"][i], "rationale": prop["rationales"][i],
+                        "input_refs": prop["input_refs"][i], "model": prop["model"]}
+        if self.priority_mode == "AUTO_HIGHER_RISK":
+            for g in plan["groups"]:
+                for unit in plan["units"]:
+                    if set(unit) == set(g["task_ids"]):
+                        unit[:] = g["llm"]["order"]
+        return True
 
     def choose_priority(self, order: List[str], reason: str) -> dict:
         """사람이 선택 묶음에서 먼저 보낼 순서를 정함. 목록의 Task 만 순서대로 배정하고, 빠진 Task 는 대기 유지.

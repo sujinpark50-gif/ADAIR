@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
+import os
 import sys
 from pathlib import Path
+
+os.environ["ORCH_SKIP_DOTENV"] = "1"          # 시험은 로컬 .env 의 실제 API 키를 쓰지 않는다
 
 import pytest
 

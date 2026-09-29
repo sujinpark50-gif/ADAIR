@@ -15,3 +15,8 @@ logs/
 
 _old_pre_patch/
 adair_integration_fix.patch
+
+# 로컬 비밀값 (API 키 등)
+.env
+.env.*
+!.env.example
