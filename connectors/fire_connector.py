@@ -25,9 +25,9 @@ def _engine():
     cfg=getattr(config,"FIRE_ENV_CONFIG_PATH",os.path.join(_ENV_DIR,"config","environment_config.yaml"))
     seed=getattr(config,"FIRE_SIM_SEED",42); ign=getattr(config,"FIRE_IGNITION_XY",(19,142))
     with _in_env():
-        from src.environment.grid import EnvironmentGrid
-        from src.environment.fire_model import WildfireCAEngine
-        from src.environment.api import EnvironmentModelAPI
+        from src.grid import EnvironmentGrid
+        from src.fire_model import WildfireCAEngine
+        from src.api import EnvironmentModelAPI
         rel=os.path.relpath(cfg,_ENV_DIR)
         grid=EnvironmentGrid(config_path=rel,seed=seed)
         eng=WildfireCAEngine(grid=grid,config_path=rel,seed=seed)

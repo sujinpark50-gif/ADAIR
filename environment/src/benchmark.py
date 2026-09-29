@@ -14,10 +14,10 @@ import time
 from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 import numpy as np
 
-from src.environment.risk import calculate_risk_scores
+from src.risk import calculate_risk_scores
 
 if TYPE_CHECKING:
-    from src.environment.fire_model import WildfireCAEngine
+    from src.fire_model import WildfireCAEngine
 
 
 def compare_spread_modes(
@@ -225,8 +225,8 @@ def format_benchmark_table(results: List[Dict[str, Any]]) -> str:
 def _cli() -> None:
     """Command-line interface entry point for spread prediction benchmarking."""
     import argparse
-    from src.environment.grid import EnvironmentGrid
-    from src.environment.fire_model import WildfireCAEngine
+    from src.grid import EnvironmentGrid
+    from src.fire_model import WildfireCAEngine
 
     parser = argparse.ArgumentParser(
         description="Benchmark Wildfire Spread Prediction Modes (Geometric vs Ensemble N/M Grid)"

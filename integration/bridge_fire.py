@@ -5,7 +5,7 @@ integration/bridge_fire.py
 환경 Connector의 "integrated" 구현.
 
 두 가지 백엔드를 자동 선택한다:
-  1) 김은주님의 실제 산불 CA 모델(environment/src/environment) — rasterio + 지형 래스터가
+  1) 김은주님의 실제 산불 CA 모델(environment/src) — rasterio + 지형 래스터가
      있으면 이걸 매 스텝 step() 시켜 진짜 확산을 돌린다.
   2) 위 로드가 실패하면(예: rasterio 미설치) 내장 경량 stateful 산불 모델로 자동 전환한다.
      어느 PC에서도 무조건 실행되도록 하기 위한 fallback이며, mock과 달리 '무상태'가 아니라
@@ -37,7 +37,7 @@ _backend_name = None
 # ---------------------------------------------------------------------------
 
 class _RealEnvBackend:
-    """environment/src/environment 의 EnvironmentGrid + WildfireCAEngine + API 래퍼."""
+    """environment/src 의 EnvironmentGrid + WildfireCAEngine + API 래퍼."""
 
     def __init__(self):
         cwd0 = os.getcwd()
@@ -45,9 +45,9 @@ class _RealEnvBackend:
             sys.path.insert(0, str(_ENV_DIR))
         try:
             os.chdir(_ENV_DIR)  # yaml의 상대 경로(data/processed/*.tif) 해석을 위해
-            from src.environment.grid import EnvironmentGrid          # type: ignore
-            from src.environment.fire_model import WildfireCAEngine   # type: ignore
-            from src.environment.api import EnvironmentModelAPI       # type: ignore
+            from src.grid import EnvironmentGrid          # type: ignore
+            from src.fire_model import WildfireCAEngine   # type: ignore
+            from src.api import EnvironmentModelAPI       # type: ignore
 
             cfg = "config/environment_config.yaml"
             self._grid = EnvironmentGrid(cfg, seed=42)
@@ -218,7 +218,7 @@ def _ensure_backend():
     if os.getenv("ADAIR_FORCE_LIGHT_ENV") != "1":
         try:
             _backend = _RealEnvBackend()
-            _backend_name = "김은주 실제 CA 모델 (environment/src/environment)"
+            _backend_name = "김은주 실제 CA 모델 (environment/src)"
             print(f"[ENV] 환경 백엔드 = {_backend_name}")
             return
         except Exception as e:  # rasterio 미설치·데이터 없음·경로 등 무엇이든

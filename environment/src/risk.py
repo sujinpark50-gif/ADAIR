@@ -64,10 +64,10 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
-from src.environment.cell import Cell, FireState
+from src.cell import Cell, FireState
 
 if TYPE_CHECKING:
-    from src.environment.grid import EnvironmentGrid
+    from src.grid import EnvironmentGrid
 
 
 def _compute_building_risk_components(

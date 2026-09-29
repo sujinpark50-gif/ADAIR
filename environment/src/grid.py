@@ -18,7 +18,7 @@ import numpy as np
 import rasterio
 import yaml
 
-from src.environment.cell import Cell, FireState
+from src.cell import Cell, FireState
 
 
 def _load_config(config_path: str | Path) -> dict:

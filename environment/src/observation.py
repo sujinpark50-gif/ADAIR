@@ -18,12 +18,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
-from src.environment.cell import Cell, FireState
-from src.environment.risk import update_grid_risk_scores
+from src.cell import Cell, FireState
+from src.risk import update_grid_risk_scores
 
 if TYPE_CHECKING:
-    from src.environment.fire_model import WildfireCAEngine
-    from src.environment.grid import EnvironmentGrid
+    from src.fire_model import WildfireCAEngine
+    from src.grid import EnvironmentGrid
 
 logger = logging.getLogger(__name__)
 

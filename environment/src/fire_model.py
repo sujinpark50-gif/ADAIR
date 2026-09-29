@@ -22,11 +22,11 @@ from typing import Dict, List, Optional, Set, Tuple, Union, TYPE_CHECKING
 import numpy as np
 import yaml
 
-from src.environment.cell import Cell, FireState
-from src.environment.risk import update_grid_risk_scores
+from src.cell import Cell, FireState
+from src.risk import update_grid_risk_scores
 
 if TYPE_CHECKING:
-    from src.environment.grid import EnvironmentGrid
+    from src.grid import EnvironmentGrid
 
 
 def _load_config(config_input: Union[str, Path, dict]) -> dict:

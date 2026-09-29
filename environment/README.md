@@ -135,7 +135,7 @@ RNG(Random Number Generator) 난수 시드(`seed`)로 `roll < P_combined` 조건
 
 ## ⚠️ Dynamic Risk Scoring (복합 위험도 산출 공식)
 
-`src/environment/risk.py` 모듈은 오케스트레이터의 자원 배치 우선순위 결정을 위해 각 셀별 복합 위험도(`risk_score` $\in [0.0, 1.0]$)를 산출한다.
+`src/risk.py` 모듈은 오케스트레이터의 자원 배치 우선순위 결정을 위해 각 셀별 복합 위험도(`risk_score` $\in [0.0, 1.0]$)를 산출한다.
 
 $$\text{risk}_{\text{score}}(T) = \begin{cases} 
 1.0 & \text{if } \text{fire}_{\text{state}} = \text{BURNING} \\
@@ -185,7 +185,7 @@ composite_weights:
 
 ### Spread Prediction (확산 위험도 예측 모델)
 
-`WildfireCAEngine` (`src/environment/fire_model.py`)은 화재 확산 위험도 $S_{\text{spread}} \in [0.0, 1.0]$을 산출하는 두 가지 모드를 제공하며, 계산된 $S_{\text{spread}}$ 맵은 위험도 집계 모듈(`risk.py`)에 전달된다.
+`WildfireCAEngine` (`src/fire_model.py`)은 화재 확산 위험도 $S_{\text{spread}} \in [0.0, 1.0]$을 산출하는 두 가지 모드를 제공하며, 계산된 $S_{\text{spread}}$ 맵은 위험도 집계 모듈(`risk.py`)에 전달된다.
 
 ---
 
@@ -277,13 +277,13 @@ risk_scoring:
 <summary><b>[화재 확산 위험도 (S_spread) - Ensemble CA benchmark 실행 방법]</b></summary>
 <br>
 
-`src/environment/benchmark.py` 모듈은 N-step CA 앙상블 모드의 예측 지평($N$) 및 몬테카를로 실행 횟수($M$) 파라미터 조합에 따른 연산 지연 시간(ms), 공간 위험 커버리지(%) 및 수렴 오차(MAD)를 터미널에서 직접 평가할 수 있는 CLI 도구를 제공한다.
+`src/benchmark.py` 모듈은 N-step CA 앙상블 모드의 예측 지평($N$) 및 몬테카를로 실행 횟수($M$) 파라미터 조합에 따른 연산 지연 시간(ms), 공간 위험 커버리지(%) 및 수렴 오차(MAD)를 터미널에서 직접 평가할 수 있는 CLI 도구를 제공한다.
 
 ### 기본 실행 명령
 
 ```bash
 # 기본 파라미터 그리드 (N=[3, 5, 10, 15], M=[5, 10, 20]) 실행
-python -m src.environment.benchmark
+python -m src.benchmark
 ```
 
 ### CLI 주요 매개변수 옵션 (CLI Arguments)
@@ -302,12 +302,12 @@ python -m src.environment.benchmark
 
 #### 1. 특정 커스텀 (N, M) 값 벤치마크 (예: N=10, M=10)
 ```bash
-python -m src.environment.benchmark -n 10 -m 10
+python -m src.benchmark -n 10 -m 10
 ```
 
 #### 2. 사용자 지정 파라미터 그리드 평가 (예: N=[5, 10, 15], M=[10, 20])
 ```bash
-python -m src.environment.benchmark -n 5 10 15 -m 10 20 --repetitions 5
+python -m src.benchmark -n 5 10 15 -m 10 20 --repetitions 5
 ```
 
 ### 최적 $N$과 $M$ 선택 방법
@@ -376,7 +376,7 @@ risk_scoring:
 ### 1. AHP (Analytic Hierarchy Process) 도입 목적
 위험도 모델의 5개 최상위 평가 기준(`spread`, `human`, `infrastructure`, `property`, `secondary_hazard`)에 대한 가중치($W_i$)를 주관적 임의 할당이 아닌, 다기준 의사결정 기법(AHP 쌍대비교 및 주 고유벡터법)을 통해 객관적으로 도출하고 논리적 일관성을 검증한다.
 
-> **단순화 설계 원칙**: 팀원별 개별 설문 취합 및 기하평균(Geometric Mean) 집계는 코드 외부에서 사전 수행되며, AHP 계산 모듈(`src/environment/ahp.py`)은 **이미 집계된 최종 $5 \times 5$ 그룹 쌍대비교 행렬**만을 입력받아 처리한다.
+> **단순화 설계 원칙**: 팀원별 개별 설문 취합 및 기하평균(Geometric Mean) 집계는 코드 외부에서 사전 수행되며, AHP 계산 모듈(`src/ahp.py`)은 **이미 집계된 최종 $5 \times 5$ 그룹 쌍대비교 행렬**만을 입력받아 처리한다.
 
 ---
 
@@ -451,30 +451,30 @@ $$CR = \frac{CI}{RI} = \frac{CI}{1.12}$$
 
 ### 4. 터미널 CLI 실행 방법 (How to Run `ahp.py`)
 
-AHP 모듈(`src/environment/ahp.py`)은 터미널에서 독립 실행 가능하다.
+AHP 모듈(`src/ahp.py`)은 터미널에서 독립 실행 가능하다.
 
 #### ① 기본 실행 (예제 5×5 행렬 결과 및 보고서 확인)
 ```bash
-python -m src.environment.ahp
+python -m src.ahp
 ```
 
 #### ② JSON 행렬 직접 전달 (`--matrix`)
 ```bash
-python -m src.environment.ahp --matrix "[[1, 0.111, 0.2, 0.333, 0.5], [9, 1, 7, 8, 7], [5, 0.143, 1, 3, 4], [3, 0.125, 0.333, 1, 2], [2, 0.143, 0.25, 0.5, 1]]"
+python -m src.ahp --matrix "[[1, 0.111, 0.2, 0.333, 0.5], [9, 1, 7, 8, 7], [5, 0.143, 1, 3, 4], [3, 0.125, 0.333, 1, 2], [2, 0.143, 0.25, 0.5, 1]]"
 ```
 
 #### ③ 파일 입력 (`--file`, `.json`, `.csv`, `.txt` 지원)
 ```bash
-python -m src.environment.ahp --file path/to/matrix.csv
+python -m src.ahp --file path/to/matrix.csv
 ```
 
 #### ④ YAML 설정 스니펫만 출력 (`--yaml-only`)
 `config/environment_config.yaml`의 `composite_weights`에 복사할 YAML 스니펫만 즉시 출력합니다:
 ```bash
-python -m src.environment.ahp --file matrix.csv --yaml-only
+python -m src.ahp --file matrix.csv --yaml-only
 ```
 
-*출력 예시:* `python -m src.environment.ahp`
+*출력 예시:* `python -m src.ahp`
 ```yaml
 risk_scoring:
   composite_weights:
@@ -488,7 +488,7 @@ risk_scoring:
 #### ⑤ 파이썬 코드 내 직접 호출 예시
 ```python
 import numpy as np
-from src.environment.ahp import calculate_ahp_weights, format_ahp_report
+from src.ahp import calculate_ahp_weights, format_ahp_report
 
 matrix = np.array([
     [1.0,   1.0/9.0, 1.0/5.0, 1.0/3.0, 1.0/2.0],
@@ -510,7 +510,7 @@ print(format_ahp_report(result))
 
 ## 🔌 Public API & 시스템 통합 규격 (Facade API)
 
-`EnvironmentModelAPI` (`src/environment/api.py`) 클래스는 다른 서브시스템(오케스트레이터, UAV, UGV, 통합 파트)이 환경 모델을 제어하고 조회할 수 있는 창구 역할을 제공한다.
+`EnvironmentModelAPI` (`src/api.py`) 클래스는 다른 서브시스템(오케스트레이터, UAV, UGV, 통합 파트)이 환경 모델을 제어하고 조회할 수 있는 창구 역할을 제공한다.
 
 | API 메서드 | 설명 | 반환/영향 타입 |
 | :--- | :--- | :--- |
