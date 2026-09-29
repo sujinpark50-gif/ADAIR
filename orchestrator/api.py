@@ -100,6 +100,7 @@ def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
             "footprint": {k: fp.get(k) for k in ("width_m", "height_m", "agl_m")} if fp else None,
             "simulation_time_s": d.get("simulation_time_s"), "observed_wall": d.get("observed_wall"),
             "is_fire_observation": d.get("is_fire_observation", True),
+            "values": d.get("values"), "scope": d.get("scope"),
             "env_apply": None if ack is None else {"result": ack["result"],
                                                    "state_version": (ack["detail"] or {}).get("state_version")}}
 
@@ -230,6 +231,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             return {"task_id": tid, "kind": t.kind if t else None, "cell_id": t.target.cell_id if t else None,
                     "purpose_status": t.purpose_status if t else None, "hold_reason": t.hold_reason if t else None,
                     "human_risk": ev.get("human_risk"), "human_risk_sources": ev.get("human_risk_sources"),
+                    "human_risk_basis": ev.get("human_risk_basis"), "forecast_arrival_s": ev.get("forecast_arrival_s"),
                     "risk_score": ev.get("risk_score"), "distance_m": ev.get("distance_m"),
                     "nearest_protected": ev.get("nearest_protected"),
                     "resource_id": atts[-1]["resource_id"] if atts else None,
@@ -245,8 +247,16 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 results.append({**row(t.task_id), "observation": o})
         results.sort(key=lambda r: r["observation"].get("observed_wall") or "", reverse=True)
         llm_state = orch.llm.status() if orch.llm else "NOT_CONNECTED"
+        snap = orch.env.read()
+        premon_tasks = {t.request_key: t.task_id for t in orch.ledger.list_tasks()
+                        if (t.request_key or "").startswith("AUTO-PREMON:")}
+        forecast = {"ref": snap.forecast_ref, "cell_count": len(snap.spread_forecast),
+                    "sim_time_s": snap.simulation_time_s,
+                    "preemptive_monitor_enabled": config.PREEMPTIVE_MONITOR_ENABLED,
+                    "threats": [{**c, "monitor_task_id": premon_tasks.get(f"AUTO-PREMON:{snap.run_id}:{c['key']}")}
+                                for c in orch.preemptive_candidates(snap)]}
         return {"mode": orch.priority_mode, "modes": list(config.PRIORITY_MODES), "results": results,
-                "llm": {"model": config.LLM_MODEL, "not_ready_reason": llm_state},
+                "llm": {"model": config.LLM_MODEL, "not_ready_reason": llm_state}, "forecast": forecast,
                 "similar_delta": config.PRIORITY_SIMILAR_RISK_DELTA, "decided_seq": (last or {}).get("seq"),
                 "auto_order": [row(t) for t in detail.get("auto_order", [])], "groups": groups,
                 "criteria": detail.get("criteria"), "rule": detail.get("rule")}

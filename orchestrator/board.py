@@ -38,7 +38,9 @@ th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:v
 <p class="note" id="rule"></p>
 <h2 style="font-size:16px">선택 묶음 (비슷하거나 엇갈리는 후보)</h2>
 <div id="groups"></div>
-<h2 style="font-size:16px">정찰 결과</h2>
+<h2 style="font-size:16px">확산 예측 <small class="id">환경 모델 예측 · 관측 아님</small></h2>
+<div id="forecast" style="margin-bottom:16px"></div>
+<h2 style="font-size:16px">정찰·측정 결과</h2>
 <div class="cards" id="results" style="margin-bottom:16px"></div>
 <h2 style="font-size:16px">전체 판단 순서</h2>
 <div class="wrap"><table><thead><tr><th>순서</th><th>임무</th><th>인명피해</th><th>위험도</th><th>가까운 보호대상</th><th>상태</th><th>배정 자원</th><th>정찰 결과</th></tr></thead><tbody id="order"></tbody></table></div>
@@ -51,14 +53,20 @@ const PURPOSE={PENDING:"대기",HOLD:"보류",EVALUATING:"판단 중",APPROVED:"
 const HOLD={AWAITING_PRIORITY_CHOICE:"사람 선택 대기",NO_FEASIBLE_CANDIDATE:"보낼 자원 없음",HUMAN_PRIORITY_CHOSEN:"사람이 선택함",
  EXECUTION_RESPONSE_LOST:"출동 응답 끊김",PROVIDER_LOST_TASK:"기체가 임무 기록 잃음",PROVIDER_OFFLINE:"기체 연락 두절",
  OBSERVATION_REQUIREMENT_NOT_MET:"관측 범위 부족 · 재관측 필요",ENV_APPLY_NOT_ACKED:"환경 반영 미확인",ARRIVED_OBSERVATION_PENDING:"도착 · 관측 대기"};
-const TASK_KIND={RECON:"정찰",MONITOR:"감시",RECHECK:"재확인",GROUND_RECON:"지상 확인",GROUND_SUPPORT:"지상 지원"};
+const TASK_KIND={ENV_SENSE:"환경 측정",RECON:"정찰",MONITOR:"감시",RECHECK:"재확인",GROUND_RECON:"지상 확인",GROUND_SUPPORT:"지상 지원"};
 const SITE_TYPE={VILLAGE:"마을",FACILITY:"시설",HOUSE:"주택",SCHOOL:"학교",HOSPITAL:"병원",REST_AREA:"휴게소"};
 const RES_TYPE={uav:"드론",ugv:"무인차량",fire:"소방차"};
-const OBS={DETECTED:["불 발견","fire"],NOT_DETECTED:["불 없음","clear"],NO_COVERAGE:["관측 범위 밖","warn"],FAILED:["관측 실패","warn"],ROAD_STATUS:["도로 상황 확인","clear"],NONE:["관측값 없음","warn"]};
+const OBS={MEASURED:["측정 완료","clear"],DETECTED:["불 발견","fire"],NOT_DETECTED:["불 없음","clear"],NO_COVERAGE:["관측 범위 밖","warn"],FAILED:["관측 실패","warn"],ROAD_STATUS:["도로 상황 확인","clear"],NONE:["관측값 없음","warn"]};
 const STATE_KO={BURNING:"불타는 중",BURNED:"탄 곳"};
 function obsShort(o){if(!o)return '<span class="id">아직 없음</span>';const r=OBS[o.result]||[o.result,"warn"];
  const where=o.detections&&o.detections.length?` (${o.detections.map(d=>esc(d.cell_id)).join(", ")})`:"";return `<span class="obs ${r[1]}">${r[0]}${where}</span>`;}
-function obsDetail(o){const fp=o.footprint;const src=o.source==="SIMULATED"?"모의 관측 (시험용 센서)":(o.source==="UGV_PROVIDER"||!o.is_fire_observation?"무인차량 도로 관측 (화재 관측 아님)":esc(o.source));
+function obsDetail(o){if(o.sensor_type==="WEATHER"){const v=o.values||{};
+  return `<div class="row"><span>결과</span>${obsShort(o)}</div>${Object.keys(WX_LABEL).filter(k=>v[k]!=null).map(k=>`<div class="row"><span>${WX_LABEL[k][0]}</span><span>${v[k]}${WX_LABEL[k][1]}</span></div>`).join("")}
+  <div class="row"><span>측정 범위</span><span>${o.scope==="CELL"?"그 칸의 값":"지도 전체 값 (칸별 기상 없음)"}</span></div>
+  <div class="row"><span>출처</span><span>모의 측정 (시험용 센서)</span></div>
+  <div class="row"><span>환경 반영</span><span>${o.env_apply&&o.env_apply.result==="ACK"?`확인됨 (환경 버전 ${o.env_apply.state_version})`:"확인 안 됨"}</span></div>
+  <div class="row"><span>측정 자원</span><span>${resName(o.resource_id)}</span></div>`;}
+ const fp=o.footprint;const src=o.source==="SIMULATED"?"모의 관측 (시험용 센서)":(o.source==="UGV_PROVIDER"||!o.is_fire_observation?"무인차량 도로 관측 (화재 관측 아님)":esc(o.source));
  const ack=o.env_apply?(o.env_apply.result==="ACK"?`확인됨 (환경 버전 ${o.env_apply.state_version})`:(o.env_apply.result==="SKIPPED"?"필요 없음":"확인 안 됨")):"없음";
  return `<div class="row"><span>결과</span>${obsShort(o)}</div>
  ${o.detections&&o.detections.length?`<div class="row"><span>발견한 칸</span><span>${o.detections.map(d=>`${esc(d.cell_id)} ${STATE_KO[d.fire_state]||esc(d.fire_state)}`).join(", ")}</span></div>`:""}
@@ -78,7 +86,10 @@ function resName(id){if(!id)return "-";const m=/^([A-Z]+)-([a-z]+)(\d+)$/.exec(i
 function status(t){if(!t.purpose_status)return "-";let s=PURPOSE[t.purpose_status]||t.purpose_status;
  if(t.hold_reason){const h=t.hold_reason.split(":")[0];s+=` (${HOLD[h]||(h.startsWith("HANDOVER")?"인계 필요":"사유 기록됨")})`;}return esc(s);}
 const title=t=>`${esc(TASK_KIND[t.kind]||"임무")} · ${esc(t.cell_id||"-")}`;
-const human=v=>v===true?'<span class="human">예상됨</span>':(v===false?"없음":"정보 없음");
+const human=(v,basis)=>v===true?`<span class="human">예상됨${basis&&basis.length===1&&basis[0]==="FORECAST"?" (확산 예측)":""}</span>`:(v===false?"없음":"정보 없음");
+const mins=s=>s==null?"-":(s<60?`${Math.round(s)}초`:`${Math.round(s/60)}분`);
+const WX_LABEL={wind_ms:["풍속","m/s"],wind_dir_deg:["풍향(불어오는 쪽)","°"],temperature_c:["기온","℃"],humidity_pct:["습도","%"]};
+const BASIS_KO={FORECAST_REACHES_RESIDENTIAL:"주거지에 도달 예상",FORECAST_REACHES_OCCUPIED_SITE:"사람 있는 보호대상에 도달 예상"};
 const risk=v=>v==null?"점수 없음":v.toFixed(2);
 const near=t=>t.nearest_protected?`${esc(SITE_TYPE[t.nearest_protected.site_type]||"보호대상")} ${Math.round(t.distance_m)}m${small(t.nearest_protected.site_id)}`:"-";
 async function post(url,body){await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});load();}
@@ -93,14 +104,23 @@ async function load(){
   return `<div class="group"><div class="ghead"><span class="tag ${st[1]}">${st[0]}</span>${g.kinds.map(k=>`<span class="tag k">${KIND_LABEL[k]||k}</span>`).join("")}${g.status==="AUTO_DECIDED"&&auto?`<span>자동 선택: ${title(auto)}</span>`:""}</div>${llmBox(g,byId)}
   <div class="cards">${g.tasks.map(t=>`<div class="card ${t.task_id===g.auto_choice?"first":""}">
    <div class="ctitle">${title(t)}${small(t.task_id)}</div>
-   <div class="row"><span>인명피해</span>${human(t.human_risk)}</div><div class="row"><span>위험도</span><span>${risk(t.risk_score)}</span></div>
+   <div class="row"><span>인명피해</span>${human(t.human_risk,t.human_risk_basis)}</div><div class="row"><span>위험도</span><span>${risk(t.risk_score)}</span></div>
    <div class="row"><span>가까운 보호대상</span><span>${near(t)}</span></div><div class="row"><span>상태</span><span>${status(t)}</span></div>
    <div class="row"><span>배정 자원</span><span>${resName(t.resource_id)}</span></div>
    <div class="row"><span>정찰 결과</span>${obsShort(t.observation)}</div>
    ${g.awaiting.includes(t.task_id)?`<button onclick="choose('${t.task_id}')">이곳 먼저 보내기</button>`:""}</div>`).join("")}</div></div>`}).join(""):'<p class="note">지금은 사람이 고를 묶음이 없습니다.</p>';
- document.getElementById("order").innerHTML=b.auto_order.map((t,i)=>`<tr><td>${i+1}</td><td>${title(t)}${small(t.task_id)}</td><td>${human(t.human_risk)}</td><td>${risk(t.risk_score)}</td><td>${near(t)}</td><td>${status(t)}</td><td>${resName(t.resource_id)}</td><td>${obsShort(t.observation)}</td></tr>`).join("");
+ document.getElementById("order").innerHTML=b.auto_order.map((t,i)=>`<tr><td>${i+1}</td><td>${title(t)}${small(t.task_id)}</td><td>${human(t.human_risk,t.human_risk_basis)}</td><td>${risk(t.risk_score)}</td><td>${near(t)}</td><td>${status(t)}</td><td>${resName(t.resource_id)}</td><td>${obsShort(t.observation)}</td></tr>`).join("");
  document.getElementById("results").innerHTML=b.results.length?b.results.map(t=>`<div class="card"><div class="ctitle">${title(t)}${small(t.task_id)}</div>${obsDetail(t.observation)}</div>`).join(""):'<p class="note">아직 정찰 결과가 없습니다.</p>';
 }
+function renderForecast(f){const el=document.getElementById("forecast");
+ if(!f||!f.cell_count){el.innerHTML='<p class="note">확산 예측이 아직 없습니다.</p>';return;}
+ const ref=f.ref||{};const head=`<p class="note">예측 모델 ${esc(ref.model_version||"미상")} · 예측 칸 ${f.cell_count}개 · 사전 감시 임무 생성: <b>${f.preemptive_monitor_enabled?"켜짐":"꺼짐 (후보만 표시)"}</b></p>`;
+ el.innerHTML=head+(f.threats.length?`<div class="cards">${f.threats.map(t=>`<div class="card"><div class="ctitle">${esc(t.site_id?"보호대상 "+t.site_id:"주거 칸 "+t.key)}</div>
+  <div class="row"><span>위험</span><span class="human">${t.basis.map(b=>BASIS_KO[b]||b).join(", ")}</span></div>
+  <div class="row"><span>예상 도달</span><span>${mins(t.earliest_arrival_s)} 후</span></div>
+  <div class="row"><span>해당 칸</span><span>${t.cells.map(esc).join(", ")}</span></div>
+  <div class="row"><span>사전 감시</span><span>${t.monitor_task_id?"임무 생성됨"+small(t.monitor_task_id):(f.preemptive_monitor_enabled?"대기":"후보 (생성 꺼짐)")}</span></div></div>`).join("")}</div>`:'<p class="note">주거지·보호대상에 닿는 예측은 없습니다.</p>');}
+const _load=load;load=async function(){await _load();const b=await (await fetch("/priority/board")).json();renderForecast(b.forecast);};
 load();setInterval(load,2000);
 </script></body></html>
 """

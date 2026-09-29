@@ -72,7 +72,8 @@ class FixtureEnv:
 
     def __init__(self, run_id="RUN-FIXTURE", map_version="FIXTURE-MAP-1", wind_ms=3.0,
                  fire_cells=None, risk_cells=None, protected_sites=None,
-                 crs="EPSG:4326", vertical_datum="FIXTURE_AMSL", tick_s=60.0):
+                 crs="EPSG:4326", vertical_datum="FIXTURE_AMSL", tick_s=60.0,
+                 wind_dir_deg=None, weather=None, spread_forecast=None, forecast_ref=None):
         self.run_id = run_id
         self.map_version = map_version
         self.wind_ms = wind_ms
@@ -84,6 +85,10 @@ class FixtureEnv:
         self.fire_cells = list(fire_cells or [])
         self.risk_cells = list(risk_cells or [])
         self.protected_sites = list(protected_sites or [])
+        self.wind_dir_deg = wind_dir_deg
+        self.weather = dict(weather or {})
+        self.spread_forecast = list(spread_forecast or [])     # 시험용 가짜 예측 (환경 모델 계약 대기)
+        self.forecast_ref = forecast_ref
         self.applied = {}          # observation_id → ACK (중복 적용 방지)
         self.read_count = 0
 
@@ -96,6 +101,8 @@ class FixtureEnv:
             crs=self.crs, vertical_datum=self.vertical_datum,
             fire_cells=copy.deepcopy(self.fire_cells), risk_cells=copy.deepcopy(self.risk_cells),
             protected_sites=copy.deepcopy(self.protected_sites),
+            wind_dir_deg=self.wind_dir_deg, weather=copy.deepcopy(self.weather),
+            spread_forecast=copy.deepcopy(self.spread_forecast), forecast_ref=copy.deepcopy(self.forecast_ref),
             source=self.source, contract_complete=True,
         )
 

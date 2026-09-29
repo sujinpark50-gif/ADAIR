@@ -110,6 +110,29 @@ SENSOR_PROFILES = {
 DEFAULT_SENSOR_PROFILE_ID = "TEST_THERMAL_50M_V1"
 
 # ---------------------------------------------------------------------------
+# 현장 환경 측정 (사용자 결정 2026-09-30: 2019 재현 필수 기능)
+# 드론·UGV·소방차에 기상 센서가 아직 없어 총괄 쪽 모의 센서로 측정한다 (TEST_ONLY).
+# 모의 센서는 도착 위치의 환경 값을 읽을 뿐이며, 환경이 주지 않은 항목은 만들지 않는다.
+# ---------------------------------------------------------------------------
+SIMULATED_CAPABILITIES = {"UAV": ("WEATHER",), "UGV": ("WEATHER",), "FIRE_ENGINE": ("WEATHER",)}
+WEATHER_SENSOR_PROFILE = {
+    "sensor_profile_id": "TEST_WEATHER_POINT_V1", "source": "SIMULATED", "status": "TEST_ONLY",
+    "sensor_type": "WEATHER", "measures": ("wind_ms", "wind_dir_deg", "temperature_c", "humidity_pct"),
+    "method": "READ_ENV_VALUE_AT_POSITION",
+}
+# 불 발견 시 측정 임무 자동 생성: 불난 칸 + 바람이 향하는 쪽 위험 칸 (사용자 결정)
+AUTO_ENV_SENSE_ENABLED = True
+# Local 에 보낼 observation_type. 기상 센서는 Local 에 없어 이동 가능성만 평가받는다 (값 None = 보내지 않음)
+LOCAL_OBSERVATION_TYPE = {"THERMAL": "THERMAL", "RGB": "RGB", "WEATHER": None}
+
+# ---------------------------------------------------------------------------
+# 확산 예측 활용 (사용자 결정 2026-09-30)
+# - 화면 표시 + 우선순위 반영(예측이 주거지·사람 있는 보호대상에 닿으면 인명 위험)은 켜짐
+# - 사전 감시 임무 생성: 구현 완료, 부하 문제 해결 전까지 꺼 둠 (후보만 계산·기록·표시)
+# ---------------------------------------------------------------------------
+PREEMPTIVE_MONITOR_ENABLED = os.getenv("ORCH_PREEMPTIVE_MONITOR", "0") == "1"
+
+# ---------------------------------------------------------------------------
 # LLM (요청서 §9: 모델·timeout·호출/비용 한도는 설정값. 임의 기본값 금지)
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = "openai"

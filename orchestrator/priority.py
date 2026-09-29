@@ -118,12 +118,18 @@ def _human_flag(cell: dict) -> Optional[bool]:
 
 
 def risk_context(snapshot: Snapshot) -> dict:
-    cells, sites = snapshot.fire_cells + snapshot.risk_cells, snapshot.protected_sites
+    sites = snapshot.protected_sites
+    forecast = {f["cell_id"]: f for f in snapshot.spread_forecast if f.get("cell_id")}
+    merged = {}
+    for c in snapshot.fire_cells + snapshot.risk_cells + snapshot.spread_forecast:
+        merged.setdefault(c["cell_id"], {}).update({k: v for k, v in c.items() if v is not None})
+    cells = list(merged.values())
     lats = [c["lat"] for c in cells if c.get("lat") is not None] + \
            [s.get("location", {}).get("lat") for s in sites if s.get("location")] + \
            [p[0] for s in sites for p in (s.get("boundary") or [])]
     ctx = {"snapshot": snapshot.ref(), "crs": snapshot.crs, "method": METHOD,
-           "registry_present": bool(sites), "cells": {}, "sites": {}, "missing": []}
+           "registry_present": bool(sites), "cells": {}, "sites": {}, "missing": [],
+           "forecast_ref": snapshot.forecast_ref, "forecast_threats": []}
     if not lats:
         return ctx
     proj = _Proj(sum(lats) / len(lats))
@@ -148,7 +154,23 @@ def risk_context(snapshot: Snapshot) -> dict:
             for sid, g in geoms.items():
                 entry["distances"].append({"site_id": sid, "distance_m": round(polygon_distance_m(poly, g), 1)})
             entry["distances"].sort(key=lambda d: (d["distance_m"], d["site_id"]))
+        f = forecast.get(c["cell_id"])
+        if f is not None:
+            entry["forecast"] = {"expected_arrival_s": f.get("expected_arrival_s"),
+                                 "probability": f.get("probability")}
         ctx["cells"][c["cell_id"]] = entry
+    # 예측 확산 셀이 주거지이거나 사람 있는 보호대상과 겹치면 '예측된 인명 위험'
+    for cid, e in ctx["cells"].items():
+        if "forecast" not in e:
+            continue
+        eta = e["forecast"]["expected_arrival_s"]
+        if e.get("human_exposure") is True:
+            ctx["forecast_threats"].append({"cell_id": cid, "basis": "FORECAST_REACHES_RESIDENTIAL",
+                                            "expected_arrival_s": eta})
+        for d in e["distances"]:
+            if d["distance_m"] == 0.0 and ctx["sites"].get(d["site_id"], {}).get("human_occupied") is True:
+                ctx["forecast_threats"].append({"cell_id": cid, "site_id": d["site_id"],
+                                                "basis": "FORECAST_REACHES_OCCUPIED_SITE", "expected_arrival_s": eta})
     return ctx
 
 
@@ -178,6 +200,11 @@ def task_evidence(task: Task, ctx: dict) -> dict:
         for d in e["distances"]:
             if d["distance_m"] == 0.0 and ctx["sites"].get(d["site_id"], {}).get("human_occupied") is True:
                 human_sources.append({"cell_id": cid, "site_id": d["site_id"], "source": "OVERLAPS_OCCUPIED_SITE"})
+    for cid, e in entries:
+        if "forecast" in e:
+            for th in ctx.get("forecast_threats", []):
+                if th["cell_id"] == cid:
+                    human_sources.append({**th, "source": "FORECAST"})
     if human_sources:
         human = True
     elif flags and all(f is False for f in flags):
@@ -187,6 +214,11 @@ def task_evidence(task: Task, ctx: dict) -> dict:
     return {"task_id": task.task_id, "cells_used": [c for c, _ in entries],
             "human_risk": human, "human_risk_sources": human_sources,
             "risk_score": max(scores) if scores else None, "risk_score_missing": not scores,
+            "human_risk_basis": sorted({"FORECAST" if s["source"] == "FORECAST" else "EXPOSURE"
+                                        for s in human_sources}),
+            "forecast_arrival_s": min((e["forecast"]["expected_arrival_s"] for _, e in entries
+                                       if "forecast" in e and e["forecast"]["expected_arrival_s"] is not None),
+                                      default=None),
             "nearest_protected": nearest, "distance_m": nearest["distance_m"] if nearest else None,
             "official_priority_rank": rank}
 
@@ -279,4 +311,5 @@ def order_tasks(tasks: List[Task], snapshot: Snapshot, similar_delta: Optional[f
             "similar_delta": similar_delta, "evidence": evs,
             "rule": "HUMAN_RISK_FIRST; then risk_score desc, distance asc, official rank; equal → created order; "
                     "risk missing → last; groups = same human class & (risk diff <= delta or crossing criteria)",
-            "context": {k: ctx[k] for k in ("snapshot", "crs", "method", "registry_present", "missing")}}
+            "context": {k: ctx[k] for k in ("snapshot", "crs", "method", "registry_present", "missing",
+                                            "forecast_ref", "forecast_threats")}}

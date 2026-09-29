@@ -80,3 +80,48 @@ def simulate(*, snapshot, task, attempt_id: str, resource_id: str, position: dic
     return {**base, "result": result, "footprint": fp, "covered_cells": covered,
             "detections": detections, "target_covered": target_covered,
             "footprint_center": {"lat": lat, "lon": lon}}
+
+
+def simulate_weather(*, snapshot, task, attempt_id: str, resource_id: str, position: dict,
+                     provider_raw: Optional[dict] = None) -> dict:
+    """모의 기상 측정 (TEST_ONLY). 도착 위치가 속한 셀에 환경 기상값(cell['weather'])이 있으면 그 값,
+    없으면 지도 전체 값(snapshot.weather + wind_ms/wind_dir_deg)을 읽는다. 환경이 준 항목만 보고한다."""
+    prof = config.WEATHER_SENSOR_PROFILE
+    base = {
+        "observation_id": f"OBS-{uuid.uuid4().hex[:12]}", "run_id": snapshot.run_id,
+        "state_version_seen": snapshot.state_version, "simulation_time_s": snapshot.simulation_time_s,
+        "observed_wall": datetime.now(timezone.utc).isoformat(), "task_id": task.task_id,
+        "attempt_id": attempt_id, "resource_id": resource_id, "source": prof["source"],
+        "sensor_profile_id": prof["sensor_profile_id"], "sensor_status": prof["status"],
+        "sensor_type": "WEATHER", "position": position, "method": prof["method"],
+        "provider_raw_ignored": provider_raw, "detections": [],
+    }
+    lat, lon = position.get("lat"), position.get("lon")
+    if lat is None or lon is None:
+        return {**base, "result": "FAILED", "failure_reason": "POSITION_UNKNOWN", "values": {},
+                "covered_cells": [], "target_covered": False, "footprint": None}
+    cells = snapshot.fire_cells + snapshot.risk_cells + snapshot.spread_forecast
+    here = None
+    for c in cells:
+        if c.get("lat") is None or not c.get("cell_size_m"):
+            continue
+        dx, dy = _to_local_m(lat, lon, c["lat"], c["lon"])
+        if abs(dx) <= c["cell_size_m"] / 2 and abs(dy) <= c["cell_size_m"] / 2:
+            here = c
+            break
+    if here is not None and here.get("weather"):
+        raw, scope = here["weather"], "CELL"
+    else:
+        raw = {"wind_ms": snapshot.wind_ms, "wind_dir_deg": snapshot.wind_dir_deg, **(snapshot.weather or {})}
+        scope = "GLOBAL_FIELD"          # 환경 기상이 지도 전체 값 하나뿐 — 지점 측정의 의미가 제한됨
+    values = {k: raw.get(k) for k in prof["measures"] if raw.get(k) is not None}
+    tgt = next((c for c in cells if c.get("cell_id") == task.target.cell_id and c.get("cell_size_m")), None)
+    if tgt is not None:
+        dx, dy = _to_local_m(lat, lon, tgt["lat"], tgt["lon"])
+        covered = abs(dx) <= tgt["cell_size_m"] / 2 and abs(dy) <= tgt["cell_size_m"] / 2
+    else:
+        covered = False
+    return {**base, "result": "MEASURED" if values else "FAILED",
+            "failure_reason": None if values else "WEATHER_NOT_PROVIDED_BY_ENV",
+            "values": values, "scope": scope, "covered_cells": [here["cell_id"]] if here else [],
+            "target_covered": covered and bool(values), "footprint": None}

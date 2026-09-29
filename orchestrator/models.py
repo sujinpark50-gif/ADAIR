@@ -137,6 +137,10 @@ class Snapshot:
     fire_cells: List[dict] = field(default_factory=list)       # BURNING 셀
     risk_cells: List[dict] = field(default_factory=list)       # 화선 주변 UNBURNED 위험 셀
     protected_sites: List[dict] = field(default_factory=list)  # 보호대상 registry
+    wind_dir_deg: Optional[float] = None   # 바람이 불어오는 방향 (기상 관례, degree)
+    weather: dict = field(default_factory=dict)            # 지도 전체 기상값 (환경이 준 항목만)
+    spread_forecast: List[dict] = field(default_factory=list)  # 환경 모델의 확산 예상 셀
+    forecast_ref: Optional[dict] = None    # {model_version, issued_sim_s, horizon_s}
     source: str = "UNKNOWN"          # FIXTURE / IN_PROCESS / TEAM_API
     contract_complete: bool = False  # 요청서 §3 READ 계약을 만족하는 출처인지
 

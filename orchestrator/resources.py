@@ -33,6 +33,11 @@ TYPE_CAPABILITIES = {
 }
 
 
+def capabilities(resource_type: str) -> tuple:
+    """담당 코드 기준 능력 + 총괄 쪽 모의 센서 능력(TEST_ONLY, config.SIMULATED_CAPABILITIES)"""
+    return TYPE_CAPABILITIES.get(resource_type, ()) + tuple(config.SIMULATED_CAPABILITIES.get(resource_type, ()))
+
+
 class Unreachable(Exception):
     """연결 실패·timeout. 상대 상태를 알 수 없음"""
 
@@ -79,7 +84,7 @@ class UavClient:
             ready=(failsafe is False and d.get("current_task_id") is None),
             current_task_id=d.get("current_task_id"),
             battery_pct=(d.get("battery") or {}).get("percent"),
-            sensors=TYPE_CAPABILITIES["UAV"], comm=d.get("link_quality"), failsafe=failsafe,
+            sensors=capabilities("UAV"), comm=d.get("link_quality"), failsafe=failsafe,
             phase=d.get("flight_mode"), fetched_wall=time.time(),
             source_timestamp=d.get("timestamp"), raw=d,
         )
@@ -146,7 +151,7 @@ class UgvClient:
                 lat=pos.get("lat"), lon=pos.get("lon"),
                 ready=(d.get("state") == "READY" and d.get("current_task_id") is None),
                 current_task_id=d.get("current_task_id"),
-                sensors=TYPE_CAPABILITIES.get(rtype, ()), comm=None,
+                sensors=capabilities(rtype), comm=None,
                 phase=d.get("driver_status"), fetched_wall=time.time(),
                 source_timestamp=str(d.get("updated_at")), raw=d,
             ))

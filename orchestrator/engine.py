@@ -88,7 +88,10 @@ class Orchestrator:
             agl = mods.get("target_agl_m", task.requirements.target_agl_m or config.UAV_DEFAULT_TARGET_AGL_M)
             # 지면고도만 넣는다. 80m·10m 는 UAV 가 더한다 (요청서 §4.1)
             tgt.update({"alt_m_amsl": task.target.ground_amsl_m, "target_agl_m": agl})
-            body.update({"observation_type": task.requirements.sensor or "THERMAL", "wind_ms": snap.wind_ms})
+            body["wind_ms"] = snap.wind_ms
+            otype = config.LOCAL_OBSERVATION_TYPE.get(task.requirements.sensor or "THERMAL", "THERMAL")
+            if otype:
+                body["observation_type"] = otype
         return body
 
     # ------------------------------------------------------------------
@@ -204,6 +207,7 @@ class Orchestrator:
           AUTO_HIGHER_RISK 인명 → 위험도가 조금이라도 높은 순으로 바로 보내고, 묶음을 '자동 결정'으로 기록.
         """
         snap = self.env.read()
+        self._preemptive_monitor(snap)
         tasks = [t for t in self.ledger.list_tasks(["PENDING", "HOLD"])
                  if not (t.purpose_status == "HOLD" and t.resume_condition == MANUAL)]
         if not tasks:
@@ -452,14 +456,20 @@ class Orchestrator:
 
     def _observe_and_apply(self, att, task, data, detail) -> Optional[dict]:
         aid, rid = att["attempt_id"], att["resource_id"]
-        if att["command"]["resource_type"] != "UAV":
-            return self._ground_observation(att, task, data, detail)
-        if task.requirements.sensor != "THERMAL":
-            return None
-        snap = self.env.read()
+        sensor = task.requirements.sensor
         pos = ((data.get("observation") or {}).get("position")) or {}
-        obs = observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
-                                   position=pos, uav_raw_observation=data.get("observation"))
+        if sensor == "WEATHER":
+            snap = self.env.read()
+            obs = observation.simulate_weather(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
+                                               position=pos, provider_raw=data.get("observation"))
+        elif att["command"]["resource_type"] != "UAV":
+            return self._ground_observation(att, task, data, detail)
+        elif sensor != "THERMAL":
+            return None
+        else:
+            snap = self.env.read()
+            obs = observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
+                                       position=pos, uav_raw_observation=data.get("observation"))
         self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid,
                         result=obs["result"], reason=obs.get("failure_reason"), sim_time_s=snap.simulation_time_s,
                         detail=obs)
@@ -487,7 +497,125 @@ class Orchestrator:
                                                         "resource_released": False})
         else:
             self._reopen(task, "OBSERVATION_REQUIREMENT_NOT_MET" if not obs["target_covered"] else "ENV_APPLY_NOT_ACKED")
+        if obs["result"] == "DETECTED":
+            self._auto_sense(task, obs, self.env.read())
         return {"attempt_id": aid, "substatus": sub, "task": task.purpose_status}
+
+    # ------------------------------------------------------------------
+    # 현장 환경 측정 자동 생성 (사용자 결정 2026-09-30)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _bearing_deg(lat1, lon1, lat2, lon2) -> float:
+        import math
+        p1, p2, dl = math.radians(lat1), math.radians(lat2), math.radians(lon2 - lon1)
+        x = math.sin(dl) * math.cos(p2)
+        y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+        return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+    def sense_points(self, fire_cell: dict, snap) -> dict:
+        """불난 칸 + 바람이 향하는 쪽 위험 칸(환경이 표시한 위험 칸 중 방위가 가장 가까운 것)."""
+        points, note = [fire_cell], None
+        if snap.wind_dir_deg is None:
+            note = "WIND_DIRECTION_MISSING"
+        elif not snap.risk_cells:
+            note = "NO_RISK_CELLS"
+        else:
+            toward = (snap.wind_dir_deg + 180.0) % 360.0
+            best = None
+            for c in snap.risk_cells:
+                if c.get("lat") is None or c.get("lon") is None:
+                    continue
+                b = self._bearing_deg(fire_cell["lat"], fire_cell["lon"], c["lat"], c["lon"])
+                diff = min(abs(b - toward), 360 - abs(b - toward))
+                key = (diff, -(c.get("risk_score") or 0.0), c["cell_id"])
+                if best is None or key < best[0]:
+                    best = (key, c, round(diff, 1))
+            if best:
+                points.append(best[1])
+                note = {"downwind_bearing_deg": round(toward, 1), "angle_off_deg": best[2]}
+        return {"points": points, "note": note}
+
+    def _auto_sense(self, task: Task, obs: dict, snap) -> List[str]:
+        if not config.AUTO_ENV_SENSE_ENABLED or task.kind == "ENV_SENSE":
+            return []
+        cells = {c["cell_id"]: c for c in snap.fire_cells + snap.risk_cells}
+        created = []
+        for det in obs.get("detections", []):
+            fire = cells.get(det["cell_id"])
+            if not fire or fire.get("lat") is None:
+                continue
+            sp = self.sense_points(fire, snap)
+            for c in sp["points"]:
+                t, new = self.submit_task({
+                    "request_id": f"AUTO-SENSE:{snap.run_id}:{c['cell_id']}", "incident_id": task.incident_id,
+                    "kind": "ENV_SENSE",
+                    "target": {"lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"),
+                               "cell_id": c["cell_id"]},
+                    "requirements": {"resource_types": ["UAV", "UGV", "FIRE_ENGINE"], "sensor": "WEATHER",
+                                     "needs_env_ack": True}})
+                if new:
+                    created.append(t.task_id)
+            self.ledger.log("ENV_SENSE_PLANNED", task_id=task.task_id, result="CREATED" if created else "EXISTING",
+                            detail={"fire_cell": fire["cell_id"], "points": [c["cell_id"] for c in sp["points"]],
+                                    "selection": sp["note"], "created": created})
+        return created
+
+    # ------------------------------------------------------------------
+    # 확산 예측 → 사전 감시 임무 (구현 완료, config.PREEMPTIVE_MONITOR_ENABLED 로 꺼 둠)
+    # ------------------------------------------------------------------
+    def preemptive_candidates(self, snap) -> List[dict]:
+        """예측이 주거지·사람 있는 보호대상에 닿는 곳. 보호대상(없으면 주거 셀)마다 하나로 묶는다."""
+        ctx = priority.risk_context(snap)
+        by_key = {}
+        for th in ctx.get("forecast_threats", []):
+            key = th.get("site_id") or th["cell_id"]
+            cur = by_key.get(key)
+            if cur is None:
+                cur = by_key[key] = {"key": key, "site_id": th.get("site_id"), "cells": [], "basis": set(),
+                                     "earliest_arrival_s": None, "target_cell": None}
+            cur["cells"].append(th["cell_id"])
+            cur["basis"].add(th["basis"])
+            eta = th.get("expected_arrival_s")
+            if eta is not None and (cur["earliest_arrival_s"] is None or eta < cur["earliest_arrival_s"]):
+                cur["earliest_arrival_s"], cur["target_cell"] = eta, th["cell_id"]
+            cur["target_cell"] = cur["target_cell"] or th["cell_id"]
+        out = []
+        for c in sorted(by_key.values(), key=lambda c: (c["earliest_arrival_s"] is None,
+                                                        c["earliest_arrival_s"] or 0, c["key"])):
+            c["basis"] = sorted(c["basis"])
+            out.append(c)
+        return out
+
+    def _preemptive_monitor(self, snap) -> dict:
+        cands = self.preemptive_candidates(snap)
+        if not cands:
+            return {"enabled": config.PREEMPTIVE_MONITOR_ENABLED, "candidates": []}
+        sig = (snap.run_id, snap.state_version, tuple(c["key"] for c in cands))
+        if not config.PREEMPTIVE_MONITOR_ENABLED:
+            if getattr(self, "_premon_sig", None) != sig:
+                self._premon_sig = sig
+                self.ledger.log("PREEMPTIVE_MONITOR_SUPPRESSED", sim_time_s=snap.simulation_time_s,
+                                reason="DISABLED_BY_CONFIG", detail={"candidates": cands,
+                                                                     "forecast": snap.forecast_ref})
+            return {"enabled": False, "candidates": cands}
+        cells = {c["cell_id"]: c for c in snap.fire_cells + snap.risk_cells + snap.spread_forecast}
+        created = []
+        for c in cands:
+            tc = cells.get(c["target_cell"]) or {}
+            if tc.get("lat") is None:
+                continue
+            t, new = self.submit_task({
+                "request_id": f"AUTO-PREMON:{snap.run_id}:{c['key']}", "incident_id": "AUTO",
+                "kind": "MONITOR", "area_cell_ids": c["cells"],
+                "target": {"lat": tc["lat"], "lon": tc["lon"], "ground_amsl_m": tc.get("ground_amsl_m"),
+                           "cell_id": c["target_cell"]},
+                "requirements": {"resource_types": ["UAV"], "sensor": "THERMAL", "needs_env_ack": True}})
+            if new:
+                created.append(t.task_id)
+        if created:
+            self.ledger.log("PREEMPTIVE_MONITOR_CREATED", sim_time_s=snap.simulation_time_s,
+                            detail={"created": created, "candidates": cands})
+        return {"enabled": True, "candidates": cands, "created": created}
 
     def _ground_observation(self, att, task, data, detail) -> dict:
         """UGV/소방차 도착. 제공 관측은 ROAD_STATUS 뿐이며 화재 관측으로 바꾸지 않는다."""
