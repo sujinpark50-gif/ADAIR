@@ -96,6 +96,12 @@ class Knowledge:
         return {**k["body"], "sim_time_s": k["sim_time_s"], "source": k["source"],
                 "basis": "NEAREST_STATION", "distance_m": round(best[0][0], 1)}
 
+    def field_measurements(self, now_s: float) -> List[dict]:
+        """현장 측정(모의 포함) 전체 — 분석 입력용. 출처(SIMULATED 등)를 그대로 둔다."""
+        return [{**k["body"], "sim_time_s": k["sim_time_s"], "source": k["source"]}
+                for k in self.ledger.knowledge("WEATHER")
+                if k["body"].get("kind") == "FIELD" and (k["sim_time_s"] is None or k["sim_time_s"] <= now_s)]
+
     def latest_station_obs(self, now_s: float) -> List[dict]:
         latest = {}
         for k in self.ledger.knowledge("WEATHER"):

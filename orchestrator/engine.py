@@ -110,7 +110,8 @@ class Orchestrator:
         fires = [{**cells.get(cid, {"cell_id": cid}), "fire_state": "BURNING", "risk_score": None,
                   "knowledge": k} for cid, k in self.kb.known_fires(now).items()]
         belief = {"run_id": truth.run_id, "simulation_time_s": now, "known_fires": fires,
-                  "fire_states": self.kb.fire_states(now), "station_weather": self.kb.latest_station_obs(now)}
+                  "fire_states": self.kb.fire_states(now), "station_weather": self.kb.latest_station_obs(now),
+                  "field_weather": self.kb.field_measurements(now)}
         an = self.analysis.analyze(belief) if self.analysis else {}
 
         def geo(c):                           # 분석 결과 칸에 지도 정보를 붙인다

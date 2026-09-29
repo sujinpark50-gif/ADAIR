@@ -105,6 +105,8 @@ def test_field_measurement_overrides_station_for_that_cell(tmp_path):
         orch.poll()
     v = orch.view_for(_recon(orch, "R2"))
     assert v.wind_ref["basis"] == "FIELD_AT_TARGET_CELL" and v.wind_ms == 14.0   # 현장만 강풍 — 관측소와 다름
+    field = orch.analysis.last_input["field_weather"]                          # 분석 입력에도 현장 측정 포함
+    assert field and field[-1]["cell_id"] == "F1" and field[-1]["source"] == "SIMULATED"
 
 
 def test_fire_report_event_api(tmp_path):
