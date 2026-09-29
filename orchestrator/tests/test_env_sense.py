@@ -23,29 +23,73 @@ def _run(orch, n=4):
         orch.poll()
 
 
-def test_fire_detection_creates_sense_tasks_at_fire_and_downwind_cell(world):
-    orch, lg = world["orch"], world["ledger"]
+def _weather_obs(lg, task_id):
+    return [e["detail"] for e in lg.events(task_id)
+            if e["event_type"] == "OBSERVATION" and (e["detail"] or {}).get("sensor_type") == "WEATHER"]
+
+
+def test_fire_detection_measures_weather_in_same_visit_and_senses_downwind(world):
+    orch, lg, uav = world["orch"], world["ledger"], world["uav"]
     _setup(world)
     t = submit(orch)                                      # 불타는 C1 정찰
     orch.dispatch(t.task_id)
     _run(orch)
+    # 불난 칸은 정찰한 그 방문에서 바로 측정 — C1 측정 임무를 따로 만들지 않음
+    w = _weather_obs(lg, t.task_id)
+    assert len(w) == 1 and w[0]["same_visit_as"] == "RECON" and w[0]["source"] == "SIMULATED"
     sense = [x for x in lg.list_tasks() if x.kind == "ENV_SENSE"]
-    assert sorted(x.target.cell_id for x in sense) == ["C1", "EAST"]   # 위험도가 더 높은 WEST 가 아니라 바람 방향
-    assert all(x.requirements.sensor == "WEATHER" for x in sense)
+    assert [x.target.cell_id for x in sense] == ["EAST"]  # 바람 방향 칸만 (위험도 더 높은 WEST 아님)
     ev = [e for e in lg.events() if e["event_type"] == "ENV_SENSE_PLANNED"][0]["detail"]
-    assert ev["selection"]["downwind_bearing_deg"] == 90.0 and ev["selection"]["angle_off_deg"] < 1.0
-    _run(orch)                                            # 같은 관측을 다시 처리해도 중복 생성 없음
-    assert len([x for x in lg.list_tasks() if x.kind == "ENV_SENSE"]) == 2
+    assert ev["measured_in_same_visit"] is True and ev["selection"]["angle_off_deg"] < 1.0
+    assert len(uav.exec_calls()) == 1
+    _run(orch)                                            # 다시 처리해도 중복 생성 없음
+    assert len([x for x in lg.list_tasks() if x.kind == "ENV_SENSE"]) == 1
 
 
-def test_without_wind_direction_only_fire_cell_is_sensed(world):
+def test_without_wind_direction_fire_cell_measured_in_same_visit_only(world):
     orch, lg = world["orch"], world["ledger"]
     _setup(world, wind_dir=None)
-    orch.dispatch(submit(orch).task_id)
+    t = submit(orch)
+    orch.dispatch(t.task_id)
     _run(orch)
-    assert [x.target.cell_id for x in lg.list_tasks() if x.kind == "ENV_SENSE"] == ["C1"]
+    assert [x for x in lg.list_tasks() if x.kind == "ENV_SENSE"] == []
+    assert len(_weather_obs(lg, t.task_id)) == 1
     ev = [e for e in lg.events() if e["event_type"] == "ENV_SENSE_PLANNED"][0]["detail"]
     assert ev["selection"] == "WIND_DIRECTION_MISSING"
+
+
+def test_sense_point_with_open_recon_gets_weather_attached_not_new_task(world):
+    orch, lg = world["orch"], world["ledger"]
+    _setup(world)
+    east = world["analysis"].risk_cells[0]
+    t_east = submit(orch, "R-EAST", target={"lat": east["lat"], "lon": east["lon"], "ground_amsl_m": 600.0,
+                                            "cell_id": "EAST"})         # 불 발견 전에 이미 있던 정찰
+    t = submit(orch)
+    orch.dispatch(t.task_id)
+    _run(orch)
+    assert [x for x in lg.list_tasks() if x.kind == "ENV_SENSE"] == []          # 새 측정 임무 없음
+    assert "WEATHER" in lg.get_task(t_east.task_id).requirements.extra_sensors  # 정찰에 측정 붙음
+    world["uav"].state["A-uav1"]["current_task_id"] = None
+    orch.dispatch(t_east.task_id)
+    _run(orch)
+    assert len(_weather_obs(lg, t_east.task_id)) == 1                          # EAST 는 한 번만 방문
+
+
+def test_new_recon_absorbs_pending_sense_task_at_same_cell(world):
+    orch, lg = world["orch"], world["ledger"]
+    _setup(world)
+    t = submit(orch)
+    orch.dispatch(t.task_id)
+    _run(orch)
+    sense = [x for x in lg.list_tasks() if x.kind == "ENV_SENSE"][0]         # EAST 측정 (출발 전)
+    east = world["analysis"].risk_cells[0]
+    r = submit(orch, "R-EAST", target={"lat": east["lat"], "lon": east["lon"], "ground_amsl_m": 600.0,
+                                       "cell_id": "EAST"})
+    s2 = lg.get_task(sense.task_id)
+    assert s2.purpose_status == "CANCELLED" and s2.hold_reason == f"MERGED_INTO:{r.task_id}"
+    assert "WEATHER" in lg.get_task(r.task_id).requirements.extra_sensors
+    merged = [e for e in lg.events(r.task_id) if e["event_type"] == "TASK_MERGED"][0]
+    assert merged["detail"]["cancelled_sense_tasks"] == [sense.task_id]
 
 
 def test_weather_measurement_is_simulated_applied_and_completes(world):

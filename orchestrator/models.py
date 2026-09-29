@@ -70,6 +70,8 @@ class Requirements:
     # None 이면 AGL 변경 COUNTER 는 목적 충족을 판단할 수 없어 수용하지 않는다.
     agl_range_m: Optional[Tuple[float, float]] = None
     needs_env_ack: bool = True                 # 완료 조건에 환경 반영 ACK 필요 여부
+    # 같은 방문에서 함께 하는 측정 (예: 정찰하면서 기상도). 같은 칸에 두 번 보내지 않기 위함
+    extra_sensors: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -104,6 +106,8 @@ class Task:
             req["resource_types"] = tuple(req["resource_types"])
         if req.get("agl_range_m") is not None:
             req["agl_range_m"] = tuple(req["agl_range_m"])
+        if "extra_sensors" in req:
+            req["extra_sensors"] = tuple(req["extra_sensors"] or ())
         return Task(
             task_id=d["task_id"],
             incident_id=d["incident_id"],

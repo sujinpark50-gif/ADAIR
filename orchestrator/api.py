@@ -47,6 +47,7 @@ class RequirementsIn(BaseModel):
     target_agl_m: Optional[float] = None
     agl_range_m: Optional[List[float]] = None
     needs_env_ack: bool = True
+    extra_sensors: List[str] = Field(default_factory=list, description="같은 방문에서 함께 할 측정 (예: WEATHER)")
 
 
 class TaskIn(BaseModel):
@@ -82,16 +83,7 @@ class EventIn(BaseModel):
     payload: dict = {}
 
 
-def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
-    """Task 의 가장 최근 관측과 환경 반영 결과 요약 (화면 표시용)"""
-    obs = ack = None
-    for e in orch.ledger.events(task_id):
-        if e["event_type"] == "OBSERVATION":
-            obs, ack = e, None
-        elif e["event_type"] == "ENVIRONMENT_APPLY" and obs is not None:
-            ack = e
-    if obs is None:
-        return None
+def _one_observation(obs: dict, ack: Optional[dict]) -> dict:
     d = obs["detail"] or {}
     fp = d.get("footprint") or {}
     return {"result": obs["result"], "source": d.get("source"), "sensor_status": d.get("sensor_status"),
@@ -101,11 +93,39 @@ def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
             "footprint": {k: fp.get(k) for k in ("width_m", "height_m", "agl_m")} if fp else None,
             "simulation_time_s": d.get("simulation_time_s"), "observed_wall": d.get("observed_wall"),
             "is_fire_observation": d.get("is_fire_observation", True),
-            "values": d.get("values"), "scope": d.get("scope"),
-            "completion": next((e["detail"] for e in reversed(orch.ledger.events(task_id))
-                                if e["event_type"] == "TASK_COMPLETE"), None),
+            "values": d.get("values"), "scope": d.get("scope"), "same_visit_as": d.get("same_visit_as"),
             "env_apply": None if ack is None else {"result": ack["result"],
                                                    "state_version": (ack["detail"] or {}).get("state_version")}}
+
+
+def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
+    """Task 의 주 관측(임무 센서) 요약 + 같은 방문에서 함께 한 측정(extras)"""
+    task = orch.ledger.get_task(task_id)
+    main_sensor = task.requirements.sensor if task else None
+    items = []                                   # [(obs_event, ack_event)]
+    for e in orch.ledger.events(task_id):
+        if e["event_type"] == "OBSERVATION":
+            items.append([e, None])
+        elif e["event_type"] == "ENVIRONMENT_APPLY" and items and items[-1][1] is None:
+            items[-1][1] = e
+    if not items:
+        return None
+
+    def kind(e):
+        d = e["detail"] or {}
+        return d.get("sensor_type") or ("ROAD_STATUS" if e["result"] in ("ROAD_STATUS", "NONE") else None)
+    mains = [it for it in items if kind(it[0]) == main_sensor or main_sensor is None
+             or (main_sensor == "ROAD_STATUS" and kind(it[0]) == "ROAD_STATUS")]
+    main = (mains or items)[-1]
+    extras = {}
+    for it in items:
+        if it is not main and kind(it[0]) != kind(main[0]):
+            extras[kind(it[0]) or "OTHER"] = _one_observation(*it)
+    out = _one_observation(*main)
+    out["extras"] = list(extras.values())
+    out["completion"] = next((e["detail"] for e in reversed(orch.ledger.events(task_id))
+                              if e["event_type"] == "TASK_COMPLETE"), None)
+    return out
 
 
 def _task_view(orch: Orchestrator, task) -> dict:

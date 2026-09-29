@@ -33,7 +33,8 @@ SYSTEM = (
     "각 선택 묶음(groups) 안에서 먼저 출동할 임무 순서를 정하고 한국어로 짧은 근거를 적는다. "
     "원칙: 인명 보호 최우선(이미 묶음 분리에 반영됨), 그다음 확산 위험과 보호대상 근접성. "
     "입력에 없는 사실·수치·자원을 만들지 말고, 근거에 인용한 ID 는 input_refs 에 넣는다. "
-    "근거 문장은 관제 요원이 읽는다: 임무를 task_id 대신 대상 셀 이름(cells)으로 부르고, 2문장 이내로 쓴다."
+    "order 에는 입력의 task_id 문자열을 그대로 넣는다 (셀 이름 금지). "
+    "rationale 문장은 관제 요원이 읽으므로 임무를 대상 셀 이름(cells)으로 부르고 2문장 이내로 쓴다."
 )
 
 OUTPUT_SCHEMA = {
@@ -50,7 +51,8 @@ OUTPUT_SCHEMA = {
                 "required": ["group_index", "order", "rationale", "input_refs"],
                 "properties": {
                     "group_index": {"type": "integer"},
-                    "order": {"type": "array", "items": {"type": "string"}},
+                    "order": {"type": "array", "items": {"type": "string"},
+                              "description": "먼저 보낼 순서. 입력 tasks[].task_id 값을 그대로 (셀 이름 아님)"},
                     "rationale": {"type": "string"},
                     "input_refs": {"type": "array", "items": {"type": "string"}},
                 },

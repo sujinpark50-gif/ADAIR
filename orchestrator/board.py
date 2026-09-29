@@ -24,7 +24,7 @@ h1{font-size:18px;margin:0}main{padding:16px;max-width:1200px;margin:auto}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
 .card{border:1px solid var(--line);border-radius:10px;padding:10px}
 .card.first{outline:2px solid var(--blue)}
-.human{color:var(--red);font-weight:700}.obs{font-weight:700}.obs.fire{color:var(--red)}.obs.clear{color:var(--green)}.obs.warn{color:var(--amber)}.id{color:var(--mute);font-size:11px;font-weight:400}.ctitle{font-weight:700;margin-bottom:6px}.ai{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 12%,transparent);font-size:14px}.ai.off{background:transparent;color:var(--mute);padding:0}.row{display:flex;justify-content:space-between;font-size:14px;padding:2px 0}
+.human{color:var(--red);font-weight:700}.obs{font-weight:700}.obs.fire{color:var(--red)}.obs.clear{color:var(--green)}.obs.warn{color:var(--amber)}.id{color:var(--mute);font-size:11px;font-weight:400}.ctitle{font-weight:700;margin-bottom:6px}.extra{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line)}.ai{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 12%,transparent);font-size:14px}.ai.off{background:transparent;color:var(--mute);padding:0}.row{display:flex;justify-content:space-between;font-size:14px;padding:2px 0}
 .row span:first-child{color:var(--mute)}
 .card button{margin-top:8px;width:100%;padding:8px;border-radius:8px;border:0;background:var(--red);color:#fff;font-weight:600;cursor:pointer}
 table{width:100%;border-collapse:collapse;font-size:14px;background:var(--card);border-radius:10px;overflow:hidden}
@@ -64,7 +64,7 @@ function obsShort(o){if(!o)return '<span class="id">아직 없음</span>';const 
  const where=o.detections&&o.detections.length?` (${o.detections.map(d=>esc(d.cell_id)).join(", ")})`:"";return `<span class="obs ${r[1]}">${r[0]}${where}</span>`;}
 const COMPLETION_KO={SIMULATION_TEST:"시뮬레이션 시험 완료 (모의 센서·가짜 환경 확인)",INTEGRATED:"실제 연동 완료"};
 function completionRow(o){const c=o.completion;return c?`<div class="row"><span>완료 근거</span><span>${COMPLETION_KO[c.evidence_level]||esc(c.evidence_level)}</span></div>`:"";}
-function obsDetail(o){return obsDetail0(o)+completionRow(o);}
+function obsDetail(o){return obsDetail0(o)+(o.extras||[]).map(x=>`<div class="extra"><div class="row"><span><b>같은 방문에서 함께 측정</b></span><span></span></div>${obsDetail0(x)}</div>`).join("")+completionRow(o);}
 function obsDetail0(o){if(o.sensor_type==="WEATHER"){const v=o.values||{};
   return `<div class="row"><span>결과</span>${obsShort(o)}</div>${Object.keys(WX_LABEL).filter(k=>v[k]!=null).map(k=>`<div class="row"><span>${WX_LABEL[k][0]}</span><span>${v[k]}${WX_LABEL[k][1]}</span></div>`).join("")}
   <div class="row"><span>측정 범위</span><span>${o.scope==="CELL"?"그 칸의 값":"지도 전체 값 (칸별 기상 없음)"}</span></div>

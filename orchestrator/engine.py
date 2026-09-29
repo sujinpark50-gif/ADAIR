@@ -50,7 +50,8 @@ class Orchestrator:
         task = Task(
             task_id=new_id("TASK"), incident_id=body.get("incident_id") or "INC-DEFAULT",
             kind=body.get("kind") or "RECON", target=Target(**body["target"]),
-            requirements=Requirements(**{k: (tuple(v) if k in ("resource_types", "agl_range_m") and v is not None
+            requirements=Requirements(**{k: (tuple(v) if k in ("resource_types", "agl_range_m", "extra_sensors")
+                                             and v is not None
                                              else v) for k, v in req.items()}),
             request_key=body.get("request_id"),
             area_cell_ids=list(body.get("area_cell_ids") or []),
@@ -58,6 +59,8 @@ class Orchestrator:
         snap = self.env.read()
         task.created_sim_s = snap.simulation_time_s
         task, created = self.ledger.create_task(task, body)
+        if created:
+            self._merge_pending_sense_into(task)
         self.ledger.log("TASK_RECEIVED", task_id=task.task_id, result="CREATED" if created else "DUPLICATE",
                         detail={"request_id": task.request_key}, sim_time_s=snap.simulation_time_s)
         return task, created
@@ -593,8 +596,10 @@ class Orchestrator:
                                                         **self._evidence_level(obs.get("source"), ack)})
         else:
             self._reopen(task, "OBSERVATION_REQUIREMENT_NOT_MET" if not obs["target_covered"] else "ENV_APPLY_NOT_ACKED")
+        if sensor == "THERMAL" and obs["result"] != "FAILED" and self._weather_this_visit(task, att, obs):
+            self._measure_weather_same_visit(task, att, pos, data)
         if obs["result"] == "DETECTED":
-            self._auto_sense(task, obs, self.view())
+            self._auto_sense(task, obs, self.view(), measured_here=self._weather_this_visit(task, att, obs))
         return {"attempt_id": aid, "substatus": sub, "task": task.purpose_status}
 
     # ------------------------------------------------------------------
@@ -631,7 +636,80 @@ class Orchestrator:
                 note = {"downwind_bearing_deg": round(toward, 1), "angle_off_deg": best[2]}
         return {"points": points, "note": note}
 
-    def _auto_sense(self, task: Task, obs: dict, snap) -> List[str]:
+    # ------------------------------------------------------------------
+    # 한 번 가서 할 수 있는 측정은 한 번에 (같은 칸 중복 방문 방지)
+    # ------------------------------------------------------------------
+    OPEN_PURPOSES = ("PENDING", "HOLD", "EVALUATING", "APPROVED", "IN_EXECUTION")
+
+    def _weather_this_visit(self, task: Task, att: dict, obs: dict) -> bool:
+        """이번 정찰 방문에서 기상도 잴지: 임무에 붙은 추가 측정이거나, 불을 발견했고 기체가 잴 수 있을 때"""
+        from .resources import capabilities
+        can = "WEATHER" in capabilities(att["command"]["resource_type"])
+        if not can:
+            return False
+        if "WEATHER" in task.requirements.extra_sensors:
+            return True
+        return config.AUTO_ENV_SENSE_ENABLED and obs.get("result") == "DETECTED"
+
+    def _measure_weather_same_visit(self, task: Task, att: dict, pos: dict, data: dict) -> dict:
+        aid, rid = att["attempt_id"], att["resource_id"]
+        truth = self.env.read()
+        w = observation.simulate_weather(snapshot=truth, task=task, attempt_id=aid, resource_id=rid,
+                                         position=pos, provider_raw=None)
+        w["same_visit_as"] = task.kind
+        self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid, result=w["result"],
+                        reason=w.get("failure_reason"), sim_time_s=truth.simulation_time_s, detail=w)
+        if w["result"] == "MEASURED":
+            self.kb.add_weather(f"FIELD:{w['observation_id']}", truth.simulation_time_s, w["source"], {
+                "kind": "FIELD", "cell_id": task.target.cell_id, "lat": pos.get("lat"), "lon": pos.get("lon"),
+                "values": w["values"], "scope": w.get("scope"), "observation_id": w["observation_id"],
+                "resource_id": rid, "same_visit_as": task.kind})
+            ack = self.env.apply(w)
+            self.ledger.log("ENVIRONMENT_APPLY", task_id=task.task_id, attempt_id=aid, resource_id=rid,
+                            result="ACK" if ack.get("accepted") else "NACK", reason=ack.get("reason"), detail=ack)
+        return w
+
+    def _open_tasks_at(self, cell_id: str, kinds=None) -> List[Task]:
+        return [t for t in self.ledger.list_tasks(self.OPEN_PURPOSES)
+                if t.target.cell_id == cell_id and (kinds is None or t.kind in kinds)]
+
+    def _merge_pending_sense_into(self, task: Task) -> None:
+        """새 정찰이 들어왔는데 같은 칸에 아직 출발하지 않은 측정 임무가 있으면 취소하고 정찰에 합친다."""
+        if task.kind == "ENV_SENSE" or task.requirements.sensor != "THERMAL" or not task.target.cell_id:
+            return
+        occupied = {r["task_id"] for r in self.ledger.reservations().values()}
+        merged = []
+        for s in self._open_tasks_at(task.target.cell_id, kinds=("ENV_SENSE",)):
+            if s.purpose_status in ("PENDING", "HOLD") and s.task_id not in occupied:
+                s.purpose_status, s.hold_reason, s.resume_condition = "CANCELLED", f"MERGED_INTO:{task.task_id}", None
+                self.ledger.save_task(s)
+                merged.append(s.task_id)
+        if merged:
+            task.requirements.extra_sensors = tuple(sorted(set(task.requirements.extra_sensors) | {"WEATHER"}))
+            self.ledger.save_task(task)
+            self.ledger.log("TASK_MERGED", task_id=task.task_id, result="WEATHER_ATTACHED",
+                            detail={"cancelled_sense_tasks": merged, "cell_id": task.target.cell_id})
+
+    def _attach_or_create_sense(self, c: dict, incident_id: str, run_id: str) -> Optional[str]:
+        """측정 지점에 이미 열린 정찰이 있으면 그 정찰에 기상 측정을 붙이고, 없으면 측정 임무를 만든다."""
+        for t in self._open_tasks_at(c["cell_id"]):
+            if t.kind == "ENV_SENSE" or "WEATHER" in t.requirements.extra_sensors:
+                return None                                   # 이미 그 칸에서 잴 예정
+            if t.requirements.sensor == "THERMAL":
+                t.requirements.extra_sensors = tuple(sorted(set(t.requirements.extra_sensors) | {"WEATHER"}))
+                self.ledger.save_task(t)
+                self.ledger.log("TASK_MERGED", task_id=t.task_id, result="WEATHER_ATTACHED",
+                                detail={"cell_id": c["cell_id"], "reason": "SENSE_POINT_HAS_OPEN_RECON"})
+                return None
+        t, new = self.submit_task({
+            "request_id": f"AUTO-SENSE:{run_id}:{c['cell_id']}", "incident_id": incident_id, "kind": "ENV_SENSE",
+            "target": {"lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"),
+                       "cell_id": c["cell_id"]},
+            "requirements": {"resource_types": ["UAV", "UGV", "FIRE_ENGINE"], "sensor": "WEATHER",
+                             "needs_env_ack": True}})
+        return t.task_id if new else None
+
+    def _auto_sense(self, task: Task, obs: dict, snap, measured_here: bool = False) -> List[str]:
         if not config.AUTO_ENV_SENSE_ENABLED or task.kind == "ENV_SENSE":
             return []
         cells = {c["cell_id"]: c for c in snap.fire_cells + snap.risk_cells}
@@ -646,18 +724,15 @@ class Orchestrator:
                 snap, wind_dir_deg=(w.get("values") or {}).get("wind_dir_deg")))
             sp["wind_ref"] = {k: w.get(k) for k in ("basis", "source", "station_id", "distance_m", "sim_time_s")}
             for c in sp["points"]:
-                t, new = self.submit_task({
-                    "request_id": f"AUTO-SENSE:{snap.run_id}:{c['cell_id']}", "incident_id": task.incident_id,
-                    "kind": "ENV_SENSE",
-                    "target": {"lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"),
-                               "cell_id": c["cell_id"]},
-                    "requirements": {"resource_types": ["UAV", "UGV", "FIRE_ENGINE"], "sensor": "WEATHER",
-                                     "needs_env_ack": True}})
-                if new:
-                    created.append(t.task_id)
+                if c["cell_id"] == fire["cell_id"] and measured_here and fire["cell_id"] == task.target.cell_id:
+                    continue                                  # 불 발견한 그 방문에서 이미 측정함
+                tid = self._attach_or_create_sense(c, task.incident_id, snap.run_id)
+                if tid:
+                    created.append(tid)
             self.ledger.log("ENV_SENSE_PLANNED", task_id=task.task_id, result="CREATED" if created else "EXISTING",
                             detail={"fire_cell": fire["cell_id"], "points": [c["cell_id"] for c in sp["points"]],
-                                    "selection": sp["note"], "wind_ref": sp["wind_ref"], "created": created})
+                                    "selection": sp["note"], "wind_ref": sp["wind_ref"], "created": created,
+                                    "measured_in_same_visit": measured_here})
         return created
 
     # ------------------------------------------------------------------
