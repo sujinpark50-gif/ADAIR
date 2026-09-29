@@ -176,7 +176,7 @@ PROCESSED_EVALUATE = {
     "constraints.distance_km": "현재 위치 → 목표 수평 거리 (km)",
     "constraints.battery_now_pct": "현재 배터리 (%)",
     "constraints.battery_after_pct": "왕복 + 관측 후 예상 배터리 (%)",
-    "constraints.return_margin_pct": "복귀 후 남는 배터리 (%). 20 미만이면 COUNTER",
+    "constraints.return_margin_pct": "복귀 후 남는 배터리 (%). 15 미만이면 COUNTER",
     "constraints.wind_ms": "판단에 쓴 풍속 (m/s, 요청값)",
     "constraints.required_climb_m": "목표 비행고도(목표 지면 + 50 m)까지 상승량 (m)",
     "constraints.eta_sec": "ETA (s). REJECT 여도 계산된 경우 여기 남음",

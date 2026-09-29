@@ -173,7 +173,7 @@ def http(url, body=None):
 def capture_agent(agent, uav_id):
     evaluate_req = {
         "task_id": "capture-001", "decision_id": "capture-dec-001",
-        "target": {"lat": 38.0425, "lon": 128.2541, "alt_m_amsl": 761.0},   # 팀 DEM 기준 지면고도
+        "target": {"lat": 38.0425, "lon": 128.2541, "alt_m_amsl": 761.0, "target_agl_m": 80},   # 팀 DEM 기준 지면고도
         "observation_type": "THERMAL", "wind_ms": 3.1,
     }
     return {
@@ -359,7 +359,7 @@ def report(meta, raw, uorb, agent):
     L += [
         "- 원통119 → 관측 목표(약 9.8 km, 왕복 + 관측)에는 약 57% 가 필요하다고 계산되므로,",
         "  배터리가 50% 에 걸린 기체는 **이 정도 거리 이상의 목표를 계속 `LOW_BATTERY` 로 거절한다.**",
-        "  복귀 여유 20% 까지 따지면 50% 기체가 ACCEPT 할 수 있는 목표는 매우 가까운 곳뿐이다.",
+        "  복귀 여유 15% 까지 따지면 50% 기체가 ACCEPT 할 수 있는 목표는 매우 가까운 곳뿐이다.",
         "- 반대로 방전이 50% 에서 멈추므로, 실제 비행이 길어져도 배터리 부족 상황이 재현되지 않는다.",
         "- 즉 real 모드의 배터리 값은 **실제 소모를 반영하지 않으며**, 판단 근거로 쓰기에 부적절하다.",
         "",

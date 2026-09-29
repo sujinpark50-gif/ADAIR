@@ -33,12 +33,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
-provider = get_provider()
-
 # 이 프로세스가 담당하는 UAV 1대. 여러 대를 운용하면 서버를 나누고 각자 다른 값을 준다.
 #   UAV_ID=A-uav1 ... --port 8000
 #   UAV_ID=A-uav2 ... --port 8001
+# 앞글자가 소속 기지다(A=원통119, B=기린119). Mock 은 그 기지에서 출발·복귀한다.
 UAV_ID = os.getenv("UAV_ID", "A-uav1")
+
+provider = get_provider(UAV_ID)
 
 # 진행 중 Task. 프로세스 재시작 시 사라짐 (Mock 단계 한정)
 _tasks: dict[str, dict] = {}
@@ -56,6 +57,28 @@ def _check_id(uav_id: str) -> None:
         )
 
 
+# 기지로 돌아오는 중인 비행. 새 임무가 오면 끊고 그 자리에서 출발한다.
+_returning: asyncio.Task | None = None
+
+
+def _running_task_id() -> str | None:
+    """진행 중인 Task id. 드론 provider 는 Task 를 모르므로 여기서 채운다.
+
+    복귀 중(RETURNING)은 바쁘지 않다 — 배터리가 되면 다른 임무를 받을 수 있다
+    (시나리오 4·7 재배치). evaluate 가 현재 위치 기준으로 판단한다.
+    """
+    for tid, t in _tasks.items():
+        if t["status"] in ("STARTED", "IN_PROGRESS"):
+            return tid
+    return None
+
+
+async def _state(uav_id: str) -> dict:
+    state = await provider.get_state(uav_id)
+    state["current_task_id"] = _running_task_id()
+    return state
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "mode": os.getenv("UAV_MODE", "mock"), "uav_id": UAV_ID}
@@ -64,7 +87,7 @@ async def health():
 @app.get("/uav/{uav_id}/state", response_model=UavState)
 async def get_state(uav_id: str):
     _check_id(uav_id)
-    return await provider.get_state(uav_id)
+    return await _state(uav_id)
 
 
 @app.post("/uav/{uav_id}/evaluate", response_model=EvaluateResponse)
@@ -74,51 +97,108 @@ async def evaluate_mission(uav_id: str, req: EvaluateRequest):
     ACCEPT 는 Safety 검증을 거친 뒤 /execute 로 들어온다.
     """
     _check_id(uav_id)
-    state = await provider.get_state(uav_id)
-    return evaluator.evaluate(state, req)
+    state = await _state(uav_id)
+    return evaluator.evaluate(state, req, await provider.home())
+
+
+class _ReturnMarginLow(Exception):
+    pass
+
+
+async def _monitored(uav_id: str, home, coro) -> None:
+    """비행·체류 중 배터리를 감시한다 (시나리오 5).
+
+    지금 돌아가도 복귀 후 잔량이 BATTERY_RESERVE_PCT 미만이 되면 동작을 끊는다.
+    출발 전 evaluate 가 여유를 확인했으므로, 예측보다 빨리 닳았을 때만 걸린다.
+    """
+    task = asyncio.create_task(coro)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=config.MONITOR_INTERVAL_S)
+            if done:
+                return task.result()
+            margin = evaluator.return_margin_now(await provider.get_state(uav_id), home)
+            if margin < config.BATTERY_RESERVE_PCT:
+                raise _ReturnMarginLow(
+                    f"return margin {margin:.1f}% < reserve {config.BATTERY_RESERVE_PCT:.0f}%")
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 async def _run_task(uav_id: str, req: ExecuteRequest):
+    """목표 이동 → 관측 체류 → (결과 보고) → 기지 복귀.
+
+    COMPLETED 는 관측을 마친 시점이다. 이후 복귀하는 동안 progress.phase 는
+    RETURNING 이고 이 기체는 BUSY 다. 착륙하면 DONE.
+    """
     tid = req.task_id
+    t = {"task_id": tid, "status": "IN_PROGRESS",
+         "progress": {"phase": "ENROUTE"}, "observation": None}
+    _tasks[tid] = t
     try:
-        _tasks[tid] = {"task_id": tid, "status": "IN_PROGRESS",
-                       "progress": {"phase": "ENROUTE"}, "observation": None}
-        alt = req.target.alt_m_amsl + config.MIN_CLEARANCE_M
-        await provider.goto(req.target.lat, req.target.lon, alt)
+        home = await provider.home()
+        alt = evaluator.flight_alt_amsl(req.target)
+        await _monitored(uav_id, home, provider.goto(req.target.lat, req.target.lon, alt))
 
-        _tasks[tid]["progress"] = {"phase": "OBSERVING"}
-        await asyncio.sleep(2)  # Mock: 관측 소요를 짧게 흉내
+        t["progress"] = {"phase": "OBSERVING"}
+        await _monitored(uav_id, home, provider.hold(config.OBSERVE_DURATION_S))
 
-        _tasks[tid] = {
-            "task_id": tid,
+        pos = (await provider.get_state(uav_id))["position"]
+        t.update({
             "status": "COMPLETED",
-            "progress": {"phase": "DONE"},
+            "progress": {"phase": "RETURNING"},
             "observation": {
                 "observed_at": datetime.now(timezone.utc).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"),
+                # 목표 좌표가 아니라 관측 시점의 실제 기체 위치
                 "position": {
-                    "lat": req.target.lat,
-                    "lon": req.target.lon,
-                    "alt_m_amsl": req.target.alt_m_amsl,
+                    "lat": pos["lat"],
+                    "lon": pos["lon"],
+                    "alt_m_amsl": pos["alt_m_amsl"],
                 },
                 "sensor_type": req.observation_type,
                 # Mock 고정값. 실연동 시 실제 센서 결과로 교체
                 "values": {"max_temp_c": 312.5, "hotspot_detected": True},
             },
-        }
+        })
+    except _ReturnMarginLow as e:
+        # 임무를 끊고 돌아온다. 총괄은 FAILED + reason 을 보고 다른 기체에 인계한다.
+        t.update({"status": "FAILED", "reason": "RETURN_MARGIN_INSUFFICIENT",
+                  "error": str(e), "progress": {"phase": "RETURNING"}})
     except Exception as e:  # noqa: BLE001
-        _tasks[tid] = {"task_id": tid, "status": "FAILED",
-                       "progress": None, "observation": None, "error": str(e)}
+        t.update({"status": "FAILED", "progress": None, "error": str(e)})
+        return
+
+    global _returning
+    _returning = asyncio.current_task()
+    try:
+        await provider.return_home()
+        t["progress"] = {"phase": "DONE"}
+    except asyncio.CancelledError:
+        t["progress"] = {"phase": "RETASKED"}   # 복귀 중 새 임무를 받음
+    except Exception as e:  # noqa: BLE001
+        t["progress"] = {"phase": "RETURN_FAILED"}
+        t["error"] = f"return failed: {e}"
+    finally:
+        if _returning is asyncio.current_task():
+            _returning = None
 
 
 @app.post("/uav/{uav_id}/execute", response_model=ExecuteResponse)
 async def execute_mission(uav_id: str, req: ExecuteRequest):
     """Safety ALLOW 이후 호출. 비동기로 시작하고 즉시 반환한다."""
     _check_id(uav_id)
-    if req.task_id in _tasks and _tasks[req.task_id]["status"] in (
-        "STARTED", "IN_PROGRESS"
-    ):
-        raise HTTPException(409, f"task {req.task_id} already running")
+    running = _running_task_id()
+    if running is not None:
+        raise HTTPException(409, f"task {running} already running")
+    if _returning is not None and not _returning.done():
+        _returning.cancel()
+        await asyncio.gather(_returning, return_exceptions=True)
+    if evaluator.flight_alt_amsl(req.target) is None:
+        raise HTTPException(
+            400, "target 에 alt_m_amsl(지면 해발고도)이 필요하다")
 
     _tasks[req.task_id] = {"task_id": req.task_id, "status": "STARTED",
                            "progress": None, "observation": None}
@@ -157,4 +237,4 @@ async def mock_set(battery_pct: float | None = None,
         provider.gps_ok = gps_ok
     if link_quality is not None:
         provider.link_quality = link_quality
-    return await provider.get_state(UAV_ID)
+    return await _state(UAV_ID)
