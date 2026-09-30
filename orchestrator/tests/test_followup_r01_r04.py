@@ -351,7 +351,8 @@ def test_pending_apply_survives_resource_release_and_is_reapplied_without_second
     recover()
     orch.poll()                                                   # 환경 복구 → 같은 관측 ID 로 재반영
     assert set(calls) == {oid} and lg.pending_applies(task_id=task.task_id) == []
-    assert lg.pending_applies(task_id=task.task_id, status="ACKED")[0]["observation_id"] == oid
+    done = lg.pending_applies(task_id=task.task_id, status="DONE")[0]
+    assert (done["observation_id"], done["env_result"], done["reason"]) == (oid, "ACK", "TASK_COMPLETED")
     assert lg.get_task(task.task_id).purpose_status == "COMPLETED"
     assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"          # 반납된 시도 상태는 그대로
     assert len(_ev(lg, task.task_id, "OBSERVATION")) == 1 and len(uav.exec_calls()) == 1
@@ -448,9 +449,10 @@ def test_late_ack_is_not_attributed_when_purpose_owner_changed(world):
     lg.save_task(t)
     recover()
     orch.poll()
-    assert lg.pending_applies(task_id=task.task_id, status="ACKED")            # 반영 결과는 남고
-    late = _ev(lg, task.task_id, "ENVIRONMENT_APPLY")[-1]
-    assert late["result"] == "ACK" and late["detail"]["attributed_to_purpose"] is False
+    row = lg.pending_applies(task_id=task.task_id, status="CLOSED")[0]           # 응답은 기록에 남고
+    assert (row["env_result"], row["reason"], row["ack"]["accepted"]) == ("ACK", "OWNER_CHANGED", True)
+    closed = _ev(lg, task.task_id, "ENV_APPLY_RECORD_CLOSED")[-1]
+    assert closed["reason"] == "OWNER_CHANGED" and closed["detail"]["attributed_to_purpose"] is False
     assert lg.get_task(task.task_id).purpose_status == "IN_EXECUTION"           # 목적은 담당 시도만 바꾼다
     assert _ev(lg, task.task_id, "TASK_COMPLETE") == []
 
@@ -465,5 +467,244 @@ def test_explicit_nack_is_distinguished_from_unknown_timeout(world):
         orch.poll()
     t = lg.get_task(task.task_id)
     assert t.purpose_status == "PENDING" and t.hold_reason == "ENV_APPLY_NOT_ACKED"   # 거절 → 다시 관측해야 함
-    assert lg.pending_applies(task_id=task.task_id, status=None) == []                # 반영 대기로 남기지 않는다
+    assert lg.pending_applies(task_id=task.task_id) == []                             # 끝나지 않은 기록은 없다
+    row = lg.pending_applies(task_id=task.task_id, status=None)[0]
+    assert (row["status"], row["env_result"], row["reason"]) == ("DONE", "NACK", "TASK_PENDING")
     assert _ev(lg, task.task_id, "ENVIRONMENT_APPLY")[0]["result"] == "NACK"
+
+
+# ---------------------------------------------------------------------------
+# R04 보강: 환경 응답 저장과 임무 판정을 따로 기록 (피드백 2026-09-30)
+#   PENDING(환경 응답 모름) → RESPONDED(응답 저장, 판정 전) → DONE/CLOSED
+# ---------------------------------------------------------------------------
+class Crash(BaseException):
+    """총괄 프로세스 강제 종료"""
+
+
+OBS_POS = {"position": {"lat": 38.05, "lon": 128.25, "alt_m_amsl": 690.0}}
+RETURNING = {"status": "COMPLETED", "progress": {"phase": "RETURNING"}, "observation": OBS_POS}
+LANDED = {"status": "COMPLETED", "progress": {"phase": "DONE"}, "observation": OBS_POS}
+
+
+def _observed_then_unknown(world, nack=False):
+    """관측 뒤 환경이 응답하지 않고, 이어서 실행시도가 불명이 된 상태. 그 뒤 환경이 돌아와 응답을 준다."""
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    calls, recover = _env_down(world)
+    uav.default_script = lambda rid, body: [dict(RETURNING), {**RETURNING, "task_id": "ATT-other"},
+                                            dict(RETURNING), dict(LANDED)]
+    task = submit(orch)
+    out = orch.dispatch(task.task_id)
+    orch.poll()                                                   # 도착·관측, 환경 응답 없음
+    orch.poll()                                                   # 다른 실행의 응답 → 불명, 임무 보류
+    assert lg.get_attempt(out["attempt_id"])["substatus"] == "UNKNOWN"
+    assert lg.get_task(task.task_id).purpose_status == "HOLD"
+    if nack:
+        world["env"].apply = lambda obs: {"accepted": False, "reason": "REJECTED_BY_ENV"}
+    else:
+        recover()
+    assert orch.process_pending_applies() == []                   # 환경 응답은 받아 저장하지만 판정은 미룬다
+    row = lg.pending_applies(task_id=task.task_id)[0]
+    assert row["status"] == "RESPONDED" and row["env_result"] == ("NACK" if nack else "ACK")
+    assert lg.get_task(task.task_id).purpose_status == "HOLD"
+    return task, out, calls
+
+
+def test_ack_received_while_attempt_unknown_is_kept_and_applied_after_recontact(world):
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    task, out, calls = _observed_then_unknown(world)
+    n = len(calls)
+    orch.poll()                                                   # 정상 재접촉 → 저장해 둔 ACK 로 판정
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED"
+    assert len(calls) == n                                        # 환경에 다시 보내지 않았다
+    assert lg.pending_applies(task_id=task.task_id, status="DONE")[0]["reason"] == "TASK_COMPLETED"
+    assert "A-uav1" in lg.reservations()                          # 점유 해제는 READY 확인으로 따로
+    orch.poll()
+    assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED" and len(uav.exec_calls()) == 1
+    assert len(_ev(lg, task.task_id, "TASK_COMPLETE")) == 1 and len(_ev(lg, task.task_id, "OBSERVATION")) == 1
+
+
+def test_nack_received_while_attempt_unknown_reopens_after_recontact(world):
+    orch, lg = world["orch"], world["ledger"]
+    task, out, _ = _observed_then_unknown(world, nack=True)
+    orch.poll()
+    t = lg.get_task(task.task_id)
+    assert t.purpose_status == "PENDING" and t.hold_reason == "ENV_APPLY_NOT_ACKED"
+    row = lg.pending_applies(task_id=task.task_id, status="DONE")[0]
+    assert row["env_result"] == "NACK" and _ev(lg, task.task_id, "TASK_COMPLETE") == []
+
+
+def test_stored_ack_does_not_revive_cancelled_purpose(world):
+    orch, lg = world["orch"], world["ledger"]
+    task, out, calls = _observed_then_unknown(world)
+    assert orch.resolve(task.task_id, "CANCEL", "취소")["status"] == "CANCELLED"
+    row = lg.pending_applies(task_id=task.task_id, status="CLOSED")[0]
+    assert row["reason"] == "TASK_CANCELLED" and row["ack"]["accepted"] is True   # 응답은 보관, 목적은 그대로
+    for _ in range(2):
+        orch.poll()
+    assert lg.get_task(task.task_id).purpose_status == "CANCELLED" and _ev(lg, task.task_id, "TASK_COMPLETE") == []
+    assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"
+
+
+def test_stored_ack_is_not_applied_after_owner_change(world):
+    orch, lg = world["orch"], world["ledger"]
+    task, out, _ = _observed_then_unknown(world)
+    t = lg.get_task(task.task_id)
+    t.owner_attempt_id = "ATT-successor"
+    lg.save_task(t)
+    orch.process_pending_applies()
+    row = lg.pending_applies(task_id=task.task_id, status="CLOSED")[0]
+    assert row["reason"] == "OWNER_CHANGED" and row["env_result"] == "ACK"
+    assert lg.get_task(task.task_id).purpose_status == "HOLD"
+
+
+def test_idle_confirmation_with_open_apply_record_continues_judgement_instead_of_redispatch(world):
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    task, out, _ = _observed_then_unknown(world)
+    r = orch.resolve(task.task_id, "CONFIRM_RESOURCE_IDLE", "관제가 착륙 확인", attempt_id=out["attempt_id"])
+    assert r == {"status": "RELEASED", "purpose_status": "IN_EXECUTION"} and lg.reservations() == {}
+    orch.poll()
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED" and len(uav.exec_calls()) == 1
+
+
+def test_process_stop_after_ack_stored_is_resumed_after_restart_without_resending(world):
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    calls, recover = _env_down(world)
+    task = submit(orch)
+    orch.dispatch(task.task_id)
+    for _ in range(4):
+        orch.poll()
+    recover()
+
+    def crash(*a, **k):
+        raise Crash()
+    orch._conclude = crash                                        # 환경 응답 저장 직후, 임무 판정 전에 종료
+    with pytest.raises(Crash):
+        orch.poll()
+    row = lg.pending_applies(task_id=task.task_id)[0]
+    assert row["status"] == "RESPONDED" and row["env_result"] == "ACK"
+    n = len(calls)
+    orch, lg = _restart(world)
+    assert [u["task"] for u in orch.recover()["applies_resumed"]] == ["COMPLETED"]
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED" and len(calls) == n
+    assert len(_ev(lg, task.task_id, "TASK_COMPLETE")) == 1 and len(uav.exec_calls()) == 1
+
+
+def test_judgement_is_atomic_stop_in_the_middle_leaves_no_half_applied_result(world):
+    orch, lg = world["orch"], world["ledger"]
+    calls, recover = _env_down(world)
+    task = submit(orch)
+    orch.dispatch(task.task_id)
+    for _ in range(4):
+        orch.poll()
+    recover()
+    real = lg.finish_pending_apply
+
+    def crash(*a, **k):
+        raise Crash()
+    lg.finish_pending_apply = crash                               # Task 완료 기록 뒤, 판정 종료 표시 전에 종료
+    with pytest.raises(Crash):
+        orch.poll()
+    lg.finish_pending_apply = real
+    assert lg.get_task(task.task_id).purpose_status == "IN_EXECUTION"           # 완료 기록도 함께 되돌아갔다
+    assert _ev(lg, task.task_id, "TASK_COMPLETE") == []
+    assert lg.pending_applies(task_id=task.task_id)[0]["status"] == "RESPONDED"
+    orch.poll()
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED"
+    assert len(_ev(lg, task.task_id, "TASK_COMPLETE")) == 1
+
+
+def test_area_task_does_not_double_accumulate_across_restart_or_interrupted_judgement(world):
+    from .test_area_completion import M1, M2, _map, _monitor
+    orch, lg = world["orch"], world["ledger"]
+    _map(world, M1, M2)
+    env = world["env"]
+    real_apply = env.apply
+
+    def down(obs):
+        raise ConnectionError("env unreachable")
+    env.apply = down
+    task = _monitor(orch, ["M1", "M2"])
+    orch.dispatch(task.task_id)
+    for _ in range(4):
+        orch.poll()
+    assert lg.get_task(task.task_id).coverage == {}                # 환경 응답 전에는 누적도 판정도 하지 않는다
+    env.apply = real_apply
+    real = lg.finish_pending_apply
+
+    def crash(*a, **k):
+        raise Crash()
+    lg.finish_pending_apply = crash
+    with pytest.raises(Crash):
+        orch.poll()                                               # 누적 기록 중간에 종료
+    lg.finish_pending_apply = real
+    assert lg.get_task(task.task_id).coverage == {} and _ev(lg, task.task_id, "AREA_COVERAGE") == []
+    orch, lg = _restart(world)
+    orch.recover()
+    orch.poll()
+    t = lg.get_task(task.task_id)
+    assert t.coverage["M1"]["fraction"] == 1.0 and len(t.coverage["M1"]["rects"]) == 1
+    assert len(t.coverage["M2"]["rects"]) == 1 and len(_ev(lg, task.task_id, "AREA_COVERAGE")) == 1
+    assert t.purpose_status == "PENDING" and t.hold_reason == "AREA_COVERAGE_INCOMPLETE"
+    assert lg.pending_applies(task_id=task.task_id) == []
+
+
+# ---------------------------------------------------------------------------
+# R03 보강: 관측이 필요한 단계의 필수 위치 (피드백 2026-09-30)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bad", [
+    {"status": "COMPLETED", "progress": {"phase": "RETURNING"}},                                   # observation 없음
+    {"status": "COMPLETED", "progress": {"phase": "RETURNING"}, "observation": {"sensor_type": "THERMAL"}},
+    {"status": "COMPLETED", "progress": {"phase": "RETURNING"}, "observation": {"position": {}}},
+    {"status": "COMPLETED", "progress": {"phase": "RETURNING"},
+     "observation": {"position": {"lat": 38.05, "lon": 128.25}}},                                  # 높이 없음
+    {"status": "COMPLETED", "progress": {"phase": "DONE"},
+     "observation": {"position": {"lat": None, "lon": 128.25, "alt_m_amsl": 690.0}}},
+])
+def test_uav_completion_without_required_position_is_isolated_before_observation(world, bad):
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    uav.default_script = lambda rid, body: [dict(bad), dict(RETURNING), dict(LANDED)]
+    task = submit(orch)
+    out = orch.dispatch(task.task_id)
+    orch.poll()
+    att = lg.get_attempt(out["attempt_id"])
+    assert att["substatus"] == "UNKNOWN" and att["detail"]["unknown_reason"] == "RESPONSE_VALIDATION_FAILED:POSITION_MISSING"
+    assert "A-uav1" in lg.reservations() and lg.get_task(task.task_id).purpose_status == "HOLD"
+    for etype in ("OBSERVATION", "ENVIRONMENT_APPLY", "TASK_COMPLETE", "TASK_REOPENED"):
+        assert _ev(lg, task.task_id, etype) == []
+    assert lg.pending_applies(task_id=task.task_id, status=None) == []
+    orch.dispatch_pending()
+    assert len(uav.exec_calls()) == 1                             # 잘못된 응답 때문에 다시 보내지 않는다
+    orch.poll()
+    orch.poll()
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED"
+    assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"
+
+
+def test_position_is_not_required_for_progress_or_post_observation_reports(world):
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    uav.default_script = lambda rid, body: [
+        {"status": "IN_PROGRESS", "progress": {"phase": "ENROUTE"}},            # 이동 중: 위치 없음
+        dict(RETURNING),
+        {"status": "COMPLETED", "progress": {"phase": "DONE"}}]                  # 관측 저장 뒤 복귀 보고: 위치 없음
+    task = submit(orch)
+    out = orch.dispatch(task.task_id)
+    for _ in range(3):
+        orch.poll()
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED"
+    assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"
+    assert _ev(lg, task.task_id, "PROVIDER_RESPONSE_REJECTED") == []
+
+
+def test_weather_task_requires_lat_lon_but_not_altitude(world):
+    orch, uav, lg = world["orch"], world["uav"], world["ledger"]
+    req = {"resource_types": ["UAV"], "sensor": "WEATHER"}
+    no_alt = {"status": "COMPLETED", "progress": {"phase": "DONE"},
+              "observation": {"position": {"lat": 38.05, "lon": 128.25}}}
+    uav.default_script = lambda rid, body: [{"status": "COMPLETED", "progress": {"phase": "DONE"},
+                                             "observation": {"position": {"lon": 128.25}}}, dict(no_alt)]
+    task = submit(orch, "SENSE-1", kind="ENV_SENSE", requirements=req)
+    out = orch.dispatch(task.task_id)
+    orch.poll()
+    assert lg.get_attempt(out["attempt_id"])["detail"]["unknown_reason"].endswith("POSITION_MISSING")
+    orch.poll()
+    assert lg.get_task(task.task_id).purpose_status == "COMPLETED"

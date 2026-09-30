@@ -129,7 +129,8 @@ CREATE TABLE IF NOT EXISTS pending_applies (
     reason TEXT,
     tries INTEGER NOT NULL,
     created_wall REAL NOT NULL,
-    resolved_wall REAL
+    resolved_wall REAL,
+    ack TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS ix_attempts_task ON attempts(task_id);
@@ -238,6 +239,8 @@ class Ledger:
                 self._conn.executescript(_MIGRATE_V1)
                 legacy = True
         self._conn.executescript(_SCHEMA)
+        if "ack" not in {r["name"] for r in self._conn.execute("PRAGMA table_info(pending_applies)")}:
+            self._conn.execute("ALTER TABLE pending_applies ADD COLUMN ack TEXT")     # 094f965 장부에서 올라온 경우
         if legacy:
             self._conn.execute("INSERT OR IGNORE INTO runs VALUES (?,?,?,?,?)",
                                (LEGACY_RUN, "QUARANTINED", None, time.time(), None))
@@ -407,8 +410,8 @@ class Ledger:
             open_ = self.open_mission_attempts(task_id)
             if open_:
                 raise AttemptConflict(f"{task_id} has open attempt {open_[0]['attempt_id']} ({open_[0]['substatus']})")
-            if trow and c.execute("SELECT 1 FROM pending_applies WHERE task_id=? AND status='PENDING' AND purpose_bound=1",
-                                  (task_id,)).fetchone():
+            if trow and c.execute("SELECT 1 FROM pending_applies WHERE task_id=? AND purpose_bound=1 "
+                                  "AND status IN ('PENDING','RESPONDED')", (task_id,)).fetchone():
                 raise AttemptConflict(f"{task_id} has an observation waiting for environment apply")
             c.execute("INSERT INTO reservations VALUES (?,?,?,?)", (resource_id, task_id, attempt_id, now))
             c.execute("INSERT INTO attempts (attempt_id, task_id, decision_id, resource_id, command, command_hash, "
@@ -436,42 +439,65 @@ class Ledger:
                 and (a["substatus"] in MISSION_OPEN_SUBSTATUSES or not (a["detail"] or {}).get("mission_end"))]
 
     # ------------------------------------------------------------------
-    # 환경 반영 대기 (R04). 기체 반납과 별개로 남는다 — 같은 observation_id 로 멱등 재반영한다.
-    #   PENDING → ACKED / NACKED / CLOSED(사유). 지우지 않는다.
+    # 환경 반영 기록 (R04). 기체 반납과 별개로 남는다. 두 단계를 따로 기록한다:
+    #   PENDING    환경이 받았는지 모름            → 같은 observation_id 로 APPLY 재시도 (멱등)
+    #   RESPONDED  환경 응답(ACK/NACK)을 저장했지만 임무 판정은 아직 → 저장한 응답으로 판정 재개 (환경에 다시 보내지 않음)
+    #   DONE       임무 판정까지 끝남 / CLOSED 판정 없이 종료 (취소·담당 변경·run 종료 등, reason 에 사유)
+    # 지우지 않는다. OPEN = PENDING + RESPONDED.
     # ------------------------------------------------------------------
+    OPEN_APPLY = ("PENDING", "RESPONDED")
+
     def add_pending_apply(self, observation: dict, run_id: str, task_id: str, attempt_id: str,
                           purpose_bound: bool) -> bool:
         with self._tx() as c:
-            cur = c.execute("INSERT OR IGNORE INTO pending_applies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            cur = c.execute("INSERT OR IGNORE INTO pending_applies (observation_id, run_id, task_id, attempt_id, "
+                            "body, purpose_bound, status, reason, tries, created_wall, resolved_wall, ack) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             (observation["observation_id"], run_id, task_id, attempt_id, _dumps(observation),
-                             1 if purpose_bound else 0, "PENDING", None, 1, time.time(), None))
+                             1 if purpose_bound else 0, "PENDING", None, 0, time.time(), None, None))
             return cur.rowcount == 1
 
-    def pending_applies(self, task_id: Optional[str] = None, run_id=ALL_RUNS, status: Optional[str] = "PENDING") -> List[dict]:
+    def pending_applies(self, task_id: Optional[str] = None, run_id=ALL_RUNS, status: Optional[str] = "OPEN") -> List[dict]:
+        """status: "OPEN"(기본, 아직 끝나지 않은 것) / 특정 상태 / None(전부)"""
         where, args = self._scope(run_id)
         q = f"SELECT * FROM pending_applies WHERE {where}"
-        if status:
+        if status == "OPEN":
+            q += " AND status IN ('PENDING','RESPONDED')"
+        elif status:
             q, args = q + " AND status=?", args + [status]
         if task_id:
             q, args = q + " AND task_id=?", args + [task_id]
-        return [{"observation_id": r["observation_id"], "run_id": r["run_id"], "task_id": r["task_id"],
-                 "attempt_id": r["attempt_id"], "observation": _loads(r["body"]),
-                 "purpose_bound": bool(r["purpose_bound"]), "status": r["status"], "reason": r["reason"],
-                 "tries": r["tries"]} for r in self._conn.execute(q + " ORDER BY created_wall, rowid", args)]
+        out = []
+        for r in self._conn.execute(q + " ORDER BY created_wall, rowid", args):
+            ack = _loads(r["ack"])
+            out.append({"observation_id": r["observation_id"], "run_id": r["run_id"], "task_id": r["task_id"],
+                        "attempt_id": r["attempt_id"], "observation": _loads(r["body"]),
+                        "purpose_bound": bool(r["purpose_bound"]), "status": r["status"], "reason": r["reason"],
+                        "tries": r["tries"], "ack": ack,
+                        "env_result": None if ack is None else ("ACK" if ack.get("accepted") else "NACK")})
+        return out
 
     def note_pending_apply_try(self, observation_id: str):
         with self._tx() as c:
             c.execute("UPDATE pending_applies SET tries=tries+1 WHERE observation_id=?", (observation_id,))
 
-    def resolve_pending_apply(self, observation_id: str, status: str, reason: Optional[str] = None):
+    def store_apply_response(self, observation_id: str, ack: dict):
+        """환경 응답을 저장한다 (PENDING → RESPONDED). 임무 판정은 별도 단계다."""
+        with self._tx() as c:
+            c.execute("UPDATE pending_applies SET status='RESPONDED', ack=?, tries=tries+1 "
+                      "WHERE observation_id=? AND status='PENDING'", (_dumps(ack), observation_id))
+
+    def finish_pending_apply(self, observation_id: str, status: str, reason: Optional[str] = None):
+        """끝난 상태(DONE/CLOSED)로 표시. 저장한 환경 응답은 그대로 남는다."""
         with self._tx() as c:
             c.execute("UPDATE pending_applies SET status=?, reason=?, resolved_wall=? "
-                      "WHERE observation_id=? AND status='PENDING'", (status, reason, time.time(), observation_id))
+                      "WHERE observation_id=? AND status IN ('PENDING','RESPONDED')",
+                      (status, reason, time.time(), observation_id))
 
     def close_pending_applies_of_other_runs(self, run_id: str, reason: str) -> int:
         with self._tx() as c:
             cur = c.execute("UPDATE pending_applies SET status='CLOSED', reason=?, resolved_wall=? "
-                            "WHERE status='PENDING' AND run_id<>?", (reason, time.time(), run_id))
+                            "WHERE status IN ('PENDING','RESPONDED') AND run_id<>?", (reason, time.time(), run_id))
             return cur.rowcount
 
     def get_attempt(self, attempt_id: str) -> Optional[dict]:
