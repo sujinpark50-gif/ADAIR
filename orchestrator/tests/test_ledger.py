@@ -11,6 +11,7 @@ def _task(tid, key):
 
 def test_same_request_key_converges_to_one_task(tmp_path):
     lg = Ledger(str(tmp_path / "s.db"))
+    lg.activate_run("RUN-1")
     t1, c1 = lg.create_task(_task("T1", "K"), {"a": 1})
     t2, c2 = lg.create_task(_task("T2", "K"), {"a": 1})
     assert c1 and not c2 and t2.task_id == "T1"
@@ -33,11 +34,13 @@ def test_reservation_is_exclusive_and_unknown_cannot_release(tmp_path):
 def test_state_survives_restart(tmp_path):
     p = str(tmp_path / "s.db")
     lg = Ledger(p)
+    lg.activate_run("RUN-1")
     lg.create_task(_task("T1", "K"), {"a": 1})
     lg.prepare_attempt("ATT-1", "T1", "D1", "A-uav1", {"x": 1})
     lg.set_attempt_status("ATT-1", "UNKNOWN")
     lg.close()
     lg2 = Ledger(p)
+    assert lg2.active_run() == "RUN-1"                       # 활성 run 도 재시작 후 유지
     assert lg2.get_task("T1") is not None
     assert lg2.reservations()["A-uav1"]["attempt_id"] == "ATT-1"
     assert lg2.get_attempt("ATT-1")["substatus"] == "UNKNOWN"

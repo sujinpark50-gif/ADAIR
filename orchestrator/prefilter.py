@@ -38,10 +38,11 @@ def valid_number(v) -> bool:
 def task_input_problems(task: Task, snapshot: Snapshot, resource_type: str) -> List[str]:
     """이 자원 종류로 Task 를 평가하는 데 빠진 입력. 비어 있으면 평가 가능."""
     problems = []
-    if not valid_latlon(task.target.lat, task.target.lon):
+    nav = task.nav_target
+    if not valid_latlon(nav.lat, nav.lon):
         problems.append("TARGET_COORD_INVALID")
     if resource_type == "UAV":
-        if not valid_number(task.target.ground_amsl_m):
+        if not valid_number(nav.ground_amsl_m):
             problems.append("TARGET_ALTITUDE_UNKNOWN")
         w = wind_status(snapshot)
         if w:
@@ -105,6 +106,6 @@ def filter_candidates(
         if input_problems[v.resource_type]:
             out[rid] = "INPUT_MISSING:" + ",".join(input_problems[v.resource_type])
             continue
-        ranked.append((haversine_m(v.lat, v.lon, task.target.lat, task.target.lon), v))
+        ranked.append((haversine_m(v.lat, v.lon, task.nav_target.lat, task.nav_target.lon), v))
     ranked.sort(key=lambda x: (x[0], x[1].resource_id))
     return ranked, out

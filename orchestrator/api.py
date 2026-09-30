@@ -12,12 +12,17 @@ orchestrator/api.py
 주의
 - 접수(202)는 출동 성공이 아니다. 출동 여부는 dispatch 결과·Task 상태로 확인한다.
 - 같은 request_id 재전송은 같은 Task 로 수렴한다. 내용이 다르면 409.
+- /events: 잘못된 요청(422)은 event_id 를 쓰지 않는다 — 고쳐서 같은 event_id 로 다시 보낼 수 있다.
+  같은 event_id·같은 내용 재전송은 200(duplicate), 같은 event_id·다른 내용은 409(EVENT_ID_CONFLICT).
+- 잠금: 판단·추적은 한 번에 하나씩(lock). 긴 LLM 호출만 잠금 밖에서 하고(llm_gate 로 LLM 끼리만 직렬화),
+  결과는 배정 직전에 지금 입력(run·환경 버전·묶음·근거)과 같을 때만 쓴다. 기체 평가·출동 HTTP 는 잠금 안이다.
 - 환경은 팀 READ 계약 전까지 fixture 다 (/health 의 env.contract_complete 로 표시).
 """
 
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -26,9 +31,9 @@ from pydantic import BaseModel, Field
 
 from . import config
 from .board import BOARD_HTML
-from .engine import Orchestrator
+from .engine import Orchestrator, TaskRejected
 from .env_adapter import FixtureEnv
-from .ledger import Ledger, RequestConflict
+from .ledger import ACTIVE, Ledger, RequestConflict, RunNotActive
 from .knowledge import InjectedAnalysis, KmaAsosReplay
 from .llm import LlmPlanner
 from .resources import UavClient, UgvClient
@@ -46,7 +51,9 @@ class RequirementsIn(BaseModel):
     sensor: Optional[str] = "THERMAL"
     target_agl_m: Optional[float] = None
     agl_range_m: Optional[List[float]] = None
-    needs_env_ack: bool = True
+    needs_env_ack: Optional[bool] = Field(
+        None, description="완료에 환경 반영 ACK 가 필요한지. 비우면 관측 종류로 정한다 (열화상·기상 = 필요, "
+                          "도로 상황·관측 없음 = 불필요). 반영 계약이 없는 관측에 true 를 주면 422")
     extra_sensors: List[str] = Field(default_factory=list, description="같은 방문에서 함께 할 측정 (예: WEATHER)")
 
 
@@ -56,14 +63,20 @@ class TaskIn(BaseModel):
     kind: str = "RECON"
     target: TargetIn
     requirements: RequirementsIn = RequirementsIn()
-    area_cell_ids: List[str] = Field(default_factory=list, description="임무가 다루는 환경 셀 목록")
+    area_cell_ids: List[str] = Field(default_factory=list,
+                                     description="임무와 관련된 환경 셀 (우선순위 근거용). 완료 요구 범위가 아니다")
+    required_cell_ids: List[str] = Field(
+        default_factory=list, description="구역 임무(MONITOR)가 완료되려면 전체를 관측해야 하는 셀. "
+                                          "비우면 area_cell_ids → 목표 칸. 정찰(RECON)에는 줄 수 없다")
+    run_id: Optional[str] = Field(None, description="이 요청이 속한 실행(run). 주면 활성 run 과 같아야 한다 (다르면 409)")
     dispatch: bool = Field(True, description="접수 직후 배정까지 시도")
 
 
 class ResolveIn(BaseModel):
-    action: str = Field(..., description="RETRY / CANCEL / CONFIRM_RESOURCE_IDLE")
+    action: str = Field(..., description="RETRY / CANCEL / CONFIRM_RESOURCE_IDLE / RECHECK")
     reason: str
     attempt_id: Optional[str] = None
+    request_id: Optional[str] = Field(None, description="RECHECK 멱등 키 (같은 값 재전송은 같은 재관측 Task)")
 
 
 class ModeIn(BaseModel):
@@ -85,6 +98,7 @@ class EventIn(BaseModel):
     type: str = Field(..., description="ENV_UPDATED / RESOURCE_CHANGED / ...")
     simulation_time_s: Optional[float] = None
     payload: dict = {}
+    run_id: Optional[str] = Field(None, description="이벤트가 속한 실행(run). 주면 활성 run 과 같아야 한다 (다르면 409)")
 
 
 def _one_observation(obs: dict, ack: Optional[dict]) -> dict:
@@ -92,7 +106,9 @@ def _one_observation(obs: dict, ack: Optional[dict]) -> dict:
     fp = d.get("footprint") or {}
     return {"result": obs["result"], "source": d.get("source"), "sensor_status": d.get("sensor_status"),
             "sensor_type": d.get("sensor_type"), "failure_reason": d.get("failure_reason"),
-            "covered_cells": d.get("covered_cells"), "detections": d.get("detections"),
+            "covered_cells": d.get("covered_cells"), "partial_cells": d.get("partial_cells"),
+            "cell_coverage": d.get("cell_coverage"), "detections": d.get("detections"),
+            "received_after_purpose": d.get("received_after_purpose"),
             "target_covered": d.get("target_covered"), "resource_id": obs["resource_id"],
             "footprint": {k: fp.get(k) for k in ("width_m", "height_m", "agl_m")} if fp else None,
             "simulation_time_s": d.get("simulation_time_s"), "observed_wall": d.get("observed_wall"),
@@ -135,6 +151,10 @@ def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
 def _task_view(orch: Orchestrator, task) -> dict:
     d = task.to_dict()
     d["attempts"] = orch.ledger.list_attempts(task.task_id)
+    if task.required_cell_ids:
+        p = orch.area_progress(task)
+        d["area_progress"] = {k: p[k] for k in ("required", "fraction", "remaining", "geometry_missing",
+                                                "unvisited", "visited", "complete")}
     d["observation"] = observation_summary(orch, task.task_id)
     return d
 
@@ -143,7 +163,20 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     app = FastAPI(title="ADAIR Orchestrator", version=config.SCHEMA_VERSION,
                   description="총괄 오케스트레이터 — 규칙 판단 + Local/Safety 검증")
     lock = threading.Lock()          # 판단·추적은 한 번에 하나씩 (장부 순서 보장)
+    llm_gate = threading.Lock()      # LLM 호출끼리만 직렬화. 추적·취소·접수는 이 잠금을 기다리지 않는다
     stop = threading.Event()
+
+    def dispatch_all() -> dict:
+        """대기 임무 배정. 긴 LLM 호출은 lock 밖에서 하고, 결과는 배정 직전의 입력과 같을 때만 쓴다."""
+        with llm_gate:
+            with lock:
+                req = orch.llm_request()
+            if req:
+                prop = orch.llm_call(req)            # lock 밖 — 이 동안 poll·resolve·접수가 진행된다
+                with lock:
+                    orch.llm_store(req, prop)
+        with lock:
+            return orch.dispatch_pending(allow_llm_call=False)
 
     @app.on_event("startup")
     def _recover_on_start():
@@ -156,8 +189,10 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             while not stop.wait(poll_interval_s):
                 try:
                     with lock:
-                        if orch.poll() and config.AUTO_DISPATCH_ON_CHANGE:
-                            orch.dispatch_pending()       # 진행 상황이 바뀌면(반납·재대기 등) 대기 임무 배정
+                        changed = bool(orch.poll())
+                        created = bool(orch.sync()["created"])     # 그 시각까지의 신고 → 최초 정찰 임무
+                    if (changed or created) and config.AUTO_DISPATCH_ON_CHANGE:
+                        dispatch_all()                # 진행 상황이 바뀌면(반납·재대기·새 신고 등) 대기 임무 배정
                 except Exception as e:  # noqa: BLE001 — 추적 루프는 멈추지 않는다
                     orch.ledger.log("POLL_ERROR", reason=type(e).__name__, detail={"error": str(e)})
 
@@ -178,6 +213,9 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                               "shared_team_env": env_source not in ("FIXTURE", "UNKNOWN"),
                               "note": "시험용 가짜 환경. 팀 공유 환경(ENV-01) 연결 아님" if env_source == "FIXTURE" else None},
                 "env": snap.ref(),
+                "run": {"active": orch.ledger.active_run(), "policy": "SINGLE_ACTIVE_RUN", "gate": snap.run_gate,
+                        "legacy_rows_quarantined": orch.ledger.migrated_from_legacy},
+                "weather_policy": orch.weather_policy(),
                 "view": {"source": snap.source, "analysis_source": snap.analysis_source,
                          "scenario_start_kst": snap.scenario_start_kst,
                          "weather_feeds": [getattr(f, "source", type(f).__name__) for f in orch.weather_feeds]},
@@ -200,14 +238,20 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 task, created = orch.submit_task(data)
             except RequestConflict:
                 raise HTTPException(409, "같은 request_id 에 다른 내용이 들어왔습니다")
-            result = None
-            if do_dispatch and created:
-                if config.AUTO_DISPATCH_ON_CHANGE:
-                    # 다른 대기 임무와 함께 우선순위 순서로 배정
-                    result = orch.dispatch_pending()["results"].get(task.task_id)
-                else:
+            except TaskRejected as e:
+                raise HTTPException(422, {"accepted": False, "reason": str(e)})
+            except RunNotActive as e:
+                raise HTTPException(409, {"accepted": False, "reason": f"RUN_NOT_ACTIVE:{e}",
+                                          "active_run": orch.ledger.active_run()})
+        result = None
+        if do_dispatch and created:
+            if config.AUTO_DISPATCH_ON_CHANGE:
+                # 다른 대기 임무와 함께 우선순위 순서로 배정
+                result = dispatch_all()["results"].get(task.task_id)
+            else:
+                with lock:
                     result = orch.dispatch(task.task_id)
-            task = orch.ledger.get_task(task.task_id)
+        task = orch.ledger.get_task(task.task_id)
         return {"accepted": True, "created": created, "task": _task_view(orch, task), "dispatch": result}
 
     @app.get("/tasks")
@@ -243,7 +287,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     @app.post("/tasks/{task_id}/resolve")
     def resolve(task_id: str, body: ResolveIn):
         with lock:
-            return orch.resolve(task_id, body.action, body.reason, body.attempt_id)
+            return orch.resolve(task_id, body.action, body.reason, body.attempt_id, body.request_id)
 
     @app.get("/attempts/{attempt_id}")
     def attempt(attempt_id: str):
@@ -255,7 +299,9 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     @app.get("/state")
     def state():
         tasks = orch.ledger.list_tasks()
-        return {"env": orch.view().ref(),
+        snap = orch.view()
+        return {"env": snap.ref(),
+                "run": {"active": orch.ledger.active_run(), "gate": snap.run_gate},
                 "tasks": {s: [t.task_id for t in tasks if t.purpose_status == s]
                           for s in sorted({t.purpose_status for t in tasks})},
                 "holds": [{"task_id": t.task_id, "reason": t.hold_reason, "resume_condition": t.resume_condition}
@@ -266,13 +312,13 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
 
     @app.post("/dispatch_pending")
     def dispatch_pending():
-        with lock:
-            return orch.dispatch_pending()
+        return dispatch_all()
 
     @app.get("/priority/board")
     def priority_board():
         """관제 화면용: 최근 우선순위 판단의 선택 묶음과 각 Task 의 현재 상태·근거"""
-        last = next((e for e in reversed(orch.ledger.events()) if e["event_type"] == "PRIORITY_ORDER"), None)
+        last = next((e for e in reversed(orch.ledger.events(run_id=ACTIVE))
+                     if e["event_type"] == "PRIORITY_ORDER"), None)
         detail = (last or {}).get("detail") or {}
         evidence = detail.get("evidence", {})
 
@@ -302,8 +348,13 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
         llm_state = orch.llm.status() if orch.llm else "NOT_CONNECTED"
         snap = orch.view()
         now = snap.simulation_time_s or 0.0
+        field = orch.kb.field_weather(now) if not snap.run_gate else {"valid": [], "excluded": []}
+        # 기상은 분석 입력(belief)과 같은 함수로 만든다 — 화면 값과 판단 근거가 어긋나지 않는다
         known = {"fires": [{"cell_id": c, **v} for c, v in sorted(orch.kb.fire_states(now).items())],
-                 "stations": orch.kb.latest_station_obs(now), "scenario_start_kst": snap.scenario_start_kst,
+                 "stations": orch.kb.latest_station_obs(now), "field_weather": field["valid"],
+                 "field_weather_excluded": field["excluded"], "weather_policy": orch.weather_policy(),
+                 "scenario_start_kst": snap.scenario_start_kst, "run_id": orch.ledger.active_run(),
+                 "run_gate": snap.run_gate,
                  "simulation_time_s": now, "analysis_source": snap.analysis_source}
         premon_tasks = {t.request_key: t.task_id for t in orch.ledger.list_tasks()
                         if (t.request_key or "").startswith("AUTO-PREMON:")}
@@ -340,30 +391,23 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
 
     @app.post("/events", status_code=202)
     def ingest_event(body: EventIn):
+        # 검증 → 접수키 확정 → 반영(신고면 '신고됨' 기록 + 최초 정찰 Task)까지가 접수. 배정은 그 뒤에 따로 한다.
         with lock:
-            first = orch.ledger.record_external_event(body.event_id, body.model_dump())
-            if not first:
-                return JSONResponse({"accepted": True, "duplicate": True}, status_code=200)
-            redispatched = []
-            if body.type == "FIRE_REPORT":
-                # 신고: 총괄이 아는 세계에 '신고됨'으로 추가 (확인 전). payload {cell_id, source?}
-                cid = body.payload.get("cell_id")
-                if not cid:
-                    return JSONResponse({"accepted": False, "reason": "CELL_ID_MISSING"}, status_code=422)
-                now = orch.env.read().simulation_time_s or 0.0
-                orch.kb.report_fire(cid, body.simulation_time_s if body.simulation_time_s is not None else now,
-                                    body.payload.get("source", "EXTERNAL_REPORT"), key=f"EVENT:{body.event_id}",
-                                    detail={"note": body.payload.get("note")})
-            if body.type in ("ENV_UPDATED", "RESOURCE_CHANGED", "FIRE_REPORT") and config.AUTO_DISPATCH_ON_CHANGE:
-                out = orch.dispatch_pending()
-                redispatched = [{"task_id": k, **v} for k, v in out["results"].items()]
-            elif body.type in ("ENV_UPDATED", "RESOURCE_CHANGED", "FIRE_REPORT"):
-                # 새 입력·자원 변화가 재개 조건인 보류 Task 만 다시 평가한다
-                for t in orch.ledger.list_tasks(["HOLD", "PENDING"]):
-                    if t.purpose_status == "PENDING" or t.resume_condition in (
-                            "NEW_RESOURCE_OR_INPUT", "ENV_SNAPSHOT_COMPLETE"):
-                        redispatched.append({"task_id": t.task_id, **orch.dispatch(t.task_id)})
-            return {"accepted": True, "duplicate": False, "redispatched": redispatched}
+            code, out = orch.ingest_event(body.model_dump())
+        if code != 202:
+            return JSONResponse(out, status_code=code)
+        redispatched = []
+        if out.pop("needs_dispatch"):
+            if config.AUTO_DISPATCH_ON_CHANGE:
+                redispatched = [{"task_id": k, **v} for k, v in dispatch_all()["results"].items()]
+            else:
+                with lock:
+                    # 새 입력·자원 변화가 재개 조건인 보류 Task 만 다시 평가한다
+                    for t in orch.ledger.list_tasks(["HOLD", "PENDING"]):
+                        if t.purpose_status == "PENDING" or t.resume_condition in (
+                                "NEW_RESOURCE_OR_INPUT", "ENV_SNAPSHOT_COMPLETE", "MAP_INFO", "RUN_ACTIVE"):
+                            redispatched.append({"task_id": t.task_id, **orch.dispatch(t.task_id)})
+        return {**out, "redispatched": redispatched}
 
     return app
 
@@ -376,9 +420,13 @@ def build_default() -> Orchestrator:
             data = json.load(f)
         # 분석 시험 주입값은 진짜 세계(환경)와 분리해서 읽는다
         injected = data.pop("injected_analysis", {}) or {}
-        env = FixtureEnv(**data)
     else:
-        env = FixtureEnv()
+        data = {}
+    # 가짜 환경은 서버를 켤 때마다 0초·버전 1부터 다시 시작한다 → 같은 run_id 를 다시 쓰면 이전 실행의
+    # 신고·관측·임무가 섞인다. ORCH_RUN_ID 를 주지 않으면 켤 때마다 새 run_id 를 만든다 (B05).
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    data["run_id"] = config.FIXTURE_RUN_ID or f"{data.get('run_id', 'RUN-FIXTURE')}-{stamp}"
+    env = FixtureEnv(**data)
     feeds = []
     if config.KMA_ASOS_CSV.is_file() and config.KMA_ASOS_STATIONS.is_file():
         feeds.append(KmaAsosReplay(config.KMA_ASOS_CSV, config.KMA_ASOS_STATIONS))

@@ -52,6 +52,9 @@ POLL_INTERVAL_S = float(os.getenv("ORCH_POLL_INTERVAL_S", "1"))
 # 장부 (SQLite). logs/ 는 .gitignore 대상
 # ---------------------------------------------------------------------------
 DB_PATH = os.getenv("ORCH_DB_PATH", str(ROOT / "logs" / "orchestrator" / "state.sqlite3"))
+# 시험용 가짜 환경(FixtureEnv)의 run_id. 비워 두면 서버를 켤 때마다 새 run_id 를 만든다 —
+# 가짜 환경은 켤 때마다 0초부터 다시 시작하므로 이전 실행의 신고·관측·임무를 이어받으면 안 된다 (B05).
+FIXTURE_RUN_ID = os.getenv("ORCH_RUN_ID") or None
 
 # ---------------------------------------------------------------------------
 # 외부 자원 주소 — 통합 config 를 그대로 따른다 (단일 출처)
@@ -128,6 +131,60 @@ WEATHER_SENSOR_PROFILE = {
 AUTO_ENV_SENSE_ENABLED = True
 # Local 에 보낼 observation_type. 기상 센서는 Local 에 없어 이동 가능성만 평가받는다 (값 None = 보내지 않음)
 LOCAL_OBSERVATION_TYPE = {"THERMAL": "THERMAL", "RGB": "RGB", "WEATHER": None}
+
+# ---------------------------------------------------------------------------
+# 기상 항목별 최신성 (사용자 결정 2026-09-30 D02)
+# - 항목마다 값·단위·출처·관측시각·유효성을 따로 본다. 유효한 현장 측정 우선, 만료되면 관측소 값으로 바꾸고
+#   재측정을 요청한다. 쓸 값이 없으면 UNKNOWN (임의 값으로 채우지 않음).
+# - 관측소 유효시간: 그 자료의 제공 간격 (기상청 ASOS 시간자료 = 3600초, knowledge.KmaAsosReplay).
+# - 현장 측정 유효시간: 근거가 되는 자료 계약이 아직 없다 → 기본값을 두지 않는다 (TBD).
+#   미설정이면 현장 측정은 POLICY_NOT_SET 으로 표시되고 판단에 쓰이지 않는다 (관측소 값 사용).
+#   ORCH_FIELD_WEATHER_MAX_AGE_S = "600"  (모든 항목, 시뮬레이션 초)  또는
+#                                  '{"wind_ms": 600, "wind_dir_deg": 600}'  (항목별 JSON)
+# ---------------------------------------------------------------------------
+WEATHER_ITEMS = {
+    "wind_ms": {"unit": "m/s", "min": 0.0, "max": None},
+    "wind_dir_deg": {"unit": "deg (불어오는 방향, 북 기준 시계방향)", "min": 0.0, "max": 360.0},
+    "temperature_c": {"unit": "degC", "min": None, "max": None},
+    "humidity_pct": {"unit": "%", "min": 0.0, "max": 100.0},
+}
+
+
+def parse_field_weather_max_age(raw) -> dict:
+    """환경변수 값 → {항목: 유효시간(초) 또는 None}. 비어 있으면 모든 항목 None(정책 미설정)."""
+    out = {k: None for k in WEATHER_ITEMS}
+    raw = (raw or "").strip()
+    if not raw:
+        return out
+    if raw.startswith("{"):
+        import json
+        given = json.loads(raw)
+        unknown = set(given) - set(out)
+        if unknown:
+            raise ValueError(f"ORCH_FIELD_WEATHER_MAX_AGE_S: 알 수 없는 항목 {sorted(unknown)}")
+        out.update({k: (None if v is None else float(v)) for k, v in given.items()})
+    else:
+        out = {k: float(raw) for k in out}
+    if any(v is not None and v < 0 for v in out.values()):
+        raise ValueError("ORCH_FIELD_WEATHER_MAX_AGE_S: 음수는 쓸 수 없다")
+    return out
+
+
+FIELD_WEATHER_MAX_AGE_S = parse_field_weather_max_age(os.getenv("ORCH_FIELD_WEATHER_MAX_AGE_S"))
+# 현장 측정이 만료되면 같은 칸의 재측정을 요청한다 (모의 측정 계약 사용, 같은 만료 측정에 대해 한 번)
+WEATHER_REMEASURE_ENABLED = True
+
+# ---------------------------------------------------------------------------
+# 환경 반영(APPLY) ACK 가 계약으로 있는 관측 종류 (B07). 열화상·기상만 있다 (ENV-05).
+# 그 밖의 관측(도로 상황 등)에 needs_env_ack=True 를 요구하면 접수에서 거절한다.
+# ---------------------------------------------------------------------------
+ENV_ACK_SUPPORTED_SENSORS = ("THERMAL", "WEATHER")
+
+# ---------------------------------------------------------------------------
+# 신고 접수 시 최초 정찰 자동 생성 (사용자 결정 2026-09-30 D01)
+# ---------------------------------------------------------------------------
+AUTO_RECON_ON_REPORT = True
+AUTO_RECON_REQUIREMENTS = {"resource_types": ["UAV"], "sensor": "THERMAL", "needs_env_ack": True}
 
 # ---------------------------------------------------------------------------
 # 확산 예측 활용 (사용자 결정 2026-09-30)

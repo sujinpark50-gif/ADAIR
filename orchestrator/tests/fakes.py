@@ -78,7 +78,7 @@ class FakeUav:
             if not seq:
                 return httpx.Response(404, json={"detail": "not found"})
             cur = seq.pop(0) if len(seq) > 1 else seq[0]
-            if (cur.get("progress") or {}).get("phase") == "DONE":
+            if isinstance(cur.get("progress"), dict) and cur["progress"].get("phase") == "DONE":
                 self.state[rid]["current_task_id"] = None
             return httpx.Response(200, json={"task_id": tid, "observation": None, "progress": None, **cur})
         return httpx.Response(404)

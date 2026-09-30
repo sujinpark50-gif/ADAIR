@@ -69,6 +69,17 @@ def test_observed_clear_removes_reported_fire(tmp_path):
     for _ in range(4):
         orch.poll()
     assert orch.view().fire_cells == []
+    # 90m 칸을 54×45m 프레임으로 봤다 → 본 범위에는 불이 없지만 칸 전체를 본 것은 아니다 (D03)
+    f = orch.kb.fire_states(1e9)["F1"]
+    assert f["status"] == "NOT_DETECTED_PARTIAL" and abs(f["coverage_fraction"] - 54 * 45 / 8100) < 1e-6
+
+
+def test_full_cell_view_without_fire_is_observed_clear(tmp_path):
+    orch, env, uav, lg = _world(tmp_path, reports=[{"cell_id": "F1", "sim_time_s": 0.0, "source": "119_CALL"}])
+    env.fire_cells[0].update(fire_state="UNBURNED", cell_size_m=40.0)   # 프레임(54×45m) 안에 칸 전체가 들어옴
+    orch.dispatch(_recon(orch).task_id)
+    for _ in range(4):
+        orch.poll()
     assert orch.kb.fire_states(1e9)["F1"]["status"] == "OBSERVED_CLEAR"
 
 
@@ -95,7 +106,8 @@ def test_uav_gets_observed_wind_not_true_wind(tmp_path):
     assert ev["wind_ref"]["source"] == "KMA_ASOS_HOURLY"
 
 
-def test_field_measurement_overrides_station_for_that_cell(tmp_path):
+def test_field_measurement_overrides_station_for_that_cell(tmp_path, field_policy):
+    field_policy(600.0)                                                # 시험 전용 유효시간 (운영값 아님)
     orch, env, uav, lg = _world(tmp_path)
     t = submit(orch, "S1", kind="ENV_SENSE",
                target={"lat": FIRE["lat"], "lon": FIRE["lon"], "ground_amsl_m": 500.0, "cell_id": "F1"},
@@ -120,5 +132,9 @@ def test_fire_report_event_api(tmp_path):
     b = c.get("/priority/board").json()
     assert b["known"]["fires"][0]["status"] == "REPORTED" and b["known"]["fires"][0]["source"] == "119_CALL"
     assert {s["station_id"] for s in b["known"]["stations"]} == {"90", "100", "211", "212"}
-    assert c.post("/events", json={"event_id": "EV-CALL-1", "type": "FIRE_REPORT",
-                                   "payload": {"cell_id": "F1"}}).json()["duplicate"] is True
+    same = c.post("/events", json={"event_id": "EV-CALL-1", "type": "FIRE_REPORT",
+                                   "payload": {"cell_id": "F1", "source": "119_CALL", "note": "남전리 주민 신고"}})
+    assert same.status_code == 200 and same.json()["duplicate"] is True
+    # 같은 event_id 에 다른 내용 → 중복 성공으로 숨기지 않고 충돌 (B04)
+    other = c.post("/events", json={"event_id": "EV-CALL-1", "type": "FIRE_REPORT", "payload": {"cell_id": "F1"}})
+    assert other.status_code == 409 and other.json()["reason"] == "EVENT_ID_CONFLICT"

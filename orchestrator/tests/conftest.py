@@ -28,6 +28,20 @@ def fire_env(**kw):
 
 
 @pytest.fixture
+def field_policy(monkeypatch):
+    """현장 측정 유효시간을 시험 안에서만 설정한다 (TEST_ONLY — 운영 기본값은 미설정).
+    field_policy(600) 은 모든 항목 600초, field_policy(wind_ms=600) 은 그 항목만."""
+    from orchestrator import config
+
+    def set_policy(all_items=None, **per_item):
+        policy = {k: all_items for k in config.WEATHER_ITEMS}
+        policy.update(per_item)
+        monkeypatch.setattr(config, "FIELD_WEATHER_MAX_AGE_S", policy)
+        return policy
+    return set_policy
+
+
+@pytest.fixture
 def world(tmp_path):
     uav = FakeUav()
     uav.default_script = normal_flight()

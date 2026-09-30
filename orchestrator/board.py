@@ -55,7 +55,10 @@ const STATUS_LABEL={AWAITING_CHOICE:["선택 대기","wait"],PARTIAL_AWAITING_CH
 const PURPOSE={PENDING:"대기",HOLD:"보류",EVALUATING:"판단 중",APPROVED:"출동 승인",IN_EXECUTION:"출동 중",COMPLETED:"완료",FAILED:"실패",CANCELLED:"취소"};
 const HOLD={AWAITING_PRIORITY_CHOICE:"사람 선택 대기",NO_FEASIBLE_CANDIDATE:"보낼 자원 없음",HUMAN_PRIORITY_CHOSEN:"사람이 선택함",
  EXECUTION_RESPONSE_LOST:"출동 응답 끊김",PROVIDER_LOST_TASK:"기체가 임무 기록 잃음",PROVIDER_OFFLINE:"기체 연락 두절",
- OBSERVATION_REQUIREMENT_NOT_MET:"관측 범위 부족 · 재관측 필요",ENV_APPLY_NOT_ACKED:"환경 반영 미확인",ARRIVED_OBSERVATION_PENDING:"도착 · 관측 대기"};
+ OBSERVATION_REQUIREMENT_NOT_MET:"관측 범위 부족 · 재관측 필요",ENV_APPLY_NOT_ACKED:"환경 반영 미확인",ARRIVED_OBSERVATION_PENDING:"도착 · 관측 대기",
+ TARGET_LOCATION_UNKNOWN:"지도에 위치 없음 · 출동 보류",AREA_COVERAGE_INCOMPLETE:"구역 일부만 관측 · 남은 칸 대기",AREA_EVIDENCE_UNSUPPORTED:"구역 전체 관측 불가 (드론 구역 관측 계약 대기)",
+ ENV_APPLY_TIMEOUT:"환경 반영 응답 없음",ENV_ACK_UNSUPPORTED_FOR_SENSOR:"환경 반영 확인을 지원하지 않는 관측",RESPONSE_VALIDATION_FAILED:"기체 응답 검증 실패",
+ RUN_GATE:"실행(run) 전환 대기",RUN_ENDED_BEFORE_OBSERVATION:"실행(run)이 끝나 관측 없음",OPEN_ATTEMPT_EXISTS:"진행 중인 출동 있음",MANUAL_IDLE_CONFIRMED:"기체 정지 확인됨"};
 const TASK_KIND={ENV_SENSE:"환경 측정",RECON:"정찰",MONITOR:"감시",RECHECK:"재확인",GROUND_RECON:"지상 확인",GROUND_SUPPORT:"지상 지원"};
 const SITE_TYPE={VILLAGE:"마을",FACILITY:"시설",HOUSE:"주택",SCHOOL:"학교",HOSPITAL:"병원",REST_AREA:"휴게소"};
 const RES_TYPE={uav:"드론",ugv:"무인차량",fire:"소방차"};
@@ -76,7 +79,9 @@ function obsDetail0(o){if(o.sensor_type==="WEATHER"){const v=o.values||{};
  const ack=o.env_apply?(o.env_apply.result==="ACK"?`확인됨 (환경 버전 ${o.env_apply.state_version})`:(o.env_apply.result==="SKIPPED"?"필요 없음":"확인 안 됨")):"없음";
  return `<div class="row"><span>결과</span>${obsShort(o)}</div>
  ${o.detections&&o.detections.length?`<div class="row"><span>발견한 칸</span><span>${o.detections.map(d=>`${esc(d.cell_id)} ${STATE_KO[d.fire_state]||esc(d.fire_state)}`).join(", ")}</span></div>`:""}
- <div class="row"><span>본 칸</span><span>${o.covered_cells&&o.covered_cells.length?o.covered_cells.map(esc).join(", "):"없음"}</span></div>
+ <div class="row"><span>전체를 본 칸</span><span>${o.covered_cells&&o.covered_cells.length?o.covered_cells.map(esc).join(", "):"없음"}</span></div>
+ ${o.partial_cells&&o.partial_cells.length?`<div class="row"><span>일부만 본 칸</span><span>${o.partial_cells.map(c=>{const f=(o.cell_coverage||[]).find(x=>x.cell_id===c);return esc(c)+(f?` (${Math.round(f.fraction*100)}%)`:"");}).join(", ")}</span></div>`:""}
+ ${o.received_after_purpose?`<div class="row"><span>비고</span><span>임무 ${PURPOSE[o.received_after_purpose]||esc(o.received_after_purpose)} 뒤에 들어온 관측 (완료 근거 아님)</span></div>`:""}
  <div class="row"><span>목표 칸 관측</span><span>${o.target_covered?"됨":"안 됨 · 재관측 필요"}</span></div>
  ${fp?`<div class="row"><span>관측 범위</span><span>${Math.round(fp.width_m)}m × ${Math.round(fp.height_m)}m (높이 ${Math.round(fp.agl_m)}m)</span></div>`:""}
  ${o.failure_reason?`<div class="row"><span>실패 사유</span><span>${esc(o.failure_reason)}</span></div>`:""}
@@ -128,14 +133,20 @@ function renderForecast(f){const el=document.getElementById("forecast");
   <div class="row"><span>예상 도달</span><span>${mins(t.earliest_arrival_s)} 후</span></div>
   <div class="row"><span>해당 칸</span><span>${t.cells.map(esc).join(", ")}</span></div>
   <div class="row"><span>사전 감시</span><span>${t.monitor_task_id?"임무 생성됨"+small(t.monitor_task_id):(f.preemptive_monitor_enabled?"대기":"후보 (생성 꺼짐)")}</span></div></div>`).join("")}</div>`:'<p class="note">주거지·보호대상에 닿는 예측은 없습니다.</p>');}
-const FIRE_KO={REPORTED:["신고됨 (확인 전)","warn"],CONFIRMED:["불 확인","fire"],CONFIRMED_BURNED:["탄 곳 확인","warn"],OBSERVED_CLEAR:["관측 결과 불 없음","clear"]};
+const FIRE_KO={REPORTED:["신고됨 (확인 전)","warn"],CONFIRMED:["불 확인","fire"],CONFIRMED_BURNED:["탄 곳 확인","warn"],OBSERVED_CLEAR:["관측 결과 불 없음","clear"],NOT_DETECTED_PARTIAL:["본 범위에 불 없음 (칸 일부만 관측)","warn"]};
+const WX_STATUS={EXPIRED:"만료",POLICY_NOT_SET:"유효시간 미설정",OBSERVED_TIME_UNKNOWN:"관측시각 불명",VALUE_INVALID:"값 이상"};
+const wxVals=v=>`${v.wind_ms!=null?v.wind_ms+"m/s ":""}${v.wind_dir_deg!=null?v.wind_dir_deg+"° ":""}${v.temperature_c!=null?v.temperature_c+"℃ ":""}${v.humidity_pct!=null?"습도 "+v.humidity_pct+"%":""}`;
 const SRC_KO={"119_CALL":"119 신고",EXTERNAL_REPORT:"외부 신고",SIMULATED:"모의 관측",KMA_ASOS_HOURLY:"기상청 관측소(시간자료)",FIXTURE_STATION:"시험 관측소"};
 function clock(k,s){if(!k)return `${mins(s)} 경과`;const t=new Date(new Date(k).getTime()+s*1000);return t.toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"});}
 function renderKnown(k){const el=document.getElementById("known");if(!k){el.innerHTML="";return;}
  const fires=k.fires.length?k.fires.map(f=>{const s=FIRE_KO[f.status]||[f.status,"warn"];return `<div class="row"><span>${esc(f.cell_id)}</span><span><span class="obs ${s[1]}">${s[0]}</span> · ${esc(SRC_KO[f.source]||f.source)} · ${clock(k.scenario_start_kst,f.sim_time_s)}</span></div>`;}).join(""):'<p class="note">아직 알고 있는 불이 없습니다.</p>';
- const st=k.stations.length?k.stations.map(o=>{const v=o.values||{};return `<div class="row"><span>${esc(o.station_name||o.station_id)}</span><span>${v.wind_ms!=null?v.wind_ms+"m/s ":""}${v.wind_dir_deg!=null?v.wind_dir_deg+"° ":""}${v.temperature_c!=null?v.temperature_c+"℃ ":""}${v.humidity_pct!=null?"습도 "+v.humidity_pct+"%":""} <small class="id">${esc(o.observed_kst||"")} ${esc(SRC_KO[o.source]||o.source)}</small></span></div>`;}).join(""):'<p class="note">관측소 관측값이 없습니다.</p>';
+ const st=k.stations.length?k.stations.map(o=>{const v=o.values||{};const bad=Object.entries(o.item_status||{}).filter(([,s])=>s.status!=="VALID").map(([i,s])=>`${(WX_LABEL[i]||[i])[0]} ${WX_STATUS[s.status]||s.status}`);return `<div class="row"><span>${esc(o.station_name||o.station_id)}</span><span>${wxVals(v)||"쓸 수 있는 값 없음"} <small class="id">${esc(o.observed_kst||"")} ${esc(SRC_KO[o.source]||o.source)}${bad.length?" · "+esc(bad.join(", ")):""}</small></span></div>`;}).join(""):'<p class="note">관측소 관측값이 없습니다.</p>';
+ const fw=(k.field_weather||[]).map(o=>`<div class="row"><span>${esc(o.cell_id)}</span><span>${wxVals(o.values||{})} <small class="id">${clock(k.scenario_start_kst,o.sim_time_s)} ${esc(SRC_KO[o.source]||o.source)}</small></span></div>`).join("");
+ const fx=(k.field_weather_excluded||[]).map(o=>`<div class="row"><span>${esc(o.cell_id)}</span><span>${(WX_LABEL[o.item]||[o.item])[0]} — ${WX_STATUS[o.status]||esc(o.status)} <small class="id">판단에 쓰지 않음</small></span></div>`).join("");
+ const unset=((k.weather_policy||{}).field_policy_unset_items||[]).length;
+ const fieldCard=`<div class="card"><div class="ctitle">현장 측정 (지금 유효한 값만)</div>${fw||'<p class="note">유효한 현장 측정이 없습니다.</p>'}${fx}${unset?'<p class="note">현장 측정 유효시간이 설정되지 않아 현장 측정값을 판단에 쓰지 않고 관측소 값을 씁니다.</p>':""}</div>`;
  el.innerHTML=`<p class="note">시나리오 시각: <b>${clock(k.scenario_start_kst,k.simulation_time_s)}</b> · 진짜 세계: 시험용 가짜 환경 (팀 공유 환경 아님) · 위험 칸·확산 예측: <b>${esc(k.analysis_source==="TEST_INJECTED"?"시험 주입값 — 관측으로 계산한 예측 아님 (환경팀 분석 기능 대기)":k.analysis_source||"없음")}</b></p>
- <div class="cards"><div class="card"><div class="ctitle">알고 있는 불</div>${fires}</div><div class="card"><div class="ctitle">관측소 최신 관측 (그 시각까지)</div>${st}</div></div>`;}
+ <div class="cards"><div class="card"><div class="ctitle">알고 있는 불</div>${fires}</div><div class="card"><div class="ctitle">관측소 최신 관측 (그 시각까지)</div>${st}</div>${fieldCard}</div>${k.run_gate?`<p class="note"><b>주의:</b> 환경의 실행(run)이 바뀌었지만 이전 실행의 기체 점유가 남아 있어 판단을 보류 중입니다 (${esc(k.run_gate)}).</p>`:""}`;}
 const _load=load;load=async function(){await _load();const b=await (await fetch("/priority/board")).json();renderForecast(b.forecast);renderKnown(b.known);};
 load();setInterval(load,2000);
 </script></body></html>

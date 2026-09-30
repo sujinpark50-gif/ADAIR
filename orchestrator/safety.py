@@ -88,7 +88,7 @@ def check(*, task: Task, attempt_id: str, decision_id: str, view: ResourceView, 
         need(wind_status(current_snapshot) is None, "wind", "WIND_UNUSABLE")
         need(command.get("wind_ms") == current_snapshot.wind_ms, "wind_same_snapshot", "WIND_NOT_FROM_SNAPSHOT")
         # 7. 고도 중복 가산 금지
-        need(tgt.get("alt_m_amsl") == task.target.ground_amsl_m, "no_double_add", "ALTITUDE_NOT_GROUND_LEVEL")
+        need(tgt.get("alt_m_amsl") == task.nav_target.ground_amsl_m, "no_double_add", "ALTITUDE_NOT_GROUND_LEVEL")
         need(valid_number(tgt.get("target_agl_m")) and tgt.get("target_agl_m") > 0, "agl", "TARGET_AGL_INVALID")
     # 5. 능력
     need(not task.requirements.sensor or task.requirements.sensor in view.sensors,

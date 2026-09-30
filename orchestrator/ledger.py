@@ -10,6 +10,15 @@ SQLite 장부. 서버를 껐다 켜도 Task·판단·실행시도·자원 점유
 - 실행 명령은 송신 "전에" 저장한다.
 - UNKNOWN 인 실행시도의 자원은 해제하지 않는다.
 - 모든 사건은 events 표에 순서대로 남긴다 (JSONL 로그와 별개).
+
+실행(run) 범위 (2026-09-30 B05):
+- 활성 run 은 한 번에 하나다 (runs 표). Task·지식·외부 이벤트·요청 키는 run 안에서만 유효하다.
+- 점유(reservations)는 물리 자원이라 run 과 무관하게 전역이다. 다른 run 의 점유가 남아 있으면
+  새 run 을 활성화하지 않는다 (RunSwitchBlocked). 닫힌 run 은 다시 활성화하지 않는다 (RunClosed).
+- run 범위가 없는 이전 장부(스키마 v1)의 행은 LEGACY-UNSCOPED 로 격리한다. 새 run 에 귀속시키지 않는다.
+
+상태 전이 (B01/B02): save_task 가 models.PURPOSE_TRANSITIONS 로 검증한다. 같은 Task 에 임무가 열린
+실행시도가 있으면 prepare_attempt 가 새 시도를 거절한다.
 """
 
 import hashlib
@@ -19,20 +28,32 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
-from .models import Task
+from .models import MISSION_OPEN_SUBSTATUSES, TERMINAL_PURPOSES, Task, can_transition
+
+SCHEMA_USER_VERSION = 2
+LEGACY_RUN = "LEGACY-UNSCOPED"
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    activated_wall REAL,
+    closed_wall REAL,
+    last_state_version INTEGER
+);
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
     incident_id TEXT NOT NULL,
-    request_key TEXT UNIQUE,
+    request_key TEXT,
     request_hash TEXT,
     purpose_status TEXT NOT NULL,
     body TEXT NOT NULL,
     created_wall REAL NOT NULL,
-    updated_wall REAL NOT NULL
+    updated_wall REAL NOT NULL,
+    UNIQUE (run_id, request_key)
 );
 CREATE TABLE IF NOT EXISTS decisions (
     decision_id TEXT PRIMARY KEY,
@@ -51,7 +72,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     substatus TEXT NOT NULL,
     detail TEXT,
     created_wall REAL NOT NULL,
-    updated_wall REAL NOT NULL
+    updated_wall REAL NOT NULL,
+    run_id TEXT
 );
 CREATE TABLE IF NOT EXISTS reservations (
     resource_id TEXT PRIMARY KEY,
@@ -70,25 +92,69 @@ CREATE TABLE IF NOT EXISTS events (
     resource_id TEXT,
     result TEXT,
     reason TEXT,
-    detail TEXT
+    detail TEXT,
+    run_id TEXT
 );
 CREATE TABLE IF NOT EXISTS knowledge (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
     kind TEXT NOT NULL,
-    key TEXT NOT NULL UNIQUE,
+    key TEXT NOT NULL,
     subject TEXT,
     sim_time_s REAL,
     source TEXT,
     body TEXT NOT NULL,
-    wall_time REAL NOT NULL
+    wall_time REAL NOT NULL,
+    UNIQUE (run_id, key)
+);
+CREATE TABLE IF NOT EXISTS external_events (
+    run_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    body TEXT NOT NULL,
+    result TEXT,
+    received_wall REAL NOT NULL,
+    applied_wall REAL,
+    PRIMARY KEY (run_id, event_id)
 );
 CREATE INDEX IF NOT EXISTS ix_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS ix_attempts_task ON attempts(task_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_run_kind ON knowledge(run_id, kind);
+"""
+
+# 스키마 v1(run 범위 없음) → v2. 기존 행은 어느 run 인지 알 수 없으므로 LEGACY_RUN 으로 격리한다.
+_MIGRATE_V1 = f"""
+BEGIN IMMEDIATE;
+ALTER TABLE tasks RENAME TO tasks_v1;
+ALTER TABLE knowledge RENAME TO knowledge_v1;
+CREATE TABLE tasks (
+    task_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, incident_id TEXT NOT NULL, request_key TEXT,
+    request_hash TEXT, purpose_status TEXT NOT NULL, body TEXT NOT NULL, created_wall REAL NOT NULL,
+    updated_wall REAL NOT NULL, UNIQUE (run_id, request_key));
+INSERT INTO tasks SELECT task_id, '{LEGACY_RUN}', incident_id, request_key, request_hash, purpose_status, body,
+    created_wall, updated_wall FROM tasks_v1;
+CREATE TABLE knowledge (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
+    subject TEXT, sim_time_s REAL, source TEXT, body TEXT NOT NULL, wall_time REAL NOT NULL,
+    UNIQUE (run_id, key));
+INSERT INTO knowledge (seq, run_id, kind, key, subject, sim_time_s, source, body, wall_time)
+    SELECT seq, '{LEGACY_RUN}', kind, key, subject, sim_time_s, source, body, wall_time FROM knowledge_v1;
+DROP TABLE tasks_v1;
+DROP TABLE knowledge_v1;
+ALTER TABLE attempts ADD COLUMN run_id TEXT;
+UPDATE attempts SET run_id = '{LEGACY_RUN}';
+ALTER TABLE events ADD COLUMN run_id TEXT;
+UPDATE events SET run_id = '{LEGACY_RUN}';
+COMMIT;
 """
 
 # 이 상태의 실행시도는 자원을 계속 점유한다
 OCCUPYING_SUBSTATUSES = {"PREPARED", "REQUESTED", "STARTED", "ARRIVED", "OBSERVED",
                          "APPLIED", "RETURNING", "UNKNOWN", "FAULTED"}
+
+ACTIVE = object()      # 조회 범위 기본값: 지금 활성 run
+ALL_RUNS = object()    # 모든 run (감사·추적용)
 
 
 class RequestConflict(Exception):
@@ -99,12 +165,32 @@ class ReservationConflict(Exception):
     """이미 다른 실행시도가 점유한 자원"""
 
 
+class AttemptConflict(Exception):
+    """같은 Task 에 임무가 열린 실행시도가 이미 있거나, Task 가 이미 종료됨"""
+
+
+class IllegalTransition(Exception):
+    """허용되지 않은 Task 목적 상태 전이"""
+
+
+class RunNotActive(Exception):
+    """활성 run 이 없거나 요청한 run 이 활성 run 이 아님"""
+
+
+class RunSwitchBlocked(Exception):
+    """다른 run 의 점유·열린 실행이 남아 있어 run 을 바꿀 수 없음"""
+
+
+class RunClosed(Exception):
+    """이미 닫힌 run 을 다시 활성화하려 함 (늦게 온 이전 run)"""
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
 def content_hash(obj) -> str:
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
 def _dumps(obj) -> Optional[str]:
@@ -122,8 +208,28 @@ class Ledger:
         self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL" if db_path != ":memory:" else "PRAGMA journal_mode=MEMORY")
-        self._conn.executescript(_SCHEMA)
         self._lock = threading.RLock()
+        self.migrated_from_legacy = self._init_schema()
+        row = self._conn.execute("SELECT run_id FROM runs WHERE status='ACTIVE'").fetchone()
+        self._active_run = row["run_id"] if row else None
+
+    def _init_schema(self) -> bool:
+        """스키마 생성·이관. 이전 장부를 격리 이관했으면 True."""
+        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        has_tasks = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone()
+        legacy = False
+        if version < SCHEMA_USER_VERSION and has_tasks:
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(tasks)")}
+            if "run_id" not in cols:
+                self._conn.executescript(_MIGRATE_V1)
+                legacy = True
+        self._conn.executescript(_SCHEMA)
+        if legacy:
+            self._conn.execute("INSERT OR IGNORE INTO runs VALUES (?,?,?,?,?)",
+                               (LEGACY_RUN, "QUARANTINED", None, time.time(), None))
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_USER_VERSION}")
+        return legacy
 
     def close(self):
         self._conn.close()
@@ -132,28 +238,99 @@ class Ledger:
         return _Tx(self)
 
     # ------------------------------------------------------------------
+    # 실행(run) 범위
+    # ------------------------------------------------------------------
+    def active_run(self) -> Optional[str]:
+        return self._active_run
+
+    def run_status(self, run_id: str) -> Optional[str]:
+        row = self._conn.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        return row["status"] if row else None
+
+    def foreign_reservations(self, run_id: str) -> dict:
+        """run_id 가 아닌 run 의 실행시도가 잡고 있는 점유 (run 전환을 막는 것)"""
+        rows = self._conn.execute(
+            "SELECT r.resource_id, r.task_id, r.attempt_id, a.run_id, a.substatus FROM reservations r "
+            "LEFT JOIN attempts a ON a.attempt_id = r.attempt_id").fetchall()
+        return {r["resource_id"]: {"task_id": r["task_id"], "attempt_id": r["attempt_id"],
+                                   "run_id": r["run_id"], "substatus": r["substatus"]}
+                for r in rows if r["run_id"] != run_id}
+
+    def activate_run(self, run_id: str) -> str:
+        """run 을 활성화한다. "ALREADY_ACTIVE" / "ACTIVATED".
+        다른 run 의 점유가 남아 있으면 RunSwitchBlocked, 닫힌 run 이면 RunClosed."""
+        with self._tx() as c:
+            if self._active_run == run_id:
+                return "ALREADY_ACTIVE"
+            row = c.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if row and row["status"] != "ACTIVE":
+                raise RunClosed(run_id)
+            blocking = self.foreign_reservations(run_id)
+            if blocking:
+                raise RunSwitchBlocked(json.dumps(blocking, ensure_ascii=False))
+            now = time.time()
+            c.execute("UPDATE runs SET status='CLOSED', closed_wall=? WHERE status='ACTIVE'", (now,))
+            c.execute("INSERT INTO runs VALUES (?,?,?,?,?)", (run_id, "ACTIVE", now, None, None))
+            self._active_run = run_id
+        return "ACTIVATED"
+
+    def note_state_version(self, run_id: str, version: int) -> str:
+        """같은 run 안의 환경 버전 순서: "NEW" / "DUPLICATE" / "STALE"(역행). 재시작 후에도 이어진다."""
+        with self._tx() as c:
+            row = c.execute("SELECT last_state_version FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            last = row["last_state_version"] if row else None
+            if last is not None and version == last:
+                return "DUPLICATE"
+            if last is not None and version < last:
+                return "STALE"
+            c.execute("UPDATE runs SET last_state_version=? WHERE run_id=?", (version, run_id))
+            return "NEW"
+
+    def _scope(self, run_id):
+        """조회 범위 → (WHERE 절 조각, 인자). 활성 run 이 없으면 아무 행도 고르지 않는다."""
+        if run_id is ALL_RUNS:
+            return "1=1", []
+        rid = self._active_run if run_id is ACTIVE else run_id
+        if rid is None:
+            return "1=0", []
+        return "run_id=?", [rid]
+
+    def _require_run(self, run_id=None) -> str:
+        rid = run_id or self._active_run
+        if rid is None:
+            raise RunNotActive("활성 run 이 없다")
+        return rid
+
+    # ------------------------------------------------------------------
     # Tasks
     # ------------------------------------------------------------------
     def create_task(self, task: Task, request_body: dict) -> (Task, bool):
-        """(task, created). 같은 request_key 가 있으면 기존 Task 반환(created=False)."""
+        """(task, created). 같은 run 에 같은 request_key 가 있으면 기존 Task 반환(created=False)."""
         req_hash = content_hash(request_body)
         now = time.time()
         with self._tx() as c:
+            run_id = self._require_run(task.run_id)
             if task.request_key:
-                row = c.execute("SELECT body, request_hash FROM tasks WHERE request_key=?",
-                                (task.request_key,)).fetchone()
+                row = c.execute("SELECT body, request_hash FROM tasks WHERE run_id=? AND request_key=?",
+                                (run_id, task.request_key)).fetchone()
                 if row:
                     if row["request_hash"] != req_hash:
                         raise RequestConflict(task.request_key)
                     return Task.from_dict(json.loads(row["body"])), False
+            task.run_id = run_id
             task.created_wall = task.created_wall or now
-            c.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)",
-                      (task.task_id, task.incident_id, task.request_key, req_hash,
+            c.execute("INSERT INTO tasks (task_id, run_id, incident_id, request_key, request_hash, purpose_status, "
+                      "body, created_wall, updated_wall) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (task.task_id, run_id, task.incident_id, task.request_key, req_hash,
                        task.purpose_status, _dumps(task.to_dict()), task.created_wall, now))
         return task, True
 
     def save_task(self, task: Task):
+        """Task 저장. 목적 상태가 바뀌면 허용 전이인지 검증한다 (종료된 목적은 되살아나지 않는다)."""
         with self._tx() as c:
+            row = c.execute("SELECT purpose_status FROM tasks WHERE task_id=?", (task.task_id,)).fetchone()
+            if row and not can_transition(row["purpose_status"], task.purpose_status):
+                raise IllegalTransition(f"{task.task_id}: {row['purpose_status']} -> {task.purpose_status}")
             c.execute("UPDATE tasks SET purpose_status=?, body=?, updated_wall=? WHERE task_id=?",
                       (task.purpose_status, _dumps(task.to_dict()), time.time(), task.task_id))
 
@@ -161,8 +338,16 @@ class Ledger:
         row = self._conn.execute("SELECT body FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         return Task.from_dict(json.loads(row["body"])) if row else None
 
-    def list_tasks(self, statuses: Optional[Iterable[str]] = None) -> List[Task]:
-        rows = self._conn.execute("SELECT body FROM tasks ORDER BY created_wall, task_id").fetchall()
+    def task_by_request_key(self, request_key: str, run_id=ACTIVE) -> Optional[Task]:
+        where, args = self._scope(run_id)
+        row = self._conn.execute(f"SELECT body FROM tasks WHERE {where} AND request_key=?",
+                                 args + [request_key]).fetchone()
+        return Task.from_dict(json.loads(row["body"])) if row else None
+
+    def list_tasks(self, statuses: Optional[Iterable[str]] = None, run_id=ACTIVE) -> List[Task]:
+        where, args = self._scope(run_id)
+        rows = self._conn.execute(f"SELECT body FROM tasks WHERE {where} ORDER BY created_wall, task_id",
+                                  args).fetchall()
         tasks = [Task.from_dict(json.loads(r["body"])) for r in rows]
         if statuses is not None:
             statuses = set(statuses)
@@ -203,10 +388,19 @@ class Ledger:
                              (resource_id,)).fetchone()
             if held:
                 raise ReservationConflict(f"{resource_id} held by {held['attempt_id']} ({held['task_id']})")
+            trow = c.execute("SELECT run_id, purpose_status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if trow and trow["purpose_status"] in TERMINAL_PURPOSES:
+                raise AttemptConflict(f"{task_id} is {trow['purpose_status']}")
+            marks = ",".join("?" * len(MISSION_OPEN_SUBSTATUSES))
+            open_ = c.execute(f"SELECT attempt_id, substatus FROM attempts WHERE task_id=? AND substatus IN ({marks})",
+                              (task_id, *MISSION_OPEN_SUBSTATUSES)).fetchone()
+            if open_:
+                raise AttemptConflict(f"{task_id} has open attempt {open_['attempt_id']} ({open_['substatus']})")
             c.execute("INSERT INTO reservations VALUES (?,?,?,?)", (resource_id, task_id, attempt_id, now))
-            c.execute("INSERT INTO attempts VALUES (?,?,?,?,?,?,?,?,?,?)",
+            c.execute("INSERT INTO attempts (attempt_id, task_id, decision_id, resource_id, command, command_hash, "
+                      "substatus, detail, created_wall, updated_wall, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                       (attempt_id, task_id, decision_id, resource_id, _dumps(command),
-                       content_hash(command), "PREPARED", None, now, now))
+                       content_hash(command), "PREPARED", None, now, now, trow["run_id"] if trow else None))
         return self.get_attempt(attempt_id)
 
     def set_attempt_status(self, attempt_id: str, substatus: str, detail: Optional[dict] = None,
@@ -225,6 +419,7 @@ class Ledger:
         return self._attempt_row(r) if r else None
 
     def list_attempts(self, task_id: Optional[str] = None, substatuses: Optional[Iterable[str]] = None) -> List[dict]:
+        """실행시도는 run 과 무관하게 모두 본다 (이전 run 의 열린 실행도 계속 추적해야 한다)."""
         q, args = "SELECT * FROM attempts", []
         if task_id:
             q, args = q + " WHERE task_id=?", [task_id]
@@ -240,10 +435,10 @@ class Ledger:
                 "resource_id": r["resource_id"], "command": _loads(r["command"]),
                 "command_hash": r["command_hash"], "substatus": r["substatus"],
                 "detail": _loads(r["detail"]), "created_wall": r["created_wall"],
-                "updated_wall": r["updated_wall"]}
+                "updated_wall": r["updated_wall"], "run_id": r["run_id"]}
 
     def reservations(self) -> dict:
-        """resource_id → {task_id, attempt_id}"""
+        """resource_id → {task_id, attempt_id}. 물리 자원 점유라 run 과 무관하게 전역이다."""
         return {r["resource_id"]: {"task_id": r["task_id"], "attempt_id": r["attempt_id"]}
                 for r in self._conn.execute("SELECT * FROM reservations")}
 
@@ -251,65 +446,102 @@ class Ledger:
     # 사건 기록
     # ------------------------------------------------------------------
     def log(self, event_type: str, *, task_id=None, decision_id=None, attempt_id=None, resource_id=None,
-            result=None, reason=None, detail=None, sim_time_s=None) -> int:
+            result=None, reason=None, detail=None, sim_time_s=None, run_id=None) -> int:
         with self._tx() as c:
             cur = c.execute(
                 "INSERT INTO events (wall_time, sim_time_s, event_type, task_id, decision_id, attempt_id, "
-                "resource_id, result, reason, detail) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "resource_id, result, reason, detail, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), sim_time_s, event_type, task_id, decision_id, attempt_id, resource_id,
-                 result, reason, _dumps(detail)))
+                 result, reason, _dumps(detail), run_id or self._active_run))
             return cur.lastrowid
 
-    def record_external_event(self, event_id: str, body: dict) -> bool:
-        """외부 이벤트를 event_id 기준 한 번만 기록. 처음이면 True, 중복이면 False."""
+    def events(self, task_id: Optional[str] = None, after_seq: int = 0, run_id=ALL_RUNS) -> List[dict]:
+        where, scope_args = self._scope(run_id)
+        q, args = f"SELECT * FROM events WHERE seq>? AND {where}", [after_seq] + scope_args
+        if task_id:
+            q, args = q + " AND task_id=?", args + [task_id]
+        return [{**dict(r), "detail": _loads(r["detail"])}
+                for r in self._conn.execute(q + " ORDER BY seq", args)]
+
+    # ------------------------------------------------------------------
+    # 외부 이벤트 접수 (B04). 검증을 통과한 이벤트만 여기 들어온다.
+    #   RECEIVED → (지식·Task 반영) → APPLIED. RECEIVED 로 남은 것은 재시작 때 다시 처리한다.
+    # ------------------------------------------------------------------
+    def receive_external_event(self, event_id: str, chash: str, body: dict) -> Tuple[str, dict]:
+        """("NEW" | "DUPLICATE" | "CONFLICT", 저장된 행). 같은 run·event_id 의 같은 내용은 DUPLICATE,
+        다른 내용은 CONFLICT (기존 행을 바꾸지 않는다)."""
         with self._tx() as c:
-            dup = c.execute("SELECT 1 FROM events WHERE event_type='EXTERNAL_EVENT' AND reason=?",
-                            (event_id,)).fetchone()
-            if dup:
-                return False
-            c.execute("INSERT INTO events (wall_time, sim_time_s, event_type, result, reason, detail) "
-                      "VALUES (?,?,?,?,?,?)", (time.time(), body.get("simulation_time_s"), "EXTERNAL_EVENT",
-                                               body.get("type"), event_id, _dumps(body)))
-            return True
+            run_id = self._require_run()
+            row = c.execute("SELECT * FROM external_events WHERE run_id=? AND event_id=?",
+                            (run_id, event_id)).fetchone()
+            if row:
+                return ("DUPLICATE" if row["content_hash"] == chash else "CONFLICT"), self._event_row(row)
+            c.execute("INSERT INTO external_events VALUES (?,?,?,?,?,?,?,?)",
+                      (run_id, event_id, chash, "RECEIVED", _dumps(body), None, time.time(), None))
+            row = c.execute("SELECT * FROM external_events WHERE run_id=? AND event_id=?",
+                            (run_id, event_id)).fetchone()
+            return "NEW", self._event_row(row)
+
+    def mark_external_event_applied(self, event_id: str, result: dict, run_id: Optional[str] = None):
+        with self._tx() as c:
+            c.execute("UPDATE external_events SET status='APPLIED', result=?, applied_wall=? "
+                      "WHERE run_id=? AND event_id=?", (_dumps(result), time.time(),
+                                                        self._require_run(run_id), event_id))
+
+    def pending_external_events(self, run_id=ACTIVE) -> List[dict]:
+        where, args = self._scope(run_id)
+        return [self._event_row(r) for r in self._conn.execute(
+            f"SELECT * FROM external_events WHERE {where} AND status='RECEIVED' ORDER BY received_wall, rowid", args)]
+
+    @staticmethod
+    def _event_row(r) -> dict:
+        return {"run_id": r["run_id"], "event_id": r["event_id"], "content_hash": r["content_hash"],
+                "status": r["status"], "body": _loads(r["body"]), "result": _loads(r["result"])}
 
     # ------------------------------------------------------------------
     # 총괄이 아는 세계 (knowledge.py)
     # ------------------------------------------------------------------
     def add_knowledge(self, kind: str, key: str, subject: Optional[str], sim_time_s: Optional[float],
                       source: Optional[str], body: dict) -> bool:
-        """같은 key 는 한 번만. 새로 들어가면 True"""
+        """활성 run 안에서 같은 key 는 한 번만. 새로 들어가면 True"""
         with self._tx() as c:
-            cur = c.execute("INSERT OR IGNORE INTO knowledge (kind, key, subject, sim_time_s, source, body, wall_time) "
-                            "VALUES (?,?,?,?,?,?,?)", (kind, key, subject, sim_time_s, source, _dumps(body), time.time()))
+            cur = c.execute("INSERT OR IGNORE INTO knowledge (run_id, kind, key, subject, sim_time_s, source, body, "
+                            "wall_time) VALUES (?,?,?,?,?,?,?,?)",
+                            (self._require_run(), kind, key, subject, sim_time_s, source, _dumps(body), time.time()))
             return cur.rowcount == 1
 
-    def knowledge(self, kind: str) -> List[dict]:
-        rows = self._conn.execute("SELECT * FROM knowledge WHERE kind=? ORDER BY sim_time_s, seq", (kind,))
+    def knowledge(self, kind: str, run_id=ACTIVE) -> List[dict]:
+        where, args = self._scope(run_id)
+        rows = self._conn.execute(f"SELECT * FROM knowledge WHERE {where} AND kind=? ORDER BY sim_time_s, seq",
+                                  args + [kind])
         return [{"seq": r["seq"], "key": r["key"], "subject": r["subject"], "sim_time_s": r["sim_time_s"],
                  "source": r["source"], "body": _loads(r["body"])} for r in rows]
 
-    def events(self, task_id: Optional[str] = None, after_seq: int = 0) -> List[dict]:
-        q, args = "SELECT * FROM events WHERE seq>?", [after_seq]
-        if task_id:
-            q, args = q + " AND task_id=?", args + [task_id]
-        return [{**dict(r), "detail": _loads(r["detail"])}
-                for r in self._conn.execute(q + " ORDER BY seq", args)]
+    def get_knowledge(self, key: str, run_id=ACTIVE) -> Optional[dict]:
+        where, args = self._scope(run_id)
+        r = self._conn.execute(f"SELECT * FROM knowledge WHERE {where} AND key=?", args + [key]).fetchone()
+        return None if r is None else {"seq": r["seq"], "key": r["key"], "subject": r["subject"], "kind": r["kind"],
+                                       "sim_time_s": r["sim_time_s"], "source": r["source"], "body": _loads(r["body"])}
 
 
 class _Tx:
-    """BEGIN IMMEDIATE 트랜잭션 + 프로세스 내 lock. 예외 시 롤백."""
+    """BEGIN IMMEDIATE 트랜잭션 + 프로세스 내 lock. 예외 시 롤백. 같은 스레드에서 겹쳐 쓰면 안쪽은 바깥 트랜잭션에 합류한다."""
 
     def __init__(self, ledger: Ledger):
         self.l = ledger
+        self.outer = False
 
     def __enter__(self):
         self.l._lock.acquire()
-        self.l._conn.execute("BEGIN IMMEDIATE")
+        self.outer = not self.l._conn.in_transaction
+        if self.outer:
+            self.l._conn.execute("BEGIN IMMEDIATE")
         return self.l._conn
 
     def __exit__(self, exc_type, exc, tb):
         try:
-            self.l._conn.execute("ROLLBACK" if exc_type else "COMMIT")
+            if self.outer:
+                self.l._conn.execute("ROLLBACK" if exc_type else "COMMIT")
         finally:
             self.l._lock.release()
         return False

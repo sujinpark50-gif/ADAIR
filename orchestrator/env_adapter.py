@@ -11,7 +11,8 @@ APPLY   관측·진화 이벤트 적용 → ACK(수용 여부, 새 state_version
 현재 환경팀 코드(environment/src/api.py)에는 run_id·simulation_time·map_version 이 없고
 connectors/fire_connector.py 는 조회 때마다 step() 한다. 그래서 여기서는
 - FixtureEnv: 계약 형태를 그대로 따르는 시험용 환경 (상태 B: fixture 로만 시험)
-- SnapshotGate: 같은 run 안의 중복·역순 snapshot 을 걸러내는 총괄 쪽 검사
+- SnapshotGate: 같은 run 안의 중복·역순 snapshot 을 걸러내는 총괄 쪽 검사 (메모리 판). 엔진은 같은 규칙을
+  장부에 저장해 쓴다 — 활성 run·마지막 버전은 Ledger.activate_run / note_state_version (재시작 후에도 유지)
 만 둔다. 환경팀 API 가 생기면 같은 인터페이스(read/advance/apply)로 어댑터를 추가한다.
 """
 
@@ -19,6 +20,13 @@ import copy
 from typing import Optional
 
 from .models import Snapshot
+
+class EnvUnavailable(Exception):
+    """환경 호출에 응답이 없음 (시간 초과·연결 끊김). 거절(NACK)과 다르다 — 반영 여부를 모른다."""
+
+
+# APPLY 응답을 못 받은 것으로 보는 예외. 그 밖의 예외(프로그래밍 오류)는 숨기지 않는다.
+ENV_TRANSIENT_ERRORS = (EnvUnavailable, TimeoutError, ConnectionError)
 
 # 판단에 반드시 있어야 하는 snapshot 필드. 없으면 해당 판단은 보류한다.
 REQUIRED_SNAPSHOT_FIELDS = ("run_id", "state_version", "simulation_time_s", "map_version")

@@ -10,7 +10,8 @@ LLM 이 하는 일
 - 좌표·고도·위험점수 같은 수치나 존재하지 않는 자원·사실을 만들지 않는다 (출력 스키마에 수치 칸이 없다).
 
 검증 (하나라도 어기면 제안을 버리고 규칙 순서 사용)
-- 출력 스키마, 같은 환경 state_version
+- 출력 스키마와 자료형 (값을 쓰기 전에 검사한다: 정수 칸에 bool·배열·객체, 문자열 목록에 다른 형 금지)
+- 같은 환경 state_version
 - 묶음마다 정확히 한 번, 순서는 그 묶음 Task 의 순열 (없는 ID·중복·누락 금지)
 - 근거가 인용한 ID(input_refs)는 입력에 있던 ID 만
 - 근거 문장 길이 제한
@@ -93,34 +94,56 @@ def known_ids(inp: dict) -> set:
     return ids
 
 
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)      # True/False 를 정수로 받지 않는다
+
+
+def _is_str_list(v) -> bool:
+    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+
+
 def validate(out, inp: dict) -> List[str]:
+    """LLM 출력의 위반 목록 (비어 있으면 통과). 외부 출력은 어떤 형이든 올 수 있으므로
+    해시·정렬·비교에 쓰기 전에 자료형부터 검사한다. 예외를 던지지 않는다."""
     v = []
     if not isinstance(out, dict) or set(out) != {"state_version", "groups"}:
         return ["SCHEMA_MISMATCH"]
-    if out["state_version"] != inp["state_version"]:
+    if not _is_int(out["state_version"]):
+        v.append("STATE_VERSION_TYPE")
+    elif out["state_version"] != inp["state_version"]:
         v.append("STATE_VERSION_MISMATCH")
-    groups = out.get("groups")
+    groups = out["groups"]
     if not isinstance(groups, list):
         return v + ["SCHEMA_MISMATCH"]
     want = {g["group_index"]: [t["task_id"] for t in g["tasks"]] for g in inp["groups"]}
     seen = set()
     ids = known_ids(inp)
-    for g in groups:
+    for n, g in enumerate(groups):
         if not isinstance(g, dict) or set(g) != {"group_index", "order", "rationale", "input_refs"}:
-            v.append("SCHEMA_MISMATCH")
+            v.append(f"SCHEMA_MISMATCH:groups[{n}]")
             continue
         gi = g["group_index"]
+        if not _is_int(gi):
+            v.append(f"GROUP_INDEX_TYPE:groups[{n}]")
+            continue
         if gi not in want or gi in seen:
             v.append(f"GROUP_INDEX_INVALID:{gi}")
             continue
         seen.add(gi)
-        if sorted(g["order"]) != sorted(want[gi]) or len(set(g["order"])) != len(g["order"]):
-            v.append(f"ORDER_NOT_PERMUTATION:{gi}")
+        order = g["order"]
+        if not _is_str_list(order):
+            v.append(f"ORDER_TYPE:{gi}")
+        elif len(set(order)) != len(order) or sorted(order) != sorted(want[gi]):
+            v.append(f"ORDER_NOT_PERMUTATION:{gi}")       # 중복·누락·다른 묶음 Task·없는 ID
         if not isinstance(g["rationale"], str) or not g["rationale"].strip() or len(g["rationale"]) > MAX_RATIONALE_CHARS:
             v.append(f"RATIONALE_INVALID:{gi}")
-        unknown = [r for r in g["input_refs"] if r not in ids]
-        if unknown:
-            v.append(f"UNKNOWN_REFS:{gi}:{','.join(unknown[:5])}")
+        refs = g["input_refs"]
+        if not _is_str_list(refs):
+            v.append(f"INPUT_REFS_TYPE:{gi}")
+        else:
+            unknown = [r for r in refs if r not in ids]
+            if unknown:
+                v.append(f"UNKNOWN_REFS:{gi}:{','.join(unknown[:5])}")
     missing = set(want) - seen
     if missing:
         v.append("GROUPS_MISSING:" + ",".join(map(str, sorted(missing))))
@@ -189,7 +212,12 @@ class LlmPlanner:
         except (TypeError, ValueError):
             return {**base, "status": "INVALID", "violations": ["NOT_JSON"], "raw_output": str(raw)[:2000],
                     "latency_s": latency, "input": inp}
-        violations = validate(out, inp)
+        try:
+            violations = validate(out, inp)
+        except (TypeError, KeyError, ValueError, AttributeError) as e:
+            # 검증기는 자료형을 먼저 검사하므로 여기 오면 검증기 결함이다. 그래도 외부 출력 때문에
+            # 판단 루프가 멈추면 안 되므로 제안을 버리고(INVALID) 규칙 순서로 간다. 사유를 남긴다.
+            violations = [f"VALIDATOR_ERROR:{type(e).__name__}"]
         if violations:
             return {**base, "status": "INVALID", "violations": violations, "raw_output": out,
                     "latency_s": latency, "input": inp}

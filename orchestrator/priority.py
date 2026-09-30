@@ -23,6 +23,10 @@ orchestrator/priority.py
 - 위험도 누락은 가장 뒤로 보고 기록한다. 거리·공식 순위는 모든 임무에 값이 있을 때만 쓴다.
 
 공간 계산: 대상들의 중심 위도 기준 국지 평면 근사(등장방형). 방법을 결과에 기록한다.
+거리 규칙 (2026-09-30 B06): 두 도형이 교차·접촉·포함 관계면 0. 꼭짓점이 서로 안에 없어도 변끼리 가로지르면 0 이다.
+유효하지 않은 도형(점이 없음, 좌표가 수가 아님·무한대)은 거리를 계산하지 않고 ValueError 를 낸다 —
+risk_context 는 그 대상을 missing 에 *_GEOMETRY_INVALID 로 기록하고 거리를 지어내지 않는다.
+점 1개는 점, 2개는 선분, 3개 이상은 닫힌 다각형으로 본다 (자기교차 다각형의 내부는 짝홀 규칙).
 """
 
 import math
@@ -83,18 +87,51 @@ def _edges(poly):
     return [(poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))] if len(poly) > 1 else []
 
 
+def _orient(a, b, c) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _on_segment(a, b, p) -> bool:
+    return (min(a[0], b[0]) <= p[0] <= max(a[0], b[0])) and (min(a[1], b[1]) <= p[1] <= max(a[1], b[1]))
+
+
+def _segments_intersect(p1, p2, q1, q2) -> bool:
+    """두 선분이 한 점이라도 공유하는지 (가로지름·끝점 접촉·겹침 포함)"""
+    d1, d2 = _orient(q1, q2, p1), _orient(q1, q2, p2)
+    d3, d4 = _orient(p1, p2, q1), _orient(p1, p2, q2)
+    if ((d1 > 0 > d2) or (d1 < 0 < d2)) and ((d3 > 0 > d4) or (d3 < 0 < d4)):
+        return True
+    return ((d1 == 0 and _on_segment(q1, q2, p1)) or (d2 == 0 and _on_segment(q1, q2, p2))
+            or (d3 == 0 and _on_segment(p1, p2, q1)) or (d4 == 0 and _on_segment(p1, p2, q2)))
+
+
+def _check_geometry(g) -> None:
+    if not g:
+        raise ValueError("INVALID_GEOMETRY: 점이 없다")
+    for p in g:
+        if (len(p) != 2 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                               for v in p)):
+            raise ValueError(f"INVALID_GEOMETRY: 좌표 {p!r}")
+
+
 def polygon_distance_m(a: List[Tuple[float, float]], b: List[Tuple[float, float]]) -> float:
-    """두 다각형(또는 점) 사이 최소 거리. 겹치면 0."""
+    """두 도형(점·선분·다각형) 사이 최소 거리. 교차·접촉·포함이면 0. 유효하지 않은 도형은 ValueError."""
+    _check_geometry(a)
+    _check_geometry(b)
     if len(a) >= 3 and any(_inside(p, a) for p in b):
         return 0.0
     if len(b) >= 3 and any(_inside(p, b) for p in a):
         return 0.0
+    ea, eb = _edges(a) or [(a[0], a[0])], _edges(b) or [(b[0], b[0])]
+    # 꼭짓점이 서로 안에 없어도 변끼리 가로지르면 겹친 것이다 (예: 십자 모양으로 놓인 두 직사각형)
+    if any(_segments_intersect(s[0], s[1], t[0], t[1]) for s in ea for t in eb):
+        return 0.0
     best = math.inf
     for p in a:
-        for s in _edges(b) or [(b[0], b[0])]:
+        for s in eb:
             best = min(best, _seg_dist(p, *s))
     for p in b:
-        for s in _edges(a) or [(a[0], a[0])]:
+        for s in ea:
             best = min(best, _seg_dist(p, *s))
     return best
 
@@ -115,6 +152,14 @@ def _human_flag(cell: dict) -> Optional[bool]:
     if isinstance(bt, int) and not isinstance(bt, bool):
         return bt == RESIDENTIAL_BUILDING_TYPE
     return None
+
+
+def _usable(geom) -> bool:
+    try:
+        _check_geometry(geom)
+        return True
+    except ValueError:
+        return False
 
 
 def risk_context(snapshot: Snapshot) -> dict:
@@ -142,6 +187,8 @@ def risk_context(snapshot: Snapshot) -> dict:
                                       "official_source": s.get("official_source")}
         if g is None:
             ctx["missing"].append({"site_id": s["site_id"], "reason": "SITE_GEOMETRY_MISSING"})
+        elif not _usable(g):
+            ctx["missing"].append({"site_id": s["site_id"], "reason": "SITE_GEOMETRY_INVALID"})
         else:
             geoms[s["site_id"]] = g
     for c in cells:
@@ -150,6 +197,8 @@ def risk_context(snapshot: Snapshot) -> dict:
                  "human_exposure": _human_flag(c), "building_type": c.get("building_type"), "distances": []}
         if poly is None:
             ctx["missing"].append({"cell_id": c.get("cell_id"), "reason": "CELL_GEOMETRY_MISSING"})
+        elif not _usable(poly):
+            ctx["missing"].append({"cell_id": c.get("cell_id"), "reason": "CELL_GEOMETRY_INVALID"})
         else:
             for sid, g in geoms.items():
                 entry["distances"].append({"site_id": sid, "distance_m": round(polygon_distance_m(poly, g), 1)})
