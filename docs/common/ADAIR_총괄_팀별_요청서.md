@@ -1,6 +1,6 @@
 # ADAIR 총괄 오케스트레이터 — 팀별 요청서
 
-- 갱신: 2026-09-30 (최신, 검토 B01~B08·D01~D03 + 추가 R01~R04 반영) · 기준: 브랜치 `feat/orchestrator-final`
+- 갱신: 2026-10-01 (최신, 검토 B01~B08·D01~D03 + R01~R04 + F01~F07 반영) · 기준: 브랜치 `feat/orchestrator-final`
 - 근거: `docs/orchestration/ADAIR_오케스트레이터_구현요청_코드대조_수정본 (1).md` §11 형식, `docs/orchestration/ADAIR_총괄_구현준비.md`
 - 총괄 쪽은 아래 계약을 **가짜(fixture)로 먼저 구현·시험**해 두었다. 각 팀이 제공하면 가짜만 교체한다.
 - 상태 표기: **A** 코드와 시험으로 확인 · **B** fixture 에서만 확인 · **C** 타 팀 계약·연동 대기 · **D** 최종 발표 미완료
@@ -102,7 +102,7 @@
 | 항목 | 내용 |
 |---|---|
 | 계약 요청 | `APPLY(observation)` 는 `observation_id` 로 한 번만 반영하고 ACK `{accepted, state_version, duplicate}`. 열화상(`detections`, `covered_cells`)과 기상(`values`) 모두 |
-| 총괄 처리 (2026-09-30) | ACK 가 필요한 임무는 ACK 전에 완료하지 않는다. 응답이 없으면(시간 초과·연결 끊김) 그 관측을 **환경 반영 기록**으로 장부에 보관하고 **같은 `observation_id` 로 다시 APPLY** 한다 — 멱등이 필수. 기록은 두 단계다: ① 환경 응답 대기(수용 여부 모름 → APPLY 재시도) ② 응답(ACK/NACK)은 저장했고 임무 판정 대기(환경에 다시 보내지 않고 저장한 응답으로 판정 재개). 기체가 불명 상태라 임무가 보류 중이면 응답을 보관했다가 정상 재접촉 뒤에 판정한다. 반영 대기는 기체 반납과 별개로 남고(재시작 후에도), 그동안 같은 임무를 다시 출동시키지 않는다. 다른 run 의 환경에는 적용하지 않으며, 취소된 임무의 대기 관측은 반영하지 않고 사유와 함께 닫는다. 재시도 횟수 제한·관측 유효시간은 근거 값이 없어 두지 않았다 (필요하면 환경팀과 정한다). 거절(`accepted=false`)은 재관측 대기. 도로 상황 등 APPLY 계약이 없는 관측에는 ACK 를 요구하지 않는다 (요구하는 요청은 접수 거절). 열화상 관측은 `covered_cells`(칸 전체를 봄)·`partial_cells`(일부만)·`cell_coverage`(칸별 겹친 범위·비율)로 보낸다 — 일부만 본 칸을 전체 관측으로 반영하지 말 것. 총괄도 칸 일부만 보고 불을 못 본 관측으로는 기존 신고·확인 화재를 해소하지 않는다 (칸 전체를 봤을 때만 해소) |
+| 총괄 처리 (2026-09-30) | ACK 가 필요한 임무는 ACK 전에 완료하지 않는다. 응답이 없으면(시간 초과·연결 끊김) 그 관측을 **환경 반영 기록**으로 장부에 보관하고 **같은 `observation_id` 로 다시 APPLY** 한다 — 멱등이 필수. 기록은 두 단계다: ① 환경 응답 대기(수용 여부 모름 → APPLY 재시도) ② 응답(ACK/NACK)은 저장했고 임무 판정 대기(환경에 다시 보내지 않고 저장한 응답으로 판정 재개). 기체가 불명 상태라 임무가 보류 중이면 응답을 보관했다가 정상 재접촉 뒤에 판정한다. (2026-10-01) 관측은 한 번 확정해 원본(`observation_id`·본문·관측 시각·run·Task·실행시도)을 남기고, 원본·관측 기록·아는 세계·반영 기록을 **한 번에** 저장한 뒤에 APPLY 한다 — 총괄이 중간에 멈췄다가 다시 켜져도 **같은 관측을 같은 `observation_id` 로** 다시 보낸다 (재시작 시점의 환경을 새로 읽어 다른 관측을 만들지 않는다). 같은 방문의 기상 측정도 같은 규칙이다. 취소된 임무는 아직 반영되지 않은 관측(주·부가 모두)을 더 보내지 않는다 — 이미 환경이 받은 것을 되돌린다는 뜻은 아니며, 받았는지 모르는 이력도 남긴다. 관측을 확보한 뒤 기체가 복귀 중 실패(FAILED)해도 그 관측의 반영·판정은 그대로 진행한다. run 이 바뀌면 이전 run 의 반영 기록은 새 run 에 보내지 않고 `RUN_ENDED` 로 닫는다. 반영 대기는 기체 반납과 별개로 남고(재시작 후에도), 그동안 같은 임무를 다시 출동시키지 않는다. 다른 run 의 환경에는 적용하지 않으며, 취소된 임무의 대기 관측은 반영하지 않고 사유와 함께 닫는다. 재시도 횟수 제한·관측 유효시간은 근거 값이 없어 두지 않았다 (필요하면 환경팀과 정한다). 거절(`accepted=false`)은 재관측 대기. 도로 상황 등 APPLY 계약이 없는 관측에는 ACK 를 요구하지 않는다 (요구하는 요청은 접수 거절). 열화상 관측은 `covered_cells`(칸 전체를 봄)·`partial_cells`(일부만)·`cell_coverage`(칸별 겹친 범위·비율)로 보낸다 — 일부만 본 칸을 전체 관측으로 반영하지 말 것. 총괄도 칸 일부만 보고 불을 못 본 관측으로는 기존 신고·확인 화재를 해소하지 않는다 (칸 전체를 봤을 때만 해소) |
 | 금지 | 관측만으로 UNBURNED→BURNING 임의 변경, 도착만으로 진화 |
 | 총괄 상태 | B — 임무 완료 근거에 `evidence_level=SIMULATION_TEST` (모의 센서 + 가짜 환경 ACK) 로 표시. 실제 환경 연동 완료 아님 |
 
@@ -235,6 +235,7 @@
 | 인계 시 목적 담당 시도 기록 (이전 시도는 후임의 목적을 못 바꿈) | `Task.owner_attempt_id`, `engine._set_purpose`, `ledger.open_mission_attempts` | A (`test_followup_r01_r04`) |
 | 부분 음성 관측은 기존 화재 후보를 해소하지 않음 | `knowledge.fire_states` | A (`test_followup_r01_r04`) |
 | 환경 반영 기록 (기체 반납과 별개, 환경 응답 저장과 임무 판정을 따로 기록, 같은 관측 ID 재반영, 재출동 없음, 재시작 후 이어서 처리) | `ledger.pending_applies`, `engine.process_pending_applies`·`_process_apply` | A (fixture) |
+| 관측 원본 확정·한 번에 저장 (주·부가 측정), 취소·run 전환과 기록 종료를 한 번에, 이전 판 기록 이관 | `ledger.observations`·`save_observation`·`activate_run`·`_migrate_legacy_apply_rows`, `engine._observe_and_apply`·`resolve` | A (`test_followup_f01_f07`, 중단·재시작 시험 포함) |
 | 같은 칸 중복 방문 방지 (측정 합치기) | `engine._attach_or_create_sense`, `_merge_pending_sense_into` | A |
 | 우선순위 (인명 우선·비슷함 0.1·엇갈림) + 자동/수동 모드 + 지금 보내기 | `priority.py`, `engine.dispatch_pending`, `manual_dispatch` | A (규칙) / B (데이터) |
 | LLM 추천 + 결정론적 검증·재사용 | `llm.py` | A |
