@@ -54,6 +54,16 @@ PROVIDER_STATUSES = {"UAV": {"STARTED", "IN_PROGRESS", "COMPLETED", "FAILED"},
 EVENT_TYPES_THAT_REDISPATCH = ("ENV_UPDATED", "RESOURCE_CHANGED", "FIRE_REPORT")
 
 
+def _finite_number(v) -> bool:
+    """외부 값이 유한한 수인지. 너무 큰 정수(10**400 등)는 변환에서 OverflowError 가 나므로 그 구간만 처리한다."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(v))
+    except (OverflowError, ValueError):
+        return False
+
+
 class TaskRejected(Exception):
     """접수 단계에서 거절한 요청 (지원하지 않는 조합 등). 사유 코드를 담는다."""
 
@@ -127,7 +137,7 @@ class Orchestrator:
             self._llm_memo, self._synced, self._gate_logged = {}, set(), None
             self._premon_sig = None
             # 이전 run 의 환경 반영 대기는 새 run 의 환경에 적용하지 않는다. 지우지 않고 사유와 함께 닫는다 (R04)
-            closed = self.ledger.close_pending_applies_of_other_runs(truth.run_id, "RUN_ENDED")
+            closed = self.ledger.last_activation_closed      # 활성화와 같은 트랜잭션에서 닫힘 (ledger.activate_run)
             self.ledger.log("RUN_ACTIVATED", result=truth.run_id, sim_time_s=truth.simulation_time_s,
                             detail={"previous_run": active, "policy": "SINGLE_ACTIVE_RUN",
                                     "pending_env_applies_closed": closed,
@@ -855,6 +865,9 @@ class Orchestrator:
             if client is not None:
                 results.append(self._track(att, client))
         events = self.resume_events()
+        active = self.ledger.active_run()
+        if active:                                   # run 전환 직후 멈췄던 경우를 위한 멱등 정리 (F07)
+            self.ledger.close_pending_applies_of_other_runs(active, "RUN_ENDED")
         applies = self.process_pending_applies()      # 환경 응답 대기·임무 반영 대기도 이어서 처리
         self.ledger.log("RECOVERY_SCAN", result="DONE", detail={"prepared_found": [a["attempt_id"] for a in pending],
                                                                 "results": results, "events_resumed": events,
@@ -920,8 +933,9 @@ class Orchestrator:
                                                    "attributed_to_purpose": False, **(note or {})})
             return None
 
-        if row["purpose_bound"] and task and task.purpose_status in TERMINAL_PURPOSES:
-            # 취소(종료)된 목적: 환경에 더 보내지 않고, 이미 받은 응답이 있어도 목적을 되살리지 않는다
+        if task and task.purpose_status in TERMINAL_PURPOSES and (row["purpose_bound"] or task.purpose_status == "CANCELLED"):
+            # 끝난 목적: 환경에 더 보내지 않고, 이미 받은 응답이 있어도 목적을 되살리지 않는다.
+            # 취소된 임무는 함께 한 측정도 더 적용하지 않는다 (정상 완료한 임무의 함께 한 측정은 계속 재시도)
             return close("CLOSED", f"TASK_{task.purpose_status}")
         owner = bool(task and att and task.owner_attempt_id == aid)
         if row["status"] == "PENDING":
@@ -935,7 +949,7 @@ class Orchestrator:
                     return None
                 self.ledger.log("ENVIRONMENT_APPLY", task_id=row["task_id"], attempt_id=aid,
                                 resource_id=att["resource_id"] if att else None, result="TIMEOUT",
-                                reason=ack.get("reason"), detail=ack)
+                                reason=ack.get("reason"), detail={**ack, "observation_id": oid})
                 if owner and task.purpose_status == "IN_EXECUTION":
                     self._set_purpose(task, "IN_EXECUTION", basis="ENV_APPLY_PENDING", attempt_id=aid,
                                       hold_reason="ENV_APPLY_PENDING")
@@ -947,7 +961,7 @@ class Orchestrator:
         if not row["purpose_bound"]:
             self.ledger.log("ENVIRONMENT_APPLY", task_id=row["task_id"], attempt_id=aid,
                             result=row["env_result"], reason=ack.get("reason"),
-                            detail={**ack, "late": True, "attributed_to_purpose": False})
+                            detail={**ack, "observation_id": oid, "attributed_to_purpose": False})
             self.ledger.finish_pending_apply(oid, "DONE", "AUXILIARY_MEASUREMENT")
             return None
         if not owner:
@@ -1011,7 +1025,7 @@ class Orchestrator:
                 return "POSITION_INVALID"
             for k in ("lat", "lon", "alt_m_amsl"):
                 v = pos.get(k)
-                if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)):
+                if v is not None and not _finite_number(v):
                     return "POSITION_INVALID"
         before = (att["detail"] or {}).get("pre_unknown_substatus") if att["substatus"] == "UNKNOWN" else att["substatus"]
         if uav and status == "COMPLETED" and task is not None and before not in POST_MISSION:
@@ -1132,15 +1146,20 @@ class Orchestrator:
             first_report = "mission_end" not in detail
             # 임무 부분 종료 근거: 제공자가 실패를 확정 보고함. 이 근거가 있어야 다른 자원으로 인계할 수 있다
             detail.setdefault("mission_end", {"reason": f"PROVIDER_FAILED:{reason}", "evidence": "PROVIDER_STATUS_FAILED"})
+            # 관측 뒤의 실패는 물리 진행(복귀 등)의 실패다. 이미 확보한 유효 관측과 그 환경 반영 판정은 그대로 둔다 (F02)
+            observed = bool(detail.get("observation_id")) and not detail.get("observation_failed")
+            new_physical = observed and "physical_failure_after_observation" not in detail
+            if observed:
+                detail["physical_failure_after_observation"] = reason
             # 이 시도가 아직 목적 담당일 때만 재대기로 돌린다 — 인계 뒤 같은 실패를 또 보고해도 후임의 목적을 건드리지 않는다
-            if self._owns(att, task) and task.purpose_status == "IN_EXECUTION":
+            if not observed and self._owns(att, task) and task.purpose_status == "IN_EXECUTION":
                 # 목적 미완료. 인계 필요 — 관측 공백을 남기고 재배정 대기
                 if self._set_purpose(task, "PENDING", basis=f"PROVIDER_FAILED:{reason}", attempt_id=aid,
                                      hold_reason=f"HANDOVER:{reason}"):
                     self.ledger.log("TASK_REOPENED", task_id=tid, attempt_id=aid, resource_id=rid,
                                     reason=reason, detail={"observation_gap": True})
             if phase == "RETURNING":
-                if sub == "RETURNING" and not first_report:
+                if sub == "RETURNING" and not first_report and not new_physical:
                     return None                      # 같은 보고의 반복 — 점유만 유지
                 return move("RETURNING", reason, extra={"failed": True})
             if phase == "DONE":
@@ -1148,10 +1167,10 @@ class Orchestrator:
             if phase == "FAILED" and att["command"]["resource_type"] != "UAV":
                 # UGV 서버: 이상 확정 → 차를 세우고 UNAVAILABLE. /stop 전까지 재배정 불가
                 return move("FAULTED", reason, extra={"fault": data.get("error")})
-            return self._unknown(att, task, detail, f"FAILED_POSITION_UNCONFIRMED:{reason}")
+            return self._unknown(att, task, detail, f"FAILED_POSITION_UNCONFIRMED:{reason}", hold_task=not observed)
         return None
 
-    def _unknown(self, att, task, detail, reason) -> Optional[dict]:
+    def _unknown(self, att, task, detail, reason, hold_task: bool = True) -> Optional[dict]:
         if att["substatus"] == "UNKNOWN":
             return None
         self.ledger.set_attempt_status(att["attempt_id"], "UNKNOWN", {
@@ -1161,7 +1180,7 @@ class Orchestrator:
                         detail={"occupancy_kept": True, "automatic_redispatch": False,
                                 "previous_substatus": att["substatus"]})
         att["substatus"] = "UNKNOWN"
-        if self._owns(att, task) and task.purpose_status in ("IN_EXECUTION", "APPROVED", "EVALUATING"):
+        if hold_task and self._owns(att, task) and task.purpose_status in ("IN_EXECUTION", "APPROVED", "EVALUATING"):
             self._set_purpose(task, "HOLD", basis=f"EXECUTION_UNKNOWN:{reason}", attempt_id=att["attempt_id"],
                               hold_reason=reason, resume=MANUAL)
         return {"attempt_id": att["attempt_id"], "substatus": "UNKNOWN", "reason": reason}
@@ -1170,6 +1189,12 @@ class Orchestrator:
     # 관측 → 환경 반영 → 목적 판정
     # ------------------------------------------------------------------
     def _observe_and_apply(self, att, task, data, detail) -> Optional[dict]:
+        """도착한 실행시도의 관측을 한 번 확정하고 저장한 뒤 환경에 반영한다 (F01·F03).
+
+        1) 관측(주 관측 + 같은 방문의 기상 측정)을 만들거나, 이미 확정된 원본이 있으면 그대로 다시 쓴다.
+        2) 원본·관측 사건·아는 세계·실행시도 OBSERVED·반영 기록을 **한 트랜잭션**으로 저장한다.
+           도중에 멈추면 전부 되돌아가 도착(ARRIVED) 상태로 남고, 저장된 뒤에 멈추면 반영 기록부터 이어진다.
+        3) 환경 APPLY 는 저장이 끝난 뒤 트랜잭션 밖에서 부른다 (주·부가 측정 모두 같은 반영 경로)."""
         aid, rid = att["attempt_id"], att["resource_id"]
         sensor = task.requirements.sensor
         pos = ((data.get("observation") or {}).get("position")) or {}
@@ -1189,62 +1214,101 @@ class Orchestrator:
                 self._set_purpose(task, "HOLD", basis="RUN_ENDED_BEFORE_OBSERVATION", attempt_id=aid,
                                   hold_reason="RUN_ENDED_BEFORE_OBSERVATION", resume=MANUAL)
             return {"attempt_id": aid, "substatus": "OBSERVED", "reason": "RUN_MISMATCH"}
-        if sensor == "WEATHER":
-            obs = observation.simulate_weather(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
-                                               position=pos, provider_raw=data.get("observation"))
-        elif att["command"]["resource_type"] != "UAV":
-            return self._ground_observation(att, task, data, detail, closed)
-        elif sensor != "THERMAL":
+        if sensor not in ("WEATHER", "THERMAL") and att["command"]["resource_type"] == "UAV":
             return None
-        else:
-            obs = observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
-                                       position=pos, uav_raw_observation=data.get("observation"))
-        if closed:
-            obs["received_after_purpose"] = after_label
-            obs["used_for_completion"] = False
-        self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid,
-                        result=obs["result"], reason=obs.get("failure_reason"), sim_time_s=snap.simulation_time_s,
-                        detail=obs)
+        if sensor != "WEATHER" and att["command"]["resource_type"] != "UAV":
+            return self._ground_observation(att, task, data, detail, closed)
+
+        # 1) 관측 확정 (복구면 원본 재사용)
+        obs = self.ledger.get_observation(aid, "MAIN")
+        aux = self.ledger.get_observation(aid, "AUX")
+        replay = obs is not None
+        if not replay:
+            if sensor == "WEATHER":
+                obs = observation.simulate_weather(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
+                                                   position=pos, provider_raw=data.get("observation"))
+            else:
+                obs = observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
+                                           position=pos, uav_raw_observation=data.get("observation"))
+            if closed:
+                obs["received_after_purpose"] = after_label
+                obs["used_for_completion"] = False
+            if not closed and sensor == "THERMAL" and self._weather_this_visit(task, att, obs):
+                aux = observation.simulate_weather(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
+                                                   position=pos, provider_raw=None)
+                aux["same_visit_as"] = task.kind
+        run = att.get("run_id") or task.run_id
+        sim = obs.get("simulation_time_s")
         after = {"received_after_purpose": after_label, "task_id": task.task_id} if closed else None
-        if sensor == "WEATHER" and obs["result"] == "MEASURED":
-            self.kb.add_weather(f"FIELD:{obs['observation_id']}", snap.simulation_time_s, obs["source"], {
-                "kind": "FIELD", "cell_id": task.nav_target.cell_id, "lat": pos.get("lat"), "lon": pos.get("lon"),
-                "values": obs["values"], "scope": obs.get("scope"), "observation_id": obs["observation_id"],
-                "resource_id": rid, **(after or {})}, received_sim_s=snap.simulation_time_s)
-        elif sensor == "THERMAL" and obs["result"] != "FAILED":
-            self.kb.record_observation(obs, snap.simulation_time_s, extra=after)
-        if closed:
-            # 유효한 관측은 출처·'취소 이후 수신'과 함께 보관하되, 끝난 임무의 성공 근거로 쓰지 않는다
-            detail.update({"observation_id": obs["observation_id"], "observation_after_purpose": after_label})
+        visit = dataclasses.replace(task)      # 이번 방문 기준 (구역 임무는 판정 뒤 다음 방문 지점으로 바뀐다)
+        need_ack = task.requirements.needs_env_ack and not closed and obs["result"] != "FAILED"
+        main_row = aux_row = None
+        out = None
+
+        # 2) 한 트랜잭션으로 저장
+        with self.ledger._tx():
+            if self.ledger.save_observation(obs, aid, "MAIN", run, task.task_id):
+                self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid,
+                                result=obs["result"], reason=obs.get("failure_reason"), sim_time_s=sim, detail=obs)
+                self._remember(obs, visit, pos, rid, sim, after)
+            if aux is not None and self.ledger.save_observation(aux, aid, "AUX", run, task.task_id):
+                self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid,
+                                result=aux["result"], reason=aux.get("failure_reason"), sim_time_s=sim, detail=aux)
+                self._remember(aux, visit, pos, rid, sim, None)
+                if aux["result"] == "MEASURED":
+                    self.ledger.add_pending_apply(aux, run, task.task_id, aid, False)
+            detail["observation_id"] = obs["observation_id"]
+            if closed:
+                detail["observation_after_purpose"] = after_label
+            if obs["result"] == "FAILED":
+                detail["observation_failed"] = obs.get("failure_reason")
             self.ledger.set_attempt_status(aid, "OBSERVED", detail)
-            att["substatus"] = "OBSERVED"
-            self.ledger.log("OBSERVATION_AFTER_CLOSE", task_id=task.task_id, attempt_id=aid, resource_id=rid,
-                            result=after_label, reason="NOT_USED_FOR_COMPLETION",
-                            detail={"observation_id": obs["observation_id"], "kept_in_knowledge": obs["result"] != "FAILED"})
+            if closed:
+                # 유효한 관측은 출처·'취소 이후 수신'과 함께 보관하되, 끝난 임무의 성공 근거로 쓰지 않는다
+                self.ledger.log("OBSERVATION_AFTER_CLOSE", task_id=task.task_id, attempt_id=aid, resource_id=rid,
+                                result=after_label, reason="NOT_USED_FOR_COMPLETION",
+                                detail={"observation_id": obs["observation_id"],
+                                        "kept_in_knowledge": obs["result"] != "FAILED"})
+            elif obs["result"] == "FAILED":
+                self._reopen(task, "OBSERVATION_FAILED:" + obs["failure_reason"], aid)
+            elif need_ack:
+                self.ledger.add_pending_apply(obs, run, task.task_id, aid, True)
+            else:
+                out = self._conclude(att, task, obs, {"accepted": None, "skipped": True}, detail,
+                                     update_attempt=False)
+        att["substatus"] = "OBSERVED"             # 저장이 끝난 뒤에 메모리 상태를 바꾼다
+        if closed:
             return {"attempt_id": aid, "substatus": "OBSERVED", "task": task.purpose_status}
         if obs["result"] == "FAILED":
-            detail["observation_failed"] = obs.get("failure_reason")
-            self.ledger.set_attempt_status(aid, "OBSERVED", detail)
-            att["substatus"] = "OBSERVED"
-            self._reopen(task, "OBSERVATION_FAILED:" + obs["failure_reason"], aid)
             return {"attempt_id": aid, "substatus": "OBSERVED", "reason": obs["failure_reason"]}
-        visit = dataclasses.replace(task)      # 이번 방문 기준 (구역 임무는 판정 뒤 다음 방문 지점으로 바뀐다)
-        if task.requirements.needs_env_ack:
-            # 환경에 보내기 전에 관측을 '반영 기록'으로 장부에 남긴다. 이후 어느 단계에서 멈춰도
-            # (환경 응답 전, 응답 저장 뒤 임무 판정 전) 재시작 후 그 단계부터 이어진다 (R04)
-            detail["observation_id"] = obs["observation_id"]
-            self.ledger.set_attempt_status(aid, "OBSERVED", detail)
-            att["substatus"] = "OBSERVED"
-            self.ledger.add_pending_apply(obs, att.get("run_id") or task.run_id, task.task_id, aid, True)
-            row = self.ledger.pending_applies(task_id=task.task_id, status=None)[-1]
-            out = self._process_apply(row, snap.run_id, task=task, att=att, detail=detail)
-        else:
-            out = self._conclude(att, task, obs, {"accepted": None, "skipped": True}, detail)
-        if sensor == "THERMAL" and self._weather_this_visit(visit, att, obs):
-            self._measure_weather_same_visit(visit, att, pos, data)
-        if obs["result"] == "DETECTED":
-            self._auto_sense(visit, obs, self.view(), measured_here=self._weather_this_visit(visit, att, obs))
-        return out
+
+        # 3) 환경 반영 (트랜잭션 밖)
+        for row in self.ledger.pending_applies(task_id=task.task_id):
+            if row["attempt_id"] != aid:
+                continue
+            if row["observation_id"] == obs["observation_id"]:
+                main_row = row
+            elif aux is not None and row["observation_id"] == aux["observation_id"]:
+                aux_row = row
+        if main_row is not None:
+            out = self._process_apply(main_row, snap.run_id, task=task, att=att, detail=detail)
+        if aux_row is not None:
+            self._process_apply(aux_row, snap.run_id)
+        if obs["result"] == "DETECTED" and not replay:
+            self._auto_sense(visit, obs, self.view(), measured_here=aux is not None)
+        return out or {"attempt_id": aid, "substatus": att["substatus"], "task": task.purpose_status}
+
+    def _remember(self, obs: dict, visit: Task, pos: dict, rid: str, sim, after: Optional[dict]) -> None:
+        """관측을 아는 세계에 넣는다 (키가 관측 ID 라 다시 불러도 한 번만)."""
+        if obs.get("sensor_type") == "WEATHER":
+            if obs["result"] == "MEASURED":
+                self.kb.add_weather(f"FIELD:{obs['observation_id']}", sim, obs["source"], {
+                    "kind": "FIELD", "cell_id": visit.nav_target.cell_id, "lat": pos.get("lat"), "lon": pos.get("lon"),
+                    "values": obs["values"], "scope": obs.get("scope"), "observation_id": obs["observation_id"],
+                    "resource_id": rid, **({"same_visit_as": obs["same_visit_as"]} if obs.get("same_visit_as") else {}),
+                    **(after or {})}, received_sim_s=sim)
+        elif obs["result"] != "FAILED":
+            self.kb.record_observation(obs, sim, extra=after)
 
     def _apply_to_env(self, obs: dict) -> dict:
         """환경 APPLY. 응답을 못 받았으면(시간 초과·연결 끊김) pending — 거절(NACK)과 구분한다."""
@@ -1262,7 +1326,7 @@ class Orchestrator:
         result = "ACK" if ack.get("accepted") else ("SKIPPED" if ack.get("skipped") else (
             "TIMEOUT" if ack.get("pending") else "NACK"))
         self.ledger.log("ENVIRONMENT_APPLY", task_id=task.task_id, attempt_id=aid, resource_id=rid,
-                        result=result, reason=ack.get("reason"), detail=ack)
+                        result=result, reason=ack.get("reason"), detail={**ack, "observation_id": obs["observation_id"]})
         detail.update({"observation_id": obs["observation_id"], "env_ack": ack})
         detail.pop("env_apply_pending", None)
         sub = att["substatus"]
@@ -1411,27 +1475,6 @@ class Orchestrator:
         if "WEATHER" in task.requirements.extra_sensors:
             return True
         return config.AUTO_ENV_SENSE_ENABLED and obs.get("result") == "DETECTED"
-
-    def _measure_weather_same_visit(self, task: Task, att: dict, pos: dict, data: dict) -> dict:
-        aid, rid = att["attempt_id"], att["resource_id"]
-        truth = self.env.read()
-        w = observation.simulate_weather(snapshot=truth, task=task, attempt_id=aid, resource_id=rid,
-                                         position=pos, provider_raw=None)
-        w["same_visit_as"] = task.kind
-        self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid, result=w["result"],
-                        reason=w.get("failure_reason"), sim_time_s=truth.simulation_time_s, detail=w)
-        if w["result"] == "MEASURED":
-            self.kb.add_weather(f"FIELD:{w['observation_id']}", truth.simulation_time_s, w["source"], {
-                "kind": "FIELD", "cell_id": task.nav_target.cell_id, "lat": pos.get("lat"), "lon": pos.get("lon"),
-                "values": w["values"], "scope": w.get("scope"), "observation_id": w["observation_id"],
-                "resource_id": rid, "same_visit_as": task.kind}, received_sim_s=truth.simulation_time_s)
-            ack = self._apply_to_env(w)
-            if ack.get("pending"):                     # 함께 한 측정도 반영 기록으로 남긴다 (목적 완료와는 무관)
-                self.ledger.add_pending_apply(w, att.get("run_id") or task.run_id, task.task_id, aid, False)
-            self.ledger.log("ENVIRONMENT_APPLY", task_id=task.task_id, attempt_id=aid, resource_id=rid,
-                            result="ACK" if ack.get("accepted") else ("TIMEOUT" if ack.get("pending") else "NACK"),
-                            reason=ack.get("reason"), detail=ack)
-        return w
 
     def _open_tasks_at(self, cell_id: str, kinds=None) -> List[Task]:
         return [t for t in self.ledger.list_tasks(self.OPEN_PURPOSES)
@@ -1704,9 +1747,12 @@ class Orchestrator:
         if action == "CANCEL":
             if task.purpose_status in TERMINAL_PURPOSES:
                 return refuse(f"TASK_ALREADY_{task.purpose_status}")
-            self._set_purpose(task, "CANCELLED", basis=f"MANUAL_CANCEL:{reason}")
-            for row in self.ledger.pending_applies(task_id=task_id):      # 취소된 목적: 반영·판정을 멈추고 사유와 함께 닫는다
-                self.ledger.finish_pending_apply(row["observation_id"], "CLOSED", "TASK_CANCELLED")
+            with self.ledger._tx():
+                # 취소와 그 임무의 끝나지 않은 반영 기록(주·부가 측정 모두) 종료를 한 트랜잭션으로 (F04).
+                # 이미 받은 응답·응답 유실 이력은 기록에 그대로 남는다 (환경에 적용된 것을 되돌렸다는 뜻이 아니다)
+                self._set_purpose(task, "CANCELLED", basis=f"MANUAL_CANCEL:{reason}")
+                for row in self.ledger.pending_applies(task_id=task_id):
+                    self.ledger.finish_pending_apply(row["observation_id"], "CLOSED", "TASK_CANCELLED")
             occupying = [a for a in attempts if a["substatus"] in ACTIVE_ATTEMPT]
             return {"status": "CANCELLED", "stop_command_sent": False,
                     "open_attempts": [{"attempt_id": a["attempt_id"], "resource_id": a["resource_id"],

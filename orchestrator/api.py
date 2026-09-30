@@ -122,12 +122,16 @@ def observation_summary(orch: Orchestrator, task_id: str) -> Optional[dict]:
     """Task 의 주 관측(임무 센서) 요약 + 같은 방문에서 함께 한 측정(extras)"""
     task = orch.ledger.get_task(task_id)
     main_sensor = task.requirements.sensor if task else None
-    items = []                                   # [(obs_event, ack_event)]
+    items, by_oid = [], {}                       # [(obs_event, ack_event)] — 반영 결과는 관측 ID 로 짝짓는다
     for e in orch.ledger.events(task_id):
         if e["event_type"] == "OBSERVATION":
             items.append([e, None])
-        elif e["event_type"] == "ENVIRONMENT_APPLY" and items and items[-1][1] is None:
-            items[-1][1] = e
+            by_oid[(e["detail"] or {}).get("observation_id")] = items[-1]
+        elif e["event_type"] == "ENVIRONMENT_APPLY":
+            oid = (e["detail"] or {}).get("observation_id")
+            it = by_oid.get(oid) if oid else (items[-1] if items and items[-1][1] is None else None)
+            if it is not None:
+                it[1] = e                        # 같은 관측의 마지막 결과 (시간 초과 뒤 ACK 등)
     if not items:
         return None
 

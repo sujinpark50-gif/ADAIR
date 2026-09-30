@@ -132,6 +132,17 @@ CREATE TABLE IF NOT EXISTS pending_applies (
     resolved_wall REAL,
     ack TEXT
 );
+CREATE TABLE IF NOT EXISTS observations (
+    observation_id TEXT PRIMARY KEY,
+    attempt_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    run_id TEXT,
+    task_id TEXT NOT NULL,
+    sim_time_s REAL,
+    body TEXT NOT NULL,
+    created_wall REAL NOT NULL,
+    UNIQUE (attempt_id, role)
+);
 CREATE INDEX IF NOT EXISTS ix_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS ix_attempts_task ON attempts(task_id);
 CREATE INDEX IF NOT EXISTS ix_knowledge_run_kind ON knowledge(run_id, kind);
@@ -241,6 +252,7 @@ class Ledger:
         self._conn.executescript(_SCHEMA)
         if "ack" not in {r["name"] for r in self._conn.execute("PRAGMA table_info(pending_applies)")}:
             self._conn.execute("ALTER TABLE pending_applies ADD COLUMN ack TEXT")     # 094f965 장부에서 올라온 경우
+        self.legacy_apply_migration = self._migrate_legacy_apply_rows()
         if legacy:
             self._conn.execute("INSERT OR IGNORE INTO runs VALUES (?,?,?,?,?)",
                                (LEGACY_RUN, "QUARANTINED", None, time.time(), None))
@@ -249,6 +261,47 @@ class Ledger:
 
     def close(self):
         self._conn.close()
+
+    def _migrate_legacy_apply_rows(self) -> dict:
+        """이전 판(094f965)의 ACKED/NACKED 반영 기록 이관 (F05). 그 판은 환경 응답을 받으면 기록을 먼저 ACKED/NACKED 로
+        닫고 나서 임무 판정을 했으므로, 그 사이에 멈춘 임무는 새 흐름의 '끝나지 않은 기록' 조회에서 빠진다.
+          - 목적이 이미 끝났거나(완료·취소 등) 그 시도의 완료 사건이 있으면 → DONE (다시 적용하지 않음)
+          - 담당이 다른 시도로 바뀌었으면 → CLOSED OWNER_CHANGED
+          - 판정이 안 된 것 → RESPONDED 로 되돌려 새 흐름이 판정한다. 응답 근거는 장부에 남은 이전 상태
+            (ACKED = 환경이 수용, NACKED = 거절)와 사유이며, 그 밖의 값을 지어내지 않는다 (restored_from 표시)
+          - Task·실행시도를 찾을 수 없으면 → MANUAL_REVIEW (사람 확인, 재출동도 막는다)
+        한 트랜잭션이라 도중에 멈추면 전부 되돌아가고, 다시 열 때 같은 결과로 반복된다 (대상은 ACKED/NACKED 뿐)."""
+        rows = self._conn.execute("SELECT * FROM pending_applies WHERE status IN ('ACKED','NACKED')").fetchall()
+        out = {}
+        if not rows:
+            return out
+        with self._tx() as c:
+            for r in rows:
+                trow = c.execute("SELECT body FROM tasks WHERE task_id=?", (r["task_id"],)).fetchone()
+                arow = c.execute("SELECT attempt_id FROM attempts WHERE attempt_id=?", (r["attempt_id"],)).fetchone()
+                legacy = r["status"]
+                if not r["purpose_bound"]:
+                    new, reason = "DONE", f"LEGACY_{legacy}_AUXILIARY"
+                elif trow is None or arow is None:
+                    new, reason = "MANUAL_REVIEW", f"LEGACY_{legacy}_TASK_OR_ATTEMPT_MISSING"
+                else:
+                    task = json.loads(trow["body"])
+                    judged = c.execute("SELECT 1 FROM events WHERE event_type='TASK_COMPLETE' AND attempt_id=?",
+                                       (r["attempt_id"],)).fetchone()
+                    owner = task.get("owner_attempt_id")
+                    if task["purpose_status"] != "IN_EXECUTION" or judged:
+                        new, reason = "DONE", f"LEGACY_{legacy}_ALREADY_JUDGED:{task['purpose_status']}"
+                    elif owner not in (None, r["attempt_id"]):
+                        new, reason = "CLOSED", f"LEGACY_{legacy}_OWNER_CHANGED"
+                    else:
+                        new, reason = "RESPONDED", None
+                ack = {"accepted": legacy == "ACKED", "reason": r["reason"], "restored_from": f"LEGACY_STATUS_{legacy}"}
+                c.execute("UPDATE pending_applies SET status=?, reason=?, ack=COALESCE(ack, ?), "
+                          "resolved_wall=CASE WHEN ?='RESPONDED' THEN NULL ELSE COALESCE(resolved_wall, ?) END "
+                          "WHERE observation_id=?",
+                          (new, reason, _dumps(ack), new, time.time(), r["observation_id"]))
+                out[r["observation_id"]] = new
+        return out
 
     def _tx(self):
         return _Tx(self)
@@ -287,7 +340,9 @@ class Ledger:
             now = time.time()
             c.execute("UPDATE runs SET status='CLOSED', closed_wall=? WHERE status='ACTIVE'", (now,))
             c.execute("INSERT INTO runs VALUES (?,?,?,?,?)", (run_id, "ACTIVE", now, None, None))
-            self._active_run = run_id
+            # 같은 트랜잭션에서 이전 run 의 끝나지 않은 반영 기록을 닫는다 (F07) — 둘 중 하나만 저장되는 일이 없다
+            self.last_activation_closed = self.close_pending_applies_of_other_runs(run_id, "RUN_ENDED")
+        self._active_run = run_id                     # 저장이 끝난 뒤에 메모리를 바꾼다
         return "ACTIVATED"
 
     def note_state_version(self, run_id: str, version: int) -> str:
@@ -411,7 +466,7 @@ class Ledger:
             if open_:
                 raise AttemptConflict(f"{task_id} has open attempt {open_[0]['attempt_id']} ({open_[0]['substatus']})")
             if trow and c.execute("SELECT 1 FROM pending_applies WHERE task_id=? AND purpose_bound=1 "
-                                  "AND status IN ('PENDING','RESPONDED')", (task_id,)).fetchone():
+                                  "AND status IN ('PENDING','RESPONDED','MANUAL_REVIEW')", (task_id,)).fetchone():
                 raise AttemptConflict(f"{task_id} has an observation waiting for environment apply")
             c.execute("INSERT INTO reservations VALUES (?,?,?,?)", (resource_id, task_id, attempt_id, now))
             c.execute("INSERT INTO attempts (attempt_id, task_id, decision_id, resource_id, command, command_hash, "
@@ -446,6 +501,22 @@ class Ledger:
     # 지우지 않는다. OPEN = PENDING + RESPONDED.
     # ------------------------------------------------------------------
     OPEN_APPLY = ("PENDING", "RESPONDED")
+
+    # ------------------------------------------------------------------
+    # 관측 원본 (F01). 실행시도마다 역할(MAIN 주 관측 / AUX 함께 한 측정)별로 한 번 확정한다.
+    # 복구할 때는 이 원본을 다시 쓴다 — 재시작 시점의 환경을 읽어 새 관측으로 바꾸지 않는다.
+    # ------------------------------------------------------------------
+    def save_observation(self, obs: dict, attempt_id: str, role: str, run_id: Optional[str], task_id: str) -> bool:
+        with self._tx() as c:
+            cur = c.execute("INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?)",
+                            (obs["observation_id"], attempt_id, role, run_id, task_id, obs.get("simulation_time_s"),
+                             _dumps(obs), time.time()))
+            return cur.rowcount == 1
+
+    def get_observation(self, attempt_id: str, role: str) -> Optional[dict]:
+        r = self._conn.execute("SELECT body FROM observations WHERE attempt_id=? AND role=?",
+                               (attempt_id, role)).fetchone()
+        return _loads(r["body"]) if r else None
 
     def add_pending_apply(self, observation: dict, run_id: str, task_id: str, attempt_id: str,
                           purpose_bound: bool) -> bool:
