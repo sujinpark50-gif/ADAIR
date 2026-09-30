@@ -104,12 +104,25 @@ class Orchestrator:
             if stored:
                 task.hold_reason, task.resume_condition = stored.hold_reason, stored.resume_condition
             return False
+        before = (task.purpose_status, task.hold_reason, task.resume_condition)
         task.purpose_status = new
         if hold_reason is not _KEEP:
             task.hold_reason = hold_reason
         if resume is not _KEEP:
             task.resume_condition = resume
-        self.ledger.save_task(task)
+        try:
+            self.ledger.save_task(task)
+        except IllegalTransition:
+            # 확인과 저장 사이에 다른 스레드가 상태를 바꿨다 (예: 배정 중 취소) → 이 전이는 거절된 것으로 본다
+            task.purpose_status, task.hold_reason, task.resume_condition = before
+            now = self.ledger.get_task(task.task_id)
+            self.ledger.log("PURPOSE_TRANSITION_REJECTED", task_id=task.task_id, attempt_id=attempt_id,
+                            result=f"{now.purpose_status if now else current}->{new}", reason=basis, sim_time_s=sim,
+                            detail={"why": "CHANGED_CONCURRENTLY", "requested": new})
+            if now:
+                task.purpose_status, task.hold_reason, task.resume_condition = (
+                    now.purpose_status, now.hold_reason, now.resume_condition)
+            return False
         if current != new:
             self.ledger.log("PURPOSE_TRANSITION", task_id=task.task_id, attempt_id=attempt_id,
                             result=f"{current}->{new}", reason=basis, sim_time_s=sim,
@@ -852,10 +865,19 @@ class Orchestrator:
                             resource_id=rid, reason="OPEN_ATTEMPT_OR_CLOSED_TASK", detail={"error": str(e)})
             return {"abort": "OPEN_ATTEMPT_EXISTS"}
         task.owner_attempt_id = attempt_id          # 담당 지정은 prepare_attempt 가 같은 트랜잭션에서 저장했다
-        if not self._set_purpose(task, "APPROVED", basis="SAFETY_ALLOW_RESERVED", attempt_id=attempt_id,
-                                 sim=current.simulation_time_s):
-            # 평가·Safety 도중 다른 스레드가 이 Task 를 취소·변경했다 → 보내지 않고 예약을 푼다
+        try:
+            approved = self._set_purpose(task, "APPROVED", basis="SAFETY_ALLOW_RESERVED", attempt_id=attempt_id,
+                                         sim=current.simulation_time_s)
+        except Exception:
+            # 보내기 전의 오류: 명령은 나가지 않았으므로 시도를 끝내고 예약을 푼 뒤 오류를 그대로 알린다
+            self.ledger.set_attempt_status(attempt_id, "NOT_SENT", {"reason": "ERROR_BEFORE_SEND"}, release=True)
+            raise
+        if not approved:
+            # 평가·Safety·승인 저장 도중 다른 스레드가 이 Task 를 취소·변경했다 → 보내지 않고 예약을 푼다
             self.ledger.set_attempt_status(attempt_id, "NOT_SENT", {"reason": "TASK_CHANGED_BEFORE_SEND"}, release=True)
+            self.ledger.log("EXECUTION_NOT_SENT", task_id=task.task_id, decision_id=did, attempt_id=attempt_id,
+                            resource_id=rid, reason="TASK_CHANGED_BEFORE_SEND",
+                            detail={"purpose_status": task.purpose_status, "reservation_released": True})
             return {"done": True, "status": "SKIPPED", "reason": "TASK_CHANGED_BEFORE_SEND",
                     "purpose_status": task.purpose_status}
         result, info = client.execute(rid, command)
@@ -1587,36 +1609,56 @@ class Orchestrator:
         return out
 
     def run_followups(self) -> List[dict]:
-        """장부에 남은 후속 작업을 수행한다 (poll·recover·관측 직후). 임무 생성은 요청 ID 로 멱등이라 다시 해도
-        새로 생기지 않는다. 계획 기록과 '끝남' 표시는 한 트랜잭션이다 (재시작 뒤 기록이 두 번 남지 않음)."""
+        """장부에 남은 후속 작업을 수행한다 (poll·recover·관측 직후).
+        1) 처음 수행할 때 측정 계획(대상 칸·좌표·요청 ID)을 한 번 정해 장부에 적는다. 복구 때는 적어 둔 계획을
+           그대로 쓴다 — 그 사이 풍향 등이 바뀌어도 다른 칸을 새로 고르지 않는다.
+        2) 계획한 임무를 요청 ID 로 만든다 (다시 해도 하나). 3) 계획 기록과 '끝남' 표시는 한 트랜잭션.
+        후속 작업은 자기 run 에서만 수행한다. run 이 바뀌면 이전 run 의 작업은 닫는다 (activate_run)."""
         rows = self.ledger.pending_followups()
         if not rows:
             return []
-        snap = self.view()
+        snap = self.view()                               # run 전환이 여기서 일어날 수 있다
         if snap.run_gate:
             return []
         done = []
         for row in rows:
             if row["kind"] != "AUTO_SENSE":
                 continue
+            if row["run_id"] != self.ledger.active_run():
+                continue                                 # 이전 run 의 작업 (전환 때 이미 닫혔다)
             b = row["body"]
-            created, plans = self._auto_sense(row["task_id"], b["kind"], b["incident_id"], b["visit_cell"],
-                                              b["detections"], snap, b["measured_here"])
+            if "plan" not in b:
+                b = {**b, "plan": self._plan_auto_sense(row["task_id"], b["kind"], b["visit_cell"], b["detections"],
+                                                        snap, b["measured_here"])}
+                self.ledger.set_followup_plan(row["key"], b)
+            created = []
+            for p in b["plan"]:
+                for c in p["targets"]:
+                    if self.ledger.active_run() != row["run_id"]:
+                        break                            # 만드는 도중 run 이 바뀌면 멈춘다
+                    tid = self._attach_or_create_sense(c, b["incident_id"], row["run_id"], request_id=c["request_id"])
+                    if tid:
+                        created.append(tid)
+            if self.ledger.active_run() != row["run_id"]:
+                continue
             with self.ledger._tx():
-                for p in plans:
+                for p in b["plan"]:
                     self.ledger.log("ENV_SENSE_PLANNED", task_id=row["task_id"],
-                                    result="CREATED" if created else "EXISTING", detail={**p, "created": created})
-                self.ledger.finish_followup(row["key"], {"created": created, "fire_cells": [p["fire_cell"] for p in plans]})
+                                    result="CREATED" if created else "EXISTING",
+                                    detail={**{k: v for k, v in p.items() if k != "targets"},
+                                            "targets": [c["cell_id"] for c in p["targets"]], "created": created})
+                self.ledger.finish_followup(row["key"], {"created": created,
+                                                         "fire_cells": [p["fire_cell"] for p in b["plan"]]})
             done.append({"key": row["key"], "created": created})
         return done
 
-    def _auto_sense(self, source_task_id: str, kind: str, incident_id: str, visit_cell: Optional[str],
-                    detections: List[dict], snap, measured_here: bool = False):
-        """불 발견 → 불난 칸 + 바람이 향하는 쪽 위험 칸에 기상 측정. (새로 만든 임무 ID 목록, 계획 기록 목록)"""
+    def _plan_auto_sense(self, source_task_id: str, kind: str, visit_cell: Optional[str], detections: List[dict],
+                         snap, measured_here: bool = False) -> List[dict]:
+        """불 발견 → 불난 칸 + 바람이 향하는 쪽 위험 칸. 측정할 칸마다 좌표·지면고도·요청 ID 까지 정한다."""
         if not config.AUTO_ENV_SENSE_ENABLED or kind == "ENV_SENSE" or snap.run_gate:
-            return [], []
+            return []
         cells = {c["cell_id"]: c for c in snap.fire_cells + snap.risk_cells}
-        created, plans = [], []
+        plans = []
         for det in detections:
             fire = cells.get(det["cell_id"])
             if not fire or fire.get("lat") is None:
@@ -1625,18 +1667,17 @@ class Orchestrator:
             w = self.kb.weather_for(fire["lat"], fire["lon"], fire["cell_id"], snap.simulation_time_s or 0.0)
             wd = w["items"].get("wind_dir_deg") or {}
             sp = self.sense_points(fire, dataclasses.replace(snap, wind_dir_deg=w["values"].get("wind_dir_deg")))
-            sp["wind_ref"] = {k: wd.get(k) for k in ("basis", "source", "station_id", "distance_m", "status")}
-            sp["wind_ref"]["sim_time_s"] = wd.get("observed_sim_s")
-            for c in sp["points"]:
-                if c["cell_id"] == fire["cell_id"] and measured_here and fire["cell_id"] == visit_cell:
-                    continue                                  # 불 발견한 그 방문에서 이미 측정함
-                tid = self._attach_or_create_sense(c, incident_id, snap.run_id)
-                if tid:
-                    created.append(tid)
+            wind_ref = {k: wd.get(k) for k in ("basis", "source", "station_id", "distance_m", "status")}
+            wind_ref["sim_time_s"] = wd.get("observed_sim_s")
+            targets = [{"cell_id": c["cell_id"], "lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"),
+                        "request_id": f"AUTO-SENSE:{snap.run_id}:{c['cell_id']}"}
+                       for c in sp["points"]
+                       if not (c["cell_id"] == fire["cell_id"] and measured_here and fire["cell_id"] == visit_cell)]
             plans.append({"fire_cell": fire["cell_id"], "points": [c["cell_id"] for c in sp["points"]],
-                          "selection": sp["note"], "wind_ref": sp["wind_ref"], "measured_in_same_visit": measured_here,
-                          "source_task_id": source_task_id})
-        return created, plans
+                          "targets": targets, "selection": sp["note"], "wind_ref": wind_ref,
+                          "measured_in_same_visit": measured_here, "source_task_id": source_task_id,
+                          "planned_sim_s": snap.simulation_time_s})
+        return plans
 
     # ------------------------------------------------------------------
     # 확산 예측 → 사전 감시 임무 (구현 완료, config.PREEMPTIVE_MONITOR_ENABLED 로 꺼 둠)

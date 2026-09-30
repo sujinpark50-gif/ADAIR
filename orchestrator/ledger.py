@@ -356,6 +356,9 @@ class Ledger:
             c.execute("INSERT INTO runs VALUES (?,?,?,?,?)", (run_id, "ACTIVE", now, None, None))
             # 같은 트랜잭션에서 이전 run 의 끝나지 않은 반영 기록을 닫는다 (F07) — 둘 중 하나만 저장되는 일이 없다
             self.last_activation_closed = self.close_pending_applies_of_other_runs(run_id, "RUN_ENDED")
+            # 이전 run 의 끝나지 않은 후속 작업도 같은 트랜잭션에서 닫는다 — 새 run 에 이전 관측의 임무를 만들지 않는다
+            c.execute("UPDATE followups SET status='CLOSED', result=?, done_wall=? WHERE status='PENDING' "
+                      "AND (run_id IS NULL OR run_id<>?)", (_dumps({"reason": "RUN_ENDED"}), now, run_id))
         self._active_run = run_id                     # 저장이 끝난 뒤에 메모리를 바꾼다
         return "ACTIVATED"
 
@@ -558,6 +561,11 @@ class Ledger:
         return [{"key": r["key"], "kind": r["kind"], "status": r["status"], "result": _loads(r["result"])}
                 for r in self._conn.execute("SELECT * FROM followups WHERE task_id=? ORDER BY created_wall, rowid",
                                             (task_id,))]
+
+    def set_followup_plan(self, key: str, body: dict):
+        """후속 작업에 확정한 계획을 적는다 (한 번 정하면 복구 때도 그대로 쓴다)."""
+        with self._tx() as c:
+            c.execute("UPDATE followups SET body=? WHERE key=? AND status='PENDING'", (_dumps(body), key))
 
     def finish_followup(self, key: str, result: dict, status: str = "DONE"):
         with self._tx() as c:

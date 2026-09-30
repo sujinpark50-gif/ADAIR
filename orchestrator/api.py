@@ -187,6 +187,20 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             orch.recover()
 
     if poll_interval_s:
+        dispatch_wanted = threading.Event()
+
+        def dispatcher():
+            # 자동 배정 전용 작업자. 추적 루프는 배정을 부탁만 하고(dispatch_wanted) 기다리지 않는다 —
+            # 평가·출동 요청이 느려도 주기적 추적은 계속 돈다 (내부 과제 2)
+            while not stop.is_set():
+                if not dispatch_wanted.wait(0.2):
+                    continue
+                dispatch_wanted.clear()
+                try:
+                    dispatch_all()
+                except Exception as e:  # noqa: BLE001 — 배정 작업자는 멈추지 않는다 (기록만)
+                    orch.ledger.log("DISPATCH_ERROR", reason=type(e).__name__, detail={"error": str(e)})
+
         def loop():
             while not stop.wait(poll_interval_s):
                 try:
@@ -194,13 +208,14 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                         changed = bool(orch.poll())
                         created = bool(orch.sync()["created"])     # 그 시각까지의 신고 → 최초 정찰 임무
                     if (changed or created) and config.AUTO_DISPATCH_ON_CHANGE:
-                        dispatch_all()                # 진행 상황이 바뀌면(반납·재대기·새 신고 등) 대기 임무 배정
+                        dispatch_wanted.set()         # 진행 상황이 바뀌면(반납·재대기·새 신고 등) 배정 작업자에게 부탁
                 except Exception as e:  # noqa: BLE001 — 추적 루프는 멈추지 않는다
                     orch.ledger.log("POLL_ERROR", reason=type(e).__name__, detail={"error": str(e)})
 
         @app.on_event("startup")
         def _start():
             threading.Thread(target=loop, daemon=True, name="orch-poller").start()
+            threading.Thread(target=dispatcher, daemon=True, name="orch-dispatcher").start()
 
         @app.on_event("shutdown")
         def _stop():
