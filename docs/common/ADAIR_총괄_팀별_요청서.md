@@ -102,7 +102,7 @@
 | 항목 | 내용 |
 |---|---|
 | 계약 요청 | `APPLY(observation)` 는 `observation_id` 로 한 번만 반영하고 ACK `{accepted, state_version, duplicate}`. 열화상(`detections`, `covered_cells`)과 기상(`values`) 모두 |
-| 총괄 처리 (2026-09-30) | ACK 가 필요한 임무는 ACK 전에 완료하지 않는다. 응답이 없으면(시간 초과·연결 끊김) 그 관측을 **환경 반영 대기**로 장부에 보관하고 **같은 `observation_id` 로 다시 APPLY** 한다 — 멱등이 필수. 반영 대기는 기체 반납과 별개로 남고(재시작 후에도), 그동안 같은 임무를 다시 출동시키지 않는다. 다른 run 의 환경에는 적용하지 않으며, 취소된 임무의 대기 관측은 반영하지 않고 사유와 함께 닫는다. 재시도 횟수 제한·관측 유효시간은 근거 값이 없어 두지 않았다 (필요하면 환경팀과 정한다). 거절(`accepted=false`)은 재관측 대기. 도로 상황 등 APPLY 계약이 없는 관측에는 ACK 를 요구하지 않는다 (요구하는 요청은 접수 거절). 열화상 관측은 `covered_cells`(칸 전체를 봄)·`partial_cells`(일부만)·`cell_coverage`(칸별 겹친 범위·비율)로 보낸다 — 일부만 본 칸을 전체 관측으로 반영하지 말 것. 총괄도 칸 일부만 보고 불을 못 본 관측으로는 기존 신고·확인 화재를 해소하지 않는다 (칸 전체를 봤을 때만 해소) |
+| 총괄 처리 (2026-09-30) | ACK 가 필요한 임무는 ACK 전에 완료하지 않는다. 응답이 없으면(시간 초과·연결 끊김) 그 관측을 **환경 반영 기록**으로 장부에 보관하고 **같은 `observation_id` 로 다시 APPLY** 한다 — 멱등이 필수. 기록은 두 단계다: ① 환경 응답 대기(수용 여부 모름 → APPLY 재시도) ② 응답(ACK/NACK)은 저장했고 임무 판정 대기(환경에 다시 보내지 않고 저장한 응답으로 판정 재개). 기체가 불명 상태라 임무가 보류 중이면 응답을 보관했다가 정상 재접촉 뒤에 판정한다. 반영 대기는 기체 반납과 별개로 남고(재시작 후에도), 그동안 같은 임무를 다시 출동시키지 않는다. 다른 run 의 환경에는 적용하지 않으며, 취소된 임무의 대기 관측은 반영하지 않고 사유와 함께 닫는다. 재시도 횟수 제한·관측 유효시간은 근거 값이 없어 두지 않았다 (필요하면 환경팀과 정한다). 거절(`accepted=false`)은 재관측 대기. 도로 상황 등 APPLY 계약이 없는 관측에는 ACK 를 요구하지 않는다 (요구하는 요청은 접수 거절). 열화상 관측은 `covered_cells`(칸 전체를 봄)·`partial_cells`(일부만)·`cell_coverage`(칸별 겹친 범위·비율)로 보낸다 — 일부만 본 칸을 전체 관측으로 반영하지 말 것. 총괄도 칸 일부만 보고 불을 못 본 관측으로는 기존 신고·확인 화재를 해소하지 않는다 (칸 전체를 봤을 때만 해소) |
 | 금지 | 관측만으로 UNBURNED→BURNING 임의 변경, 도착만으로 진화 |
 | 총괄 상태 | B — 임무 완료 근거에 `evidence_level=SIMULATION_TEST` (모의 센서 + 가짜 환경 ACK) 로 표시. 실제 환경 연동 완료 아님 |
 
@@ -135,7 +135,7 @@
 
 | ID | 현재 코드 | 요청 | 총괄 쪽 현재 처리 |
 |---|---|---|---|
-| UAV-01 | 실행 상태가 메모리(`_tasks`)에만 있어 재시작하면 404. 중복 키 없음. 상태 조회 응답(`TaskStatus`)에 자원 ID 가 없음 | `ExecuteRequest` 에 `execution_attempt_id`(또는 idempotency key), 같은 키 재요청 시 같은 결과. **상태 영속**, 재시작 후 `/task/{id}` 조회. `TaskStatus` 에 `uav_id` 포함 (총괄은 응답의 실행 식별자·자원 ID·상태 값을 검증하고, 맞지 않으면 그 응답을 쓰지 않고 불명 처리한다. UGV 서버는 이미 `resource_id` 를 준다) | `task_id` 칸에 총괄 `attempt_id` 를 넣어 보냄. 총괄 재시작 시 송신 직전·직후 시도(`PREPARED`)를 `/task/{attempt_id}` 로 대조: 같은 시도를 보고하면 추적 재개, **404·조회 불가는 UNKNOWN**(점유 유지, 재송신·재출동 없음, 수동 해소). 제공자 멱등성 없이는 **물리 명령 최대 1회를 보장하지 않음** |
+| UAV-01 | 실행 상태가 메모리(`_tasks`)에만 있어 재시작하면 404. 중복 키 없음. 상태 조회 응답(`TaskStatus`)에 자원 ID 가 없음 | `ExecuteRequest` 에 `execution_attempt_id`(또는 idempotency key), 같은 키 재요청 시 같은 결과. **상태 영속**, 재시작 후 `/task/{id}` 조회. `TaskStatus` 에 `uav_id` 포함 (총괄은 응답의 실행 식별자·자원 ID·상태 값을 검증하고, 맞지 않으면 그 응답을 쓰지 않고 불명 처리한다. **UAV 가 완료를 보고할 때는 `observation.position` 의 `lat`·`lon`·`alt_m_amsl`(기상 측정은 `lat`·`lon`)이 반드시 있어야 한다** — 없으면 관측을 만들지 않고 불명 처리한다. 이동 중 보고와 관측 뒤 복귀 보고에는 위치를 요구하지 않는다. UGV 서버는 이미 `resource_id` 를 준다) | `task_id` 칸에 총괄 `attempt_id` 를 넣어 보냄. 총괄 재시작 시 송신 직전·직후 시도(`PREPARED`)를 `/task/{attempt_id}` 로 대조: 같은 시도를 보고하면 추적 재개, **404·조회 불가는 UNKNOWN**(점유 유지, 재송신·재출동 없음, 수동 해소). 제공자 멱등성 없이는 **물리 명령 최대 1회를 보장하지 않음** |
 | UAV-02 | `RETURN_MARGIN_INSUFFICIENT` COUNTER 가 `observe_duration_s` 를 제안하지만 `EvaluateRequest` 에 그 칸이 없음. `MODERATE_WIND` 는 note 만 | COUNTER 는 재평가 요청에 실을 수 있는 필드만 제안하거나, `observe_duration_s` 를 요청 필드로 추가 | 구체 수정값만 재평가(드론당 2회). 실제 서버 COUNTER 는 모두 "실행 불가"로 다음 후보 (능선 목표 시험에서 확인) |
 | UAV-03 | DEM 경로 미구현 (책임은 드론팀 확정) | 평가 응답에 `route_id, route_version, route_hash`, 실행은 같은 해시만 | Safety 에 평가·실행 조건 동일성 검사 있음. 경로 해시 칸은 계약 후 추가 |
 | UAV-04 | `deadline` 을 현재 UTC 와 비교 | `remaining_time_s`(시뮬레이션 초) | 기한을 보내지 않음 |
@@ -234,7 +234,7 @@
 | 완료조건 분리 (정찰 = 목표 지점, 감시 = 필수 셀 전체 누적) | `engine._conclude`, `_conclude_area`, `observation.simulate` | A (fixture, 임시 모의 범위 90×90m) / 실제 센서·경로 기준은 C (UAV-08) |
 | 인계 시 목적 담당 시도 기록 (이전 시도는 후임의 목적을 못 바꿈) | `Task.owner_attempt_id`, `engine._set_purpose`, `ledger.open_mission_attempts` | A (`test_followup_r01_r04`) |
 | 부분 음성 관측은 기존 화재 후보를 해소하지 않음 | `knowledge.fire_states` | A (`test_followup_r01_r04`) |
-| 환경 반영 대기 (기체 반납과 별개, 같은 관측 ID 재반영, 재출동 없음) | `ledger.pending_applies`, `engine.retry_pending_applies` | A (fixture) |
+| 환경 반영 기록 (기체 반납과 별개, 환경 응답 저장과 임무 판정을 따로 기록, 같은 관측 ID 재반영, 재출동 없음, 재시작 후 이어서 처리) | `ledger.pending_applies`, `engine.process_pending_applies`·`_process_apply` | A (fixture) |
 | 같은 칸 중복 방문 방지 (측정 합치기) | `engine._attach_or_create_sense`, `_merge_pending_sense_into` | A |
 | 우선순위 (인명 우선·비슷함 0.1·엇갈림) + 자동/수동 모드 + 지금 보내기 | `priority.py`, `engine.dispatch_pending`, `manual_dispatch` | A (규칙) / B (데이터) |
 | LLM 추천 + 결정론적 검증·재사용 | `llm.py` | A |
