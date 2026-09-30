@@ -154,15 +154,16 @@ def test_ack_timeout_keeps_task_incomplete_then_retry_with_same_observation_comp
 
     def flaky(obs):
         calls.append(obs["observation_id"])
-        if len(calls) == 1:
+        if len(calls) <= 2:
             raise TimeoutError("env apply timed out")
         return real(obs)
     env.apply = flaky
     task = submit(orch)
     out = orch.dispatch(task.task_id)
     for _ in range(3):
-        orch.poll()                                                  # 도착·관측, 환경 반영 응답 없음
+        orch.poll()                                                  # 도착·관측, 환경 반영 응답 없음 (재시도도 실패)
     assert lg.get_task(task.task_id).purpose_status == "IN_EXECUTION"   # ACK 전에는 완료 아님
+    assert lg.get_task(task.task_id).hold_reason == "ENV_APPLY_PENDING"
     assert _ev(lg, task.task_id, "ENVIRONMENT_APPLY")[0]["result"] == "TIMEOUT"
     assert _ev(lg, task.task_id, "TASK_COMPLETE") == []
     orch.poll()                                                      # 같은 관측 ID 로 다시 반영 → ACK
@@ -173,7 +174,7 @@ def test_ack_timeout_keeps_task_incomplete_then_retry_with_same_observation_comp
     assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"
 
 
-def test_ack_never_confirmed_before_resource_returns_reopens_task(world):
+def test_ack_never_confirmed_before_resource_returns_keeps_observation_pending_without_redispatch(world):
     orch, lg, env = world["orch"], world["ledger"], world["env"]
     _quiet_target(world)
 
@@ -186,8 +187,14 @@ def test_ack_never_confirmed_before_resource_returns_reopens_task(world):
         orch.poll()
     assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"      # 기체 READY·반납은 ACK 와 별개
     t = lg.get_task(task.task_id)
-    assert t.purpose_status == "PENDING" and t.hold_reason == "ENV_APPLY_TIMEOUT"
+    # 관측은 환경 반영 대기로 남는다 (R04). 재대기(PENDING)로 돌려 다시 출동시키지 않는다
+    assert t.purpose_status == "IN_EXECUTION" and t.hold_reason == "ENV_APPLY_PENDING"
+    assert len(lg.pending_applies(task_id=task.task_id)) == 1
     assert _ev(lg, task.task_id, "TASK_COMPLETE") == []
+    orch.dispatch_pending()
+    assert orch.dispatch(task.task_id)["status"] == "SKIPPED"
+    assert orch.resolve(task.task_id, "RETRY", "다시")["reason"] == "ENV_APPLY_PENDING"
+    assert len(world["uav"].exec_calls()) == 1                                # 두 번째 비행 없음
 
 
 def test_programming_error_in_env_apply_is_not_swallowed(world):

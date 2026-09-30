@@ -42,7 +42,7 @@ def test_scenario1_normal_recon_closed_loop(world):
     assert obs["result"] == "DETECTED" and obs["target_covered"]
     assert obs["uav_reported_values_ignored"] == {"max_temp_c": 312.5, "hotspot_detected": True}
     assert abs(obs["footprint"]["agl_m"] - 90.0) < 1e-6                  # 실제 높이로 재계산
-    assert abs(obs["footprint"]["width_m"] - 54.0) < 1e-6
+    assert abs(obs["footprint"]["width_m"] - 52.0) < 1e-6
 
     orch.poll()                                   # DONE → READY 확인 → 해제
     assert lg.get_attempt(out["attempt_id"])["substatus"] == "RELEASED"

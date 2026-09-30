@@ -101,20 +101,43 @@ UAV_DEFAULT_TARGET_AGL_M = 80.0
 # 모의 센서 (TEST_ONLY, 요청서 §8). 실제 탑재 장비·운영 관측범위가 아니다.
 # ---------------------------------------------------------------------------
 SENSOR_PROFILES = {
-    "TEST_THERMAL_50M_V1": {
+    # 한 프레임(정지·수직 촬영) 기준. 사용자 결정 2026-09-30: 기본 비행 높이가 지면 위 90m
+    # (임무 80m + UAV 여유 10m)로 바뀌어 기준 높이를 50m(30×25m) → 90m 로 교체했다.
+    # 계산: H20T 급 열화상 대각 시야각 40.6°, 영상 5:4 → 대각 2×90×tan(20.3°) ≈ 66.6m → 약 52.0 × 41.6m.
+    # 52×42 는 보기 쉽게 반올림한 시험값이다 (실제 탑재 카메라 미확인). 실제 높이가 다르면 비례해 다시 계산한다.
+    # "50m 안의 불을 탐지한다"는 뜻이 아니라 한 번 수직으로 찍을 때 영상에 들어오는 지상 넓이다.
+    "TEST_THERMAL_90M_V1": {
         "source": "SIMULATED",
         "status": "TEST_ONLY",
         "sensor_type": "THERMAL",
-        "agl_m": 50.0,
+        "agl_m": 90.0,
         "view_direction": "NADIR",
         "footprint_shape": "RECTANGLE",
-        "footprint_width_m": 30.0,
-        "footprint_height_m": 25.0,
+        "footprint_width_m": 52.0,
+        "footprint_height_m": 42.0,
         "reference_payload": "H20T_CLASS_EXAMPLE",
         "basis": "IDEALIZED_DIAGONAL_FOV_GEOMETRY",
     },
+    # 임시 가정 (사용자 결정 2026-09-30): 드론이 목표에 도착해 그 칸 위를 원으로 한 바퀴 돌았다고 보고
+    # 관측 범위를 90m × 90m 로 둔다. 실제 드론은 아직 제자리 비행만 한다 (원 비행은 UAV-08 계약 대기) —
+    # 이 범위는 실제로 본 범위가 아니라 가정이다. 높이에 따라 늘리거나 줄이지 않는다.
+    # 드론팀의 원 비행·경로 보고가 생기면 위 TEST_THERMAL_90M_V1 (한 프레임 기준)로 되돌린다.
+    "ASSUMED_ORBIT_90M_V1": {
+        "source": "SIMULATED",
+        "status": "TEST_ONLY",
+        "sensor_type": "THERMAL",
+        "agl_m": None,
+        "scale_with_agl": False,
+        "view_direction": "NADIR",
+        "footprint_shape": "RECTANGLE",
+        "footprint_width_m": 90.0,
+        "footprint_height_m": 90.0,
+        "reference_payload": "H20T_CLASS_EXAMPLE",
+        "basis": "ASSUMED_ONE_ORBIT_OVER_TARGET_CELL (실제 비행 경로 증거 없음)",
+    },
 }
-DEFAULT_SENSOR_PROFILE_ID = "TEST_THERMAL_50M_V1"
+# 원래 관측 범위(한 프레임)는 TEST_THERMAL_90M_V1 로 남겨 둔다. 되돌리기: ORCH_SENSOR_PROFILE=TEST_THERMAL_90M_V1
+DEFAULT_SENSOR_PROFILE_ID = os.getenv("ORCH_SENSOR_PROFILE", "ASSUMED_ORBIT_90M_V1")
 
 # ---------------------------------------------------------------------------
 # 현장 환경 측정 (사용자 결정 2026-09-30: 2019 재현 필수 기능)

@@ -27,6 +27,14 @@ def fire_env(**kw):
     return FixtureEnv(fire_cells=cells, **kw)
 
 
+@pytest.fixture(autouse=True)
+def single_frame_sensor(monkeypatch):
+    """기존 시험은 원래 관측 범위(한 프레임, 지면 위 90m 에서 52×42m)를 기준으로 쓴다.
+    기본값인 가정 범위(원 비행 가정 90×90m)는 test_orbit_assumption 에서 따로 시험한다."""
+    from orchestrator import config
+    monkeypatch.setattr(config, "DEFAULT_SENSOR_PROFILE_ID", "TEST_THERMAL_90M_V1")
+
+
 @pytest.fixture
 def field_policy(monkeypatch):
     """현장 측정 유효시간을 시험 안에서만 설정한다 (TEST_ONLY — 운영 기본값은 미설정).

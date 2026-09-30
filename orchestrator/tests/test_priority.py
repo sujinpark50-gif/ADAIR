@@ -218,7 +218,7 @@ def test_board_shows_recon_results(world):
     o = r["observation"]
     assert o["result"] == "DETECTED" and o["detections"] == [{"cell_id": "C1", "fire_state": "BURNING"}]
     assert o["source"] == "SIMULATED" and o["env_apply"]["result"] == "ACK"
-    assert o["footprint"] == {"width_m": 54.0, "height_m": 45.0, "agl_m": 90.0}
+    assert o["footprint"] == {"width_m": 52.0, "height_m": 42.0, "agl_m": 90.0}
     assert c.get(f"/tasks/{t.task_id}").json()["observation"]["result"] == "DETECTED"
 
 

@@ -118,6 +118,19 @@ CREATE TABLE IF NOT EXISTS external_events (
     applied_wall REAL,
     PRIMARY KEY (run_id, event_id)
 );
+CREATE TABLE IF NOT EXISTS pending_applies (
+    observation_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    purpose_bound INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT,
+    tries INTEGER NOT NULL,
+    created_wall REAL NOT NULL,
+    resolved_wall REAL
+);
 CREATE INDEX IF NOT EXISTS ix_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS ix_attempts_task ON attempts(task_id);
 CREATE INDEX IF NOT EXISTS ix_knowledge_run_kind ON knowledge(run_id, kind);
@@ -391,11 +404,12 @@ class Ledger:
             trow = c.execute("SELECT run_id, purpose_status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if trow and trow["purpose_status"] in TERMINAL_PURPOSES:
                 raise AttemptConflict(f"{task_id} is {trow['purpose_status']}")
-            marks = ",".join("?" * len(MISSION_OPEN_SUBSTATUSES))
-            open_ = c.execute(f"SELECT attempt_id, substatus FROM attempts WHERE task_id=? AND substatus IN ({marks})",
-                              (task_id, *MISSION_OPEN_SUBSTATUSES)).fetchone()
+            open_ = self.open_mission_attempts(task_id)
             if open_:
-                raise AttemptConflict(f"{task_id} has open attempt {open_['attempt_id']} ({open_['substatus']})")
+                raise AttemptConflict(f"{task_id} has open attempt {open_[0]['attempt_id']} ({open_[0]['substatus']})")
+            if trow and c.execute("SELECT 1 FROM pending_applies WHERE task_id=? AND status='PENDING' AND purpose_bound=1",
+                                  (task_id,)).fetchone():
+                raise AttemptConflict(f"{task_id} has an observation waiting for environment apply")
             c.execute("INSERT INTO reservations VALUES (?,?,?,?)", (resource_id, task_id, attempt_id, now))
             c.execute("INSERT INTO attempts (attempt_id, task_id, decision_id, resource_id, command, command_hash, "
                       "substatus, detail, created_wall, updated_wall, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -413,6 +427,52 @@ class Ledger:
                 if substatus in OCCUPYING_SUBSTATUSES:
                     raise ValueError(f"{substatus} 상태로는 예약을 해제할 수 없다")
                 c.execute("DELETE FROM reservations WHERE attempt_id=?", (attempt_id,))
+
+    def open_mission_attempts(self, task_id: str) -> List[dict]:
+        """임무가 아직 열린 실행시도 (R01). 점유 중인 시도는 '임무 종료 근거'(detail.mission_end)가 있고
+        상태가 불명(UNKNOWN)이 아닐 때만 닫힌 것으로 본다. RETURNING 같은 상태 이름만으로는 닫혔다고 보지 않는다."""
+        return [a for a in self.list_attempts(task_id)
+                if a["substatus"] in OCCUPYING_SUBSTATUSES
+                and (a["substatus"] in MISSION_OPEN_SUBSTATUSES or not (a["detail"] or {}).get("mission_end"))]
+
+    # ------------------------------------------------------------------
+    # 환경 반영 대기 (R04). 기체 반납과 별개로 남는다 — 같은 observation_id 로 멱등 재반영한다.
+    #   PENDING → ACKED / NACKED / CLOSED(사유). 지우지 않는다.
+    # ------------------------------------------------------------------
+    def add_pending_apply(self, observation: dict, run_id: str, task_id: str, attempt_id: str,
+                          purpose_bound: bool) -> bool:
+        with self._tx() as c:
+            cur = c.execute("INSERT OR IGNORE INTO pending_applies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (observation["observation_id"], run_id, task_id, attempt_id, _dumps(observation),
+                             1 if purpose_bound else 0, "PENDING", None, 1, time.time(), None))
+            return cur.rowcount == 1
+
+    def pending_applies(self, task_id: Optional[str] = None, run_id=ALL_RUNS, status: Optional[str] = "PENDING") -> List[dict]:
+        where, args = self._scope(run_id)
+        q = f"SELECT * FROM pending_applies WHERE {where}"
+        if status:
+            q, args = q + " AND status=?", args + [status]
+        if task_id:
+            q, args = q + " AND task_id=?", args + [task_id]
+        return [{"observation_id": r["observation_id"], "run_id": r["run_id"], "task_id": r["task_id"],
+                 "attempt_id": r["attempt_id"], "observation": _loads(r["body"]),
+                 "purpose_bound": bool(r["purpose_bound"]), "status": r["status"], "reason": r["reason"],
+                 "tries": r["tries"]} for r in self._conn.execute(q + " ORDER BY created_wall, rowid", args)]
+
+    def note_pending_apply_try(self, observation_id: str):
+        with self._tx() as c:
+            c.execute("UPDATE pending_applies SET tries=tries+1 WHERE observation_id=?", (observation_id,))
+
+    def resolve_pending_apply(self, observation_id: str, status: str, reason: Optional[str] = None):
+        with self._tx() as c:
+            c.execute("UPDATE pending_applies SET status=?, reason=?, resolved_wall=? "
+                      "WHERE observation_id=? AND status='PENDING'", (status, reason, time.time(), observation_id))
+
+    def close_pending_applies_of_other_runs(self, run_id: str, reason: str) -> int:
+        with self._tx() as c:
+            cur = c.execute("UPDATE pending_applies SET status='CLOSED', reason=?, resolved_wall=? "
+                            "WHERE status='PENDING' AND run_id<>?", (reason, time.time(), run_id))
+            return cur.rowcount
 
     def get_attempt(self, attempt_id: str) -> Optional[dict]:
         r = self._conn.execute("SELECT * FROM attempts WHERE attempt_id=?", (attempt_id,)).fetchone()

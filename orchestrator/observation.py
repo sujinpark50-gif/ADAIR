@@ -9,7 +9,7 @@ orchestrator/observation.py
 - 관측 범위(footprint) 밖의 환경 정답은 쓰지 않는다. 범위 안에서 본 칸과 못 본 칸을 모두 남긴다.
 - 프레임이 칸 일부에만 겹치면 그 칸을 '전체 관측'으로 세지 않는다 (covered_cells 는 전체가 들어온 칸만,
   partial_cells 는 일부만 본 칸, cell_coverage 에 겹친 사각형과 넓이 비율). 비율은 기하 계산값이며 임계값을 두지 않는다.
-- footprint 는 profile 기준 높이(50m)의 사각형을 실제 지면 위 높이에 비례해 다시 계산한다
+- footprint 는 profile 기준 높이(90m, 52×42m)의 사각형을 실제 지면 위 높이에 비례해 다시 계산한다
   (같은 시야각의 기하 계산). 실제 높이를 모르면 관측을 만들지 않는다.
 - UAV 가 돌려주는 고정 관측값(312.5℃ / hotspot)은 근거로 쓰지 않고 원문만 보관한다.
 
@@ -33,6 +33,11 @@ def _to_local_m(lat0, lon0, lat, lon):
 
 
 def footprint_for_agl(profile: dict, agl_m: float) -> dict:
+    if profile.get("scale_with_agl") is False:
+        # 가정 범위 (예: 원으로 한 바퀴 돌았다고 본 90×90m). 높이로 다시 계산하지 않고 가정임을 남긴다
+        return {"shape": profile["footprint_shape"], "width_m": profile["footprint_width_m"],
+                "height_m": profile["footprint_height_m"], "agl_m": agl_m, "scaled_from_profile_agl_m": None,
+                "heading_deg": 0.0, "method": "ASSUMED_FIXED_FOOTPRINT", "assumption": profile["basis"]}
     scale = agl_m / profile["agl_m"]
     return {"shape": profile["footprint_shape"], "width_m": profile["footprint_width_m"] * scale,
             "height_m": profile["footprint_height_m"] * scale, "agl_m": agl_m,
@@ -79,7 +84,8 @@ def union_fraction(rects, cell_size_m: float) -> float:
 
 def simulate(*, snapshot, task, attempt_id: str, resource_id: str, position: dict,
              uav_raw_observation: Optional[dict] = None,
-             profile_id: str = config.DEFAULT_SENSOR_PROFILE_ID) -> dict:
+             profile_id: Optional[str] = None) -> dict:
+    profile_id = profile_id or config.DEFAULT_SENSOR_PROFILE_ID
     profile = config.SENSOR_PROFILES[profile_id]
     base = {
         "observation_id": f"OBS-{uuid.uuid4().hex[:12]}", "run_id": snapshot.run_id,
@@ -87,7 +93,7 @@ def simulate(*, snapshot, task, attempt_id: str, resource_id: str, position: dic
         "observed_wall": datetime.now(timezone.utc).isoformat(), "task_id": task.task_id,
         "attempt_id": attempt_id, "resource_id": resource_id, "source": "SIMULATED",
         "sensor_profile_id": profile_id, "sensor_status": profile["status"],
-        "sensor_type": profile["sensor_type"], "position": position,
+        "sensor_type": profile["sensor_type"], "position": position, "footprint_basis": profile["basis"],
         "uav_reported_values_ignored": (uav_raw_observation or {}).get("values"),
     }
     lat, lon, alt = position.get("lat"), position.get("lon"), position.get("alt_m_amsl")

@@ -32,8 +32,8 @@ from typing import Dict, List, Optional, Tuple
 from . import config, llm as llm_mod, negotiation, observation, priority, safety
 from .env_adapter import ENV_TRANSIENT_ERRORS, missing_snapshot_fields
 from .knowledge import Knowledge
-from .ledger import (AttemptConflict, Ledger, ReservationConflict, RunClosed, RunNotActive, RunSwitchBlocked,
-                     content_hash, new_id)
+from .ledger import (ACTIVE, OCCUPYING_SUBSTATUSES, AttemptConflict, Ledger, ReservationConflict, RunClosed,
+                     RunNotActive, RunSwitchBlocked, content_hash, new_id)
 from .models import (AREA_KINDS, COMPLETION_AREA_ALL, COMPLETION_TARGET_POINT, MISSION_OPEN_SUBSTATUSES,
                      TERMINAL_PURPOSES, Requirements, ResourceView, Target, Task, can_transition)
 from .prefilter import filter_candidates
@@ -78,10 +78,15 @@ class Orchestrator:
         basis 는 전이 사유(근거 사건) 코드다."""
         stored = self.ledger.get_task(task.task_id)
         current = stored.purpose_status if stored else task.purpose_status
-        if not can_transition(current, new):
+        # 실행시도에서 온 사건은 그 시도가 지금 목적 담당일 때만 목적을 바꾼다 (R01: 인계 뒤의 이전 시도 차단)
+        owner = stored.owner_attempt_id if stored else None
+        not_owner = bool(attempt_id and owner and owner != attempt_id)
+        if not_owner or not can_transition(current, new):
             self.ledger.log("PURPOSE_TRANSITION_REJECTED", task_id=task.task_id, attempt_id=attempt_id,
                             result=f"{current}->{new}", reason=basis, sim_time_s=sim,
-                            detail={"current": current, "requested": new, "kept": current})
+                            detail={"current": current, "requested": new, "kept": current,
+                                    "why": "NOT_PURPOSE_OWNER" if not_owner else "TRANSITION_NOT_ALLOWED",
+                                    "owner_attempt_id": owner})
             task.purpose_status = current
             if stored:
                 task.hold_reason, task.resume_condition = stored.hold_reason, stored.resume_condition
@@ -97,6 +102,11 @@ class Orchestrator:
                             result=f"{current}->{new}", reason=basis, sim_time_s=sim,
                             detail={"hold_reason": task.hold_reason, "resume_condition": task.resume_condition})
         return True
+
+    @staticmethod
+    def _owns(att: dict, task: Optional[Task]) -> bool:
+        """이 실행시도가 지금 Task 목적을 맡고 있는지 (담당 기록이 없는 이전 장부의 Task 는 맡은 것으로 본다)"""
+        return task is not None and task.owner_attempt_id in (None, att["attempt_id"])
 
     # ------------------------------------------------------------------
     # 실행(run) 범위
@@ -116,8 +126,11 @@ class Orchestrator:
                 return self._gate("RUN_CLOSED", truth, {"active_run": active})
             self._llm_memo, self._synced, self._gate_logged = {}, set(), None
             self._premon_sig = None
+            # 이전 run 의 환경 반영 대기는 새 run 의 환경에 적용하지 않는다. 지우지 않고 사유와 함께 닫는다 (R04)
+            closed = self.ledger.close_pending_applies_of_other_runs(truth.run_id, "RUN_ENDED")
             self.ledger.log("RUN_ACTIVATED", result=truth.run_id, sim_time_s=truth.simulation_time_s,
                             detail={"previous_run": active, "policy": "SINGLE_ACTIVE_RUN",
+                                    "pending_env_applies_closed": closed,
                                     "legacy_rows_quarantined": self.ledger.migrated_from_legacy})
         if truth.state_version is not None:
             if self.ledger.note_state_version(truth.run_id, truth.state_version) == "STALE":
@@ -483,10 +496,13 @@ class Orchestrator:
             return {"status": "SKIPPED", "purpose_status": task.purpose_status}
         if task.purpose_status == "HOLD" and task.resume_condition == MANUAL:
             return {"status": "SKIPPED", "reason": "WAITING_MANUAL_RESOLUTION"}
-        open_ = [a for a in self.ledger.list_attempts(task_id) if a["substatus"] in MISSION_OPEN_SUBSTATUSES]
-        if open_:       # 임무가 열린 실행시도가 있으면 같은 Task 로 또 보내지 않는다 (B02)
+        open_ = self.ledger.open_mission_attempts(task_id)
+        if open_:       # 임무 종료가 확인되지 않은 실행시도가 있으면 같은 Task 로 또 보내지 않는다 (B02·R01)
             return {"status": "SKIPPED", "reason": "ATTEMPT_STILL_OPEN", "attempt_id": open_[0]["attempt_id"],
                     "substatus": open_[0]["substatus"]}
+        if self.ledger.pending_applies(task_id=task_id):
+            # 관측은 했고 환경 반영 확인만 남았다 → 새 비행으로 풀지 않는다 (R04)
+            return {"status": "SKIPPED", "reason": "ENV_APPLY_PENDING"}
 
         base = self.view()
         sim = base.simulation_time_s
@@ -796,6 +812,8 @@ class Orchestrator:
             self.ledger.log("ATTEMPT_REFUSED", task_id=task.task_id, decision_id=did, attempt_id=attempt_id,
                             resource_id=rid, reason="OPEN_ATTEMPT_OR_CLOSED_TASK", detail={"error": str(e)})
             return {"abort": "OPEN_ATTEMPT_EXISTS"}
+        task.owner_attempt_id = attempt_id          # 이제부터 이 시도가 목적 담당 (장부에 저장 → 재시작 후에도 유지)
+        self.ledger.save_task(task)
         self._set_purpose(task, "APPROVED", basis="SAFETY_ALLOW_RESERVED", attempt_id=attempt_id,
                           sim=current.simulation_time_s)
         result, info = client.execute(rid, command)
@@ -853,15 +871,64 @@ class Orchestrator:
         return done
 
     def poll(self) -> List[dict]:
-        updates = []
+        updates, first_error = [], None
         for att in self.ledger.list_attempts(substatuses=ACTIVE_ATTEMPT):
             client = self.uav if att["command"]["resource_type"] == "UAV" else self.ugv
             if client is None:
                 continue
-            u = self._track(att, client)
+            try:
+                u = self._track(att, client)
+            except Exception as e:  # noqa: BLE001 — 한 자원의 오류가 다른 자원의 추적을 끊지 않게 한다
+                # 숨기지 않는다: 기록하고, 나머지 자원을 다 추적한 뒤 다시 던진다 (외부 응답 형식 오류는
+                # _response_problem 이 먼저 걸러 UNKNOWN 으로 격리하므로 여기 오는 것은 내부 결함이다)
+                self.ledger.log("TRACK_ERROR", task_id=att["task_id"], attempt_id=att["attempt_id"],
+                                resource_id=att["resource_id"], reason=type(e).__name__,
+                                detail={"error": str(e)[:300], "other_attempts_still_tracked": True})
+                first_error = first_error or e
+                continue
             if u:
                 updates.append(u)
+        updates.extend(self.retry_pending_applies())
+        if first_error is not None:
+            raise first_error
         return updates
+
+    def retry_pending_applies(self) -> List[dict]:
+        """환경 반영 대기 중인 관측을 같은 observation_id 로 다시 반영한다 (R04).
+        기체 반납 여부와 무관하다. 다른 run 의 환경에는 적용하지 않는다. 재시도 횟수 제한은 두지 않는다
+        (근거 있는 값이 없음) — ACK·NACK·목적 종료·run 종료 중 하나가 될 때까지 대기로 남는다."""
+        rows = self.ledger.pending_applies(run_id=ACTIVE)
+        if not rows:
+            return []
+        snap = self.env.read()
+        out = []
+        for row in rows:
+            oid, obs = row["observation_id"], row["observation"]
+            if snap.run_id != row["run_id"]:
+                continue
+            task, att = self.ledger.get_task(row["task_id"]), self.ledger.get_attempt(row["attempt_id"])
+            if row["purpose_bound"] and task and task.purpose_status in TERMINAL_PURPOSES:
+                # 취소(종료)된 목적의 관측은 환경에 반영하지 않는다 — 취소 뒤 도착한 관측과 같은 규칙
+                self.ledger.resolve_pending_apply(oid, "CLOSED", f"TASK_{task.purpose_status}")
+                self.ledger.log("ENV_APPLY_PENDING_CLOSED", task_id=row["task_id"], attempt_id=row["attempt_id"],
+                                reason=f"TASK_{task.purpose_status}", detail={"observation_id": oid})
+                continue
+            ack = self._apply_to_env(obs)
+            if ack.get("pending"):
+                self.ledger.note_pending_apply_try(oid)
+                continue
+            self.ledger.resolve_pending_apply(oid, "ACKED" if ack.get("accepted") else "NACKED", ack.get("reason"))
+            owner = bool(task and att and task.owner_attempt_id == att["attempt_id"]
+                         and task.purpose_status == "IN_EXECUTION")
+            if not row["purpose_bound"] or not owner:
+                # 반영 결과는 남기되 목적 상태는 건드리지 않는다 (함께 한 측정, 또는 인계로 담당이 바뀐 뒤의 늦은 ACK)
+                self.ledger.log("ENVIRONMENT_APPLY", task_id=row["task_id"], attempt_id=row["attempt_id"],
+                                result="ACK" if ack.get("accepted") else "NACK", reason=ack.get("reason"),
+                                detail={**ack, "late": True, "attributed_to_purpose": False})
+                continue
+            out.append(self._conclude(att, task, obs, ack, dict(att["detail"] or {}),
+                                      update_attempt=att["substatus"] in OCCUPYING_SUBSTATUSES))
+        return out
 
     @staticmethod
     def _response_problem(att: dict, data) -> Optional[str]:
@@ -882,12 +949,29 @@ class Orchestrator:
                 return "RESOURCE_ID_MISSING"
             if data["resource_id"] != att["resource_id"]:
                 return "RESOURCE_ID_MISMATCH"
-        if data.get("status") not in PROVIDER_STATUSES["UAV" if uav else "GROUND"]:
+        status = data.get("status")
+        # 문자열인지 먼저 본다 (배열·객체는 집합과 비교하는 것만으로 예외가 난다)
+        if not isinstance(status, str) or status not in PROVIDER_STATUSES["UAV" if uav else "GROUND"]:
             return "STATUS_INVALID"
-        if data.get("progress") is not None and not isinstance(data["progress"], dict):
+        progress = data.get("progress")
+        if progress is not None and not isinstance(progress, dict):
             return "PROGRESS_INVALID"
-        if data.get("observation") is not None and not isinstance(data["observation"], dict):
+        if progress and progress.get("phase") is not None and not isinstance(progress["phase"], str):
+            return "PHASE_INVALID"
+        for key in ("reason", "error"):
+            if data.get(key) is not None and not isinstance(data[key], str):
+                return f"{key.upper()}_INVALID"
+        obs = data.get("observation")
+        if obs is not None and not isinstance(obs, dict):
             return "OBSERVATION_INVALID"
+        pos = (obs or {}).get("position")
+        if pos is not None:
+            if not isinstance(pos, dict):
+                return "POSITION_INVALID"
+            for k in ("lat", "lon", "alt_m_amsl"):
+                v = pos.get(k)
+                if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)):
+                    return "POSITION_INVALID"
         return None
 
     def _track(self, att: dict, client) -> Optional[dict]:
@@ -937,9 +1021,12 @@ class Orchestrator:
             detail.update({"recovered_from": "PREPARED", "last_contact_wall": now})
             self.ledger.set_attempt_status(aid, "STARTED", detail)
             att["substatus"] = "STARTED"
-            if task and task.purpose_status == "EVALUATING":      # 예약 직후·승인 기록 전에 멈춘 경우
+            if task and task.owner_attempt_id is None and task.purpose_status == "EVALUATING":
+                task.owner_attempt_id = aid       # 예약 직후·담당 기록 전에 멈춘 경우
+                self.ledger.save_task(task)
+            if self._owns(att, task) and task.purpose_status == "EVALUATING":
                 self._set_purpose(task, "APPROVED", basis="RECOVERY_PREPARED_RESUMED", attempt_id=aid)
-            if task and task.purpose_status in ("APPROVED", "HOLD"):
+            if self._owns(att, task) and task.purpose_status in ("APPROVED", "HOLD"):
                 self._set_purpose(task, "IN_EXECUTION", basis="RECOVERY_PREPARED_RESUMED", attempt_id=aid,
                                   hold_reason=None, resume=None)
 
@@ -957,7 +1044,7 @@ class Orchestrator:
         sub = att["substatus"]
         if sub == "UNKNOWN":
             # 실행 파트가 이 시도를 다시 (검증된 응답으로) 보고함 → 실제 상태를 따라 추적 재개
-            if (task and task.purpose_status == "HOLD" and task.resume_condition == MANUAL
+            if (self._owns(att, task) and task.purpose_status == "HOLD" and task.resume_condition == MANUAL
                     and task.hold_reason == detail.get("unknown_reason")):
                 self._set_purpose(task, "IN_EXECUTION", basis="EXECUTION_RECONTACTED", attempt_id=aid,
                                   hold_reason=None, resume=None)
@@ -986,8 +1073,6 @@ class Orchestrator:
                            extra={"arrival_evidence": "UAV COMPLETED after goto+hold"})
             if att["substatus"] == "ARRIVED":
                 out = self._observe_and_apply(att, task, data, detail) or out
-            elif detail.get("pending_env_apply"):
-                out = self._retry_env_apply(att, task, detail) or out
             if att["substatus"] in ("APPLIED", "OBSERVED", "RETURNING"):
                 out = self._maybe_release(att, client, phase, detail, move) or out
             return out
@@ -998,13 +1083,19 @@ class Orchestrator:
 
         if pstatus == "FAILED":
             reason = data.get("reason") or (data.get("error") or "PROVIDER_FAILED").split(":")[0]
-            if task and task.purpose_status == "IN_EXECUTION":
+            first_report = "mission_end" not in detail
+            # 임무 부분 종료 근거: 제공자가 실패를 확정 보고함. 이 근거가 있어야 다른 자원으로 인계할 수 있다
+            detail.setdefault("mission_end", {"reason": f"PROVIDER_FAILED:{reason}", "evidence": "PROVIDER_STATUS_FAILED"})
+            # 이 시도가 아직 목적 담당일 때만 재대기로 돌린다 — 인계 뒤 같은 실패를 또 보고해도 후임의 목적을 건드리지 않는다
+            if self._owns(att, task) and task.purpose_status == "IN_EXECUTION":
                 # 목적 미완료. 인계 필요 — 관측 공백을 남기고 재배정 대기
                 if self._set_purpose(task, "PENDING", basis=f"PROVIDER_FAILED:{reason}", attempt_id=aid,
                                      hold_reason=f"HANDOVER:{reason}"):
                     self.ledger.log("TASK_REOPENED", task_id=tid, attempt_id=aid, resource_id=rid,
                                     reason=reason, detail={"observation_gap": True})
             if phase == "RETURNING":
+                if sub == "RETURNING" and not first_report:
+                    return None                      # 같은 보고의 반복 — 점유만 유지
                 return move("RETURNING", reason, extra={"failed": True})
             if phase == "DONE":
                 return self._maybe_release(att, client, phase, detail, move)
@@ -1024,7 +1115,7 @@ class Orchestrator:
                         detail={"occupancy_kept": True, "automatic_redispatch": False,
                                 "previous_substatus": att["substatus"]})
         att["substatus"] = "UNKNOWN"
-        if task and task.purpose_status in ("IN_EXECUTION", "APPROVED", "EVALUATING"):
+        if self._owns(att, task) and task.purpose_status in ("IN_EXECUTION", "APPROVED", "EVALUATING"):
             self._set_purpose(task, "HOLD", basis=f"EXECUTION_UNKNOWN:{reason}", attempt_id=att["attempt_id"],
                               hold_reason=reason, resume=MANUAL)
         return {"attempt_id": att["attempt_id"], "substatus": "UNKNOWN", "reason": reason}
@@ -1036,7 +1127,10 @@ class Orchestrator:
         aid, rid = att["attempt_id"], att["resource_id"]
         sensor = task.requirements.sensor
         pos = ((data.get("observation") or {}).get("position")) or {}
-        closed = task.purpose_status in TERMINAL_PURPOSES       # 취소(또는 이미 종료)된 뒤에 도착한 관측
+        # 이 관측을 목적 완료에 쓸 수 없는 경우: 목적이 이미 종료(취소 등)됐거나, 인계되어 담당이 다른 시도다
+        closed = task.purpose_status in TERMINAL_PURPOSES or not self._owns(att, task)
+        after_label = task.purpose_status if task.purpose_status in TERMINAL_PURPOSES else "SUPERSEDED"
+        detail.setdefault("mission_end", {"reason": "ARRIVED_AND_OBSERVED", "evidence": "PROVIDER_STATUS_COMPLETED"})
         snap = self.env.read()
         if snap.run_id != att.get("run_id"):
             # 이 실행시도의 run 은 끝났다. 다른 run 의 세계를 읽어 관측을 만들지 않는다 (물리 추적만 계속)
@@ -1060,12 +1154,12 @@ class Orchestrator:
             obs = observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
                                        position=pos, uav_raw_observation=data.get("observation"))
         if closed:
-            obs["received_after_purpose"] = task.purpose_status
+            obs["received_after_purpose"] = after_label
             obs["used_for_completion"] = False
         self.ledger.log("OBSERVATION", task_id=task.task_id, attempt_id=aid, resource_id=rid,
                         result=obs["result"], reason=obs.get("failure_reason"), sim_time_s=snap.simulation_time_s,
                         detail=obs)
-        after = {"received_after_purpose": task.purpose_status, "task_id": task.task_id} if closed else None
+        after = {"received_after_purpose": after_label, "task_id": task.task_id} if closed else None
         if sensor == "WEATHER" and obs["result"] == "MEASURED":
             self.kb.add_weather(f"FIELD:{obs['observation_id']}", snap.simulation_time_s, obs["source"], {
                 "kind": "FIELD", "cell_id": task.nav_target.cell_id, "lat": pos.get("lat"), "lon": pos.get("lon"),
@@ -1075,11 +1169,11 @@ class Orchestrator:
             self.kb.record_observation(obs, snap.simulation_time_s, extra=after)
         if closed:
             # 유효한 관측은 출처·'취소 이후 수신'과 함께 보관하되, 끝난 임무의 성공 근거로 쓰지 않는다
-            detail.update({"observation_id": obs["observation_id"], "observation_after_purpose": task.purpose_status})
+            detail.update({"observation_id": obs["observation_id"], "observation_after_purpose": after_label})
             self.ledger.set_attempt_status(aid, "OBSERVED", detail)
             att["substatus"] = "OBSERVED"
             self.ledger.log("OBSERVATION_AFTER_CLOSE", task_id=task.task_id, attempt_id=aid, resource_id=rid,
-                            result=task.purpose_status, reason="NOT_USED_FOR_COMPLETION",
+                            result=after_label, reason="NOT_USED_FOR_COMPLETION",
                             detail={"observation_id": obs["observation_id"], "kept_in_knowledge": obs["result"] != "FAILED"})
             return {"attempt_id": aid, "substatus": "OBSERVED", "task": task.purpose_status}
         if obs["result"] == "FAILED":
@@ -1105,8 +1199,9 @@ class Orchestrator:
             return {"accepted": False, "pending": True, "reason": "ENV_APPLY_TIMEOUT",
                     "error": f"{type(e).__name__}: {e}"[:300]}
 
-    def _conclude(self, att, task, obs, ack, detail) -> dict:
-        """관측 + 환경 ACK 로 목적 충족을 판정한다. ACK 가 필요한 임무는 ACK 전에 완료하지 않는다."""
+    def _conclude(self, att, task, obs, ack, detail, update_attempt: bool = True) -> dict:
+        """관측 + 환경 ACK 로 목적 충족을 판정한다. ACK 가 필요한 임무는 ACK 전에 완료하지 않는다.
+        update_attempt=False: 기체를 이미 반납한 뒤 늦게 ACK 가 온 경우 — 실행시도 상태는 건드리지 않는다."""
         aid, rid = att["attempt_id"], att["resource_id"]
         need_ack = task.requirements.needs_env_ack
         result = "ACK" if ack.get("accepted") else ("SKIPPED" if ack.get("skipped") else (
@@ -1115,16 +1210,22 @@ class Orchestrator:
                         result=result, reason=ack.get("reason"), detail=ack)
         detail.update({"observation_id": obs["observation_id"], "env_ack": ack})
         if need_ack and ack.get("pending"):
-            # 반영 여부를 모른다 → 완료하지 않고, 같은 관측 ID 로 다시 반영을 시도한다 (APPLY 는 관측 ID 로 멱등)
-            detail["pending_env_apply"] = obs
+            # 반영 여부를 모른다(거절과 다름) → 완료하지 않는다. 관측을 '환경 반영 대기'로 장부에 따로 보관하고
+            # 같은 관측 ID 로 다시 반영한다 (APPLY 는 관측 ID 로 멱등). 기체 반납과는 별개로 남는다 (R04)
+            self.ledger.add_pending_apply(obs, att.get("run_id") or task.run_id, task.task_id, aid, True)
+            detail["env_apply_pending"] = obs["observation_id"]
             self.ledger.set_attempt_status(aid, "OBSERVED", detail)
             att["substatus"] = "OBSERVED"
+            self._set_purpose(task, "IN_EXECUTION", basis="ENV_APPLY_PENDING", attempt_id=aid,
+                              hold_reason="ENV_APPLY_PENDING")
             return {"attempt_id": aid, "substatus": "OBSERVED", "task": task.purpose_status,
                     "reason": "ENV_APPLY_TIMEOUT"}
-        detail.pop("pending_env_apply", None)
-        sub = "APPLIED" if ack.get("accepted") else "OBSERVED"
-        self.ledger.set_attempt_status(aid, sub, detail)
-        att["substatus"] = sub
+        detail.pop("env_apply_pending", None)
+        sub = att["substatus"]
+        if update_attempt:
+            sub = "APPLIED" if ack.get("accepted") else "OBSERVED"
+            self.ledger.set_attempt_status(aid, sub, detail)
+            att["substatus"] = sub
         acked = bool(ack.get("accepted")) or not need_ack
         if task.completion_rule == COMPLETION_AREA_ALL:
             self._conclude_area(att, task, obs, ack, acked)
@@ -1140,15 +1241,6 @@ class Orchestrator:
             self._reopen(task, "OBSERVATION_REQUIREMENT_NOT_MET" if not obs["target_covered"]
                          else "ENV_APPLY_NOT_ACKED", aid)
         return {"attempt_id": aid, "substatus": sub, "task": task.purpose_status}
-
-    def _retry_env_apply(self, att, task, detail) -> Optional[dict]:
-        obs = detail.get("pending_env_apply")
-        if not obs or task.purpose_status in TERMINAL_PURPOSES:
-            return None
-        ack = self._apply_to_env(obs)
-        if ack.get("pending"):
-            return None
-        return self._conclude(att, task, obs, ack, detail)
 
     # ------------------------------------------------------------------
     # 구역 임무 완료 판정 (D03): 필수 셀 전체가 누적 관측으로 완전히 덮여야 완료.
@@ -1287,6 +1379,8 @@ class Orchestrator:
                 "values": w["values"], "scope": w.get("scope"), "observation_id": w["observation_id"],
                 "resource_id": rid, "same_visit_as": task.kind}, received_sim_s=truth.simulation_time_s)
             ack = self._apply_to_env(w)
+            if ack.get("pending"):                     # 함께 한 측정도 반영 대기로 남긴다 (목적 완료와는 무관)
+                self.ledger.add_pending_apply(w, att.get("run_id") or task.run_id, task.task_id, aid, False)
             self.ledger.log("ENVIRONMENT_APPLY", task_id=task.task_id, attempt_id=aid, resource_id=rid,
                             result="ACK" if ack.get("accepted") else ("TIMEOUT" if ack.get("pending") else "NACK"),
                             reason=ack.get("reason"), detail=ack)
@@ -1501,15 +1595,9 @@ class Orchestrator:
         except Unreachable:
             v = None
         if v is not None and v.ready and v.current_task_id is None:
-            pending = detail.pop("pending_env_apply", None)
-            out = move("RELEASED", "RESOURCE_READY_CONFIRMED", release=True,
-                       extra={"released_evidence": {"ready": True, "phase": phase}})
-            if pending:
-                # 기체는 돌아왔지만 환경 반영은 끝내 확인하지 못했다 → 완료하지 않고 다시 대기
-                task = self.ledger.get_task(att["task_id"])
-                if task and task.purpose_status == "IN_EXECUTION":
-                    self._reopen(task, "ENV_APPLY_TIMEOUT", att["attempt_id"])
-            return out
+            # 기체 반납은 환경 반영 대기와 별개다. 대기 중인 관측은 장부(pending_applies)에 남아 계속 재반영된다
+            return move("RELEASED", "RESOURCE_READY_CONFIRMED", release=True,
+                        extra={"released_evidence": {"ready": True, "phase": phase}})
         if att["substatus"] in ("RETURNING", "FAULTED"):
             return None                     # 아직 READY 아님 → 점유 유지
         return move("RETURNING", "LANDED_READY_UNCONFIRMED")
@@ -1530,7 +1618,7 @@ class Orchestrator:
             return {"status": "NOT_FOUND"}
         self.ledger.log("MANUAL_RESOLUTION", task_id=task_id, attempt_id=attempt_id, result=action, reason=reason)
         attempts = self.ledger.list_attempts(task_id)
-        open_ = [a for a in attempts if a["substatus"] in MISSION_OPEN_SUBSTATUSES]
+        open_ = self.ledger.open_mission_attempts(task_id)
 
         def refuse(why, **extra):
             self.ledger.log("MANUAL_RESOLUTION_REFUSED", task_id=task_id, attempt_id=attempt_id, result=action,
@@ -1555,6 +1643,8 @@ class Orchestrator:
             if open_:
                 return refuse("ATTEMPT_STILL_OPEN", attempt_id=open_[0]["attempt_id"],
                               substatus=open_[0]["substatus"])
+            if self.ledger.pending_applies(task_id=task_id):
+                return refuse("ENV_APPLY_PENDING", hint="관측은 끝났고 환경 반영 확인을 기다리는 중 — 다시 보내지 않는다")
             if task.purpose_status not in ("PENDING", "HOLD", "EVALUATING"):
                 return refuse(f"TASK_{task.purpose_status}")
             if task.purpose_status == "HOLD":
@@ -1564,6 +1654,8 @@ class Orchestrator:
             if task.purpose_status in TERMINAL_PURPOSES:
                 return refuse(f"TASK_ALREADY_{task.purpose_status}")
             self._set_purpose(task, "CANCELLED", basis=f"MANUAL_CANCEL:{reason}")
+            for row in self.ledger.pending_applies(task_id=task_id):      # 취소된 목적의 관측은 환경에 반영하지 않는다
+                self.ledger.resolve_pending_apply(row["observation_id"], "CLOSED", "TASK_CANCELLED")
             occupying = [a for a in attempts if a["substatus"] in ACTIVE_ATTEMPT]
             return {"status": "CANCELLED", "stop_command_sent": False,
                     "open_attempts": [{"attempt_id": a["attempt_id"], "resource_id": a["resource_id"],

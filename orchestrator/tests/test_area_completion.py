@@ -5,7 +5,7 @@
 - MONITOR  required_cell_ids 전체가 누적 관측으로 완전히 덮여야 완료. 한 점 결과를 구역 완료로 올리지 않는다.
 - 프레임이 칸 일부만 덮으면 그만큼만 쌓인다 (비율은 기하 계산값, 임계값 없음).
 
-시험 프레임: TEST_THERMAL_50M_V1 을 지면 위 90m 에서 → 54m × 45m.
+시험 프레임: TEST_THERMAL_90M_V1 (지면 위 90m 에서 52m × 42m).
 """
 
 import pytest
@@ -55,7 +55,7 @@ def test_monitor_is_not_complete_after_one_of_two_cells_and_completes_when_all_c
 
     t = lg.get_task(task.task_id)
     assert t.purpose_status == "PENDING" and t.hold_reason == "AREA_COVERAGE_INCOMPLETE"   # M1 만 봤다 → 미완료
-    assert t.coverage["M1"]["fraction"] == 1.0 and t.coverage["M2"]["fraction"] == pytest.approx(0.4, abs=2e-3)
+    assert t.coverage["M1"]["fraction"] == 1.0 and t.coverage["M2"]["fraction"] == pytest.approx(11 / 30, abs=2e-3)
     assert t.coverage["M2"]["sources"] == ["SIMULATED"] and t.coverage["M2"]["last_observed_sim_s"] == 0.0
     assert t.visited_cell_ids == ["M1"] and t.visit_target.cell_id == "M2"
     cov = _ev(lg, task.task_id, "AREA_COVERAGE")[0]
@@ -124,13 +124,13 @@ def test_scope_fields_are_validated_at_intake(world):
 
 def test_partial_overlap_is_recorded_as_partial_not_as_whole_cell(world):
     orch, lg = world["orch"], world["ledger"]
-    _map(world, BIG)                                               # 90m 칸 > 54×45m 프레임
+    _map(world, BIG)                                               # 90m 칸 > 52×42m 프레임
     task = submit(orch, "RECON-BIG", target=_target(BIG), requirements=THERMAL)
     _visit(orch, task.task_id)
     obs = _ev(lg, task.task_id, "OBSERVATION")[0]["detail"]
     assert obs["covered_cells"] == [] and obs["partial_cells"] == ["BIG"] and obs["target_covered"] is True
     cc = obs["cell_coverage"][0]
-    assert cc["full"] is False and cc["fraction"] == pytest.approx(54 * 45 / 8100) and cc["rect"] == [-27, -22.5, 27, 22.5]
+    assert cc["full"] is False and cc["fraction"] == pytest.approx(52 * 42 / 8100, abs=1e-5) and cc["rect"] == [-26, -21, 26, 21]
     assert orch.kb.fire_states(1e9)["BIG"]["status"] == "NOT_DETECTED_PARTIAL"
     assert lg.get_task(task.task_id).purpose_status == "COMPLETED"   # 정찰은 목표 지점 기준
 
@@ -144,7 +144,7 @@ def test_area_task_is_held_when_single_frames_cannot_cover_the_cell(world):
     assert t.purpose_status == "HOLD" and t.hold_reason == "AREA_EVIDENCE_UNSUPPORTED"
     assert t.resume_condition == "MANUAL_RESOLUTION"              # 같은 지점으로 계속 다시 보내지 않는다
     hold = _ev(lg, task.task_id, "TASK_HOLD")[-1]["detail"]
-    assert hold["remaining"] == ["BIG"] and hold["fraction"]["BIG"] == pytest.approx(0.3) and hold["unvisited"] == []
+    assert hold["remaining"] == ["BIG"] and hold["fraction"]["BIG"] == pytest.approx(52 * 42 / 8100, abs=1e-5) and hold["unvisited"] == []
     orch.poll()
     assert lg.get_attempt(first["attempt_id"])["substatus"] == "RELEASED"
     orch.dispatch_pending()

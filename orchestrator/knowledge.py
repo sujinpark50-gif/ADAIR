@@ -65,12 +65,31 @@ class Knowledge:
                                        **(extra or {})})
 
     def fire_states(self, now_s: float) -> Dict[str, dict]:
-        """칸별 가장 최근 사실 (now 이전)"""
+        """칸별 현재 믿음 (now 이전 사실을 시각 순서로 접은 결과). 화면·API·분석 입력이 모두 이 결과를 쓴다.
+
+        믿음을 바꾸는 사실: 신고(REPORTED), 불 확인(CONFIRMED·CONFIRMED_BURNED), 칸 전체를 봤고 불 없음(OBSERVED_CLEAR).
+        칸 일부만 보고 불을 못 본 관측(NOT_DETECTED_PARTIAL)은 기존 신고·확인을 해소하지 않는다 (R02) —
+        믿음은 그대로 두고 last_partial_observation 에 본 범위·시각·출처를 덧붙인다. 새 확률·위험 수치는 만들지 않는다.
+        그 칸에 기존 근거가 없을 때만 NOT_DETECTED_PARTIAL 이 그대로 상태가 된다 (화재 후보 아님).
+        """
         out = {}
         for k in self.ledger.knowledge("FIRE"):
             if k["sim_time_s"] is not None and k["sim_time_s"] > now_s:
                 continue
-            out[k["subject"]] = {**k["body"], "sim_time_s": k["sim_time_s"], "source": k["source"]}
+            fact = {**k["body"], "sim_time_s": k["sim_time_s"], "source": k["source"]}
+            prev = out.get(k["subject"])
+            if fact.get("status") == "NOT_DETECTED_PARTIAL":
+                partial = {"status": "NOT_DETECTED_PARTIAL", "sim_time_s": k["sim_time_s"], "source": k["source"],
+                           "observation_id": fact.get("observation_id"), "resource_id": fact.get("resource_id"),
+                           "coverage_fraction": fact.get("coverage_fraction"),
+                           "unobserved_fraction": (None if fact.get("coverage_fraction") is None
+                                                   else round(1.0 - fact["coverage_fraction"], 6))}
+                if prev is not None and prev["status"] != "NOT_DETECTED_PARTIAL":
+                    out[k["subject"]] = {**prev, "last_partial_observation": partial}
+                else:
+                    out[k["subject"]] = {**fact, "last_partial_observation": partial}
+            else:
+                out[k["subject"]] = fact          # 전체 관측·신고는 믿음을 새로 정한다 (이전 부분 관측 표시는 지운다)
         return out
 
     def known_fires(self, now_s: float) -> Dict[str, dict]:

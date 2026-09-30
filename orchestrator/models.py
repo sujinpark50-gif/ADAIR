@@ -124,6 +124,9 @@ class Task:
     created_sim_s: Optional[float] = None
     run_id: Optional[str] = None               # 이 Task 가 속한 실행(run). 다른 run 의 판단에 쓰지 않는다
     parent_task_id: Optional[str] = None       # 재관측(RECHECK)이 이어받은 이전 Task
+    # 지금 이 Task 의 목적 수행을 맡은 실행시도 (R01). 이 시도의 사건만 목적 상태를 바꿀 수 있다.
+    # 인계되면 후임 시도로 바뀌고, 이전 시도는 자기 물리 진행·복귀·점유만 갱신한다.
+    owner_attempt_id: Optional[str] = None
     # 완료 판정 (D03). TARGET_POINT: 목표 지점 관측 / AREA_ALL_REQUIRED_CELLS: required_cell_ids 전체 완전 관측
     completion_rule: str = COMPLETION_TARGET_POINT
     required_cell_ids: List[str] = field(default_factory=list)
@@ -170,6 +173,7 @@ class Task:
             created_sim_s=d.get("created_sim_s"),
             run_id=d.get("run_id"),
             parent_task_id=d.get("parent_task_id"),
+            owner_attempt_id=d.get("owner_attempt_id"),
             # 이전 장부의 MONITOR 는 규칙 칸이 없다 → 구역 규칙으로 읽는다 (한 점 관측으로 완료시키지 않음)
             completion_rule=d.get("completion_rule") or (
                 COMPLETION_AREA_ALL if d["kind"] in AREA_KINDS else COMPLETION_TARGET_POINT),

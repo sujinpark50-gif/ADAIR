@@ -62,21 +62,23 @@ def test_recon_confirms_fire_and_analysis_gets_only_known_facts(tmp_path):
     assert "fire_cells" not in belief and "weather" not in belief
 
 
-def test_observed_clear_removes_reported_fire(tmp_path):
+def test_partial_negative_recon_does_not_remove_reported_fire(tmp_path):
     orch, env, uav, lg = _world(tmp_path, reports=[{"cell_id": "F1", "sim_time_s": 0.0, "source": "119_CALL"}])
     env.fire_cells[0]["fire_state"] = "UNBURNED"                      # 오인 신고
     orch.dispatch(_recon(orch).task_id)
     for _ in range(4):
         orch.poll()
-    assert orch.view().fire_cells == []
-    # 90m 칸을 54×45m 프레임으로 봤다 → 본 범위에는 불이 없지만 칸 전체를 본 것은 아니다 (D03)
+    # 90m 칸을 52×42m 프레임으로 봤다 → 본 범위에는 불이 없지만 칸 전체를 본 것은 아니다 (D03).
+    # 그래서 신고된 화재 후보는 사라지지 않는다 (R02). 부분 관측은 근거로 덧붙는다.
+    assert [c["cell_id"] for c in orch.view().fire_cells] == ["F1"]
     f = orch.kb.fire_states(1e9)["F1"]
-    assert f["status"] == "NOT_DETECTED_PARTIAL" and abs(f["coverage_fraction"] - 54 * 45 / 8100) < 1e-6
+    assert f["status"] == "REPORTED"
+    assert abs(f["last_partial_observation"]["coverage_fraction"] - 52 * 42 / 8100) < 1e-5
 
 
 def test_full_cell_view_without_fire_is_observed_clear(tmp_path):
     orch, env, uav, lg = _world(tmp_path, reports=[{"cell_id": "F1", "sim_time_s": 0.0, "source": "119_CALL"}])
-    env.fire_cells[0].update(fire_state="UNBURNED", cell_size_m=40.0)   # 프레임(54×45m) 안에 칸 전체가 들어옴
+    env.fire_cells[0].update(fire_state="UNBURNED", cell_size_m=40.0)   # 프레임(52×42m) 안에 칸 전체가 들어옴
     orch.dispatch(_recon(orch).task_id)
     for _ in range(4):
         orch.poll()
