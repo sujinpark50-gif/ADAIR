@@ -927,10 +927,11 @@ class Orchestrator:
         aid = row["attempt_id"]
 
         def close(status, reason, note=None):
-            self.ledger.finish_pending_apply(oid, status, reason)
-            self.ledger.log("ENV_APPLY_RECORD_CLOSED", task_id=row["task_id"], attempt_id=aid, result=status,
-                            reason=reason, detail={"observation_id": oid, "env_result": row.get("env_result"),
-                                                   "attributed_to_purpose": False, **(note or {})})
+            with self.ledger._tx():                  # 종료 표시와 그 사건을 함께 저장 (재시작 뒤 이력 중복 방지)
+                self.ledger.finish_pending_apply(oid, status, reason)
+                self.ledger.log("ENV_APPLY_RECORD_CLOSED", task_id=row["task_id"], attempt_id=aid, result=status,
+                                reason=reason, detail={"observation_id": oid, "env_result": row.get("env_result"),
+                                                       "attributed_to_purpose": False, **(note or {})})
             return None
 
         if task and task.purpose_status in TERMINAL_PURPOSES and (row["purpose_bound"] or task.purpose_status == "CANCELLED"):
@@ -959,10 +960,11 @@ class Orchestrator:
             row = {**row, "status": "RESPONDED", "ack": ack, "env_result": "ACK" if ack.get("accepted") else "NACK"}
         ack = row["ack"]
         if not row["purpose_bound"]:
-            self.ledger.log("ENVIRONMENT_APPLY", task_id=row["task_id"], attempt_id=aid,
-                            result=row["env_result"], reason=ack.get("reason"),
-                            detail={**ack, "observation_id": oid, "attributed_to_purpose": False})
-            self.ledger.finish_pending_apply(oid, "DONE", "AUXILIARY_MEASUREMENT")
+            with self.ledger._tx():                  # 반영 결과 사건과 DONE 표시를 함께 저장 (재시작 뒤 이력 중복 방지)
+                self.ledger.log("ENVIRONMENT_APPLY", task_id=row["task_id"], attempt_id=aid,
+                                result=row["env_result"], reason=ack.get("reason"),
+                                detail={**ack, "observation_id": oid, "attributed_to_purpose": False})
+                self.ledger.finish_pending_apply(oid, "DONE", "AUXILIARY_MEASUREMENT")
             return None
         if not owner:
             # 담당이 다른 시도로 바뀌었다 → 응답은 기록에 남기되 후임의 목적에는 적용하지 않는다

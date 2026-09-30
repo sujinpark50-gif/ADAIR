@@ -266,6 +266,8 @@ class Ledger:
         """이전 판(094f965)의 ACKED/NACKED 반영 기록 이관 (F05). 그 판은 환경 응답을 받으면 기록을 먼저 ACKED/NACKED 로
         닫고 나서 임무 판정을 했으므로, 그 사이에 멈춘 임무는 새 흐름의 '끝나지 않은 기록' 조회에서 빠진다.
           - 목적이 이미 끝났거나(완료·취소 등) 그 시도의 완료 사건이 있으면 → DONE (다시 적용하지 않음)
+          - 아직 끝나지 않은 목적(진행 중, 또는 실행시도 불명 때문에 보류 중 등)은 판정 전으로 본다 → 응답을 보존해
+            RESPONDED 로 되돌린다. 보류 중이면 새 흐름이 응답을 보관했다가 재접촉 뒤 판정한다
           - 담당이 다른 시도로 바뀌었으면 → CLOSED OWNER_CHANGED
           - 판정이 안 된 것 → RESPONDED 로 되돌려 새 흐름이 판정한다. 응답 근거는 장부에 남은 이전 상태
             (ACKED = 환경이 수용, NACKED = 거절)와 사유이며, 그 밖의 값을 지어내지 않는다 (restored_from 표시)
@@ -289,7 +291,7 @@ class Ledger:
                     judged = c.execute("SELECT 1 FROM events WHERE event_type='TASK_COMPLETE' AND attempt_id=?",
                                        (r["attempt_id"],)).fetchone()
                     owner = task.get("owner_attempt_id")
-                    if task["purpose_status"] != "IN_EXECUTION" or judged:
+                    if task["purpose_status"] in TERMINAL_PURPOSES or judged:
                         new, reason = "DONE", f"LEGACY_{legacy}_ALREADY_JUDGED:{task['purpose_status']}"
                     elif owner not in (None, r["attempt_id"]):
                         new, reason = "CLOSED", f"LEGACY_{legacy}_OWNER_CHANGED"
