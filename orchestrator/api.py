@@ -14,8 +14,10 @@ orchestrator/api.py
 - 같은 request_id 재전송은 같은 Task 로 수렴한다. 내용이 다르면 409.
 - /events: 잘못된 요청(422)은 event_id 를 쓰지 않는다 — 고쳐서 같은 event_id 로 다시 보낼 수 있다.
   같은 event_id·같은 내용 재전송은 200(duplicate), 같은 event_id·다른 내용은 409(EVENT_ID_CONFLICT).
-- 잠금: 판단·추적은 한 번에 하나씩(lock). 긴 LLM 호출만 잠금 밖에서 하고(llm_gate 로 LLM 끼리만 직렬화),
-  결과는 배정 직전에 지금 입력(run·환경 버전·묶음·근거)과 같을 때만 쓴다. 기체 평가·출동 HTTP 는 잠금 안이다.
+- 잠금 두 개: lock = 추적·접수·취소 같은 짧은 장부 작업. dispatch_gate = 배정(기체 평가·출동 HTTP, LLM 호출).
+  배정은 lock 을 잡지 않으므로, 기체 평가·출동 요청이나 LLM 응답이 느려도 추적(poll)·취소·접수가 기다리지 않는다
+  (내부 과제 2). 배정끼리는 dispatch_gate 로 한 번에 하나씩이다. 장부는 자체 트랜잭션으로 스레드 간 일관성을 지키고,
+  출동 요청을 보내는 중인 실행시도는 추적이 건드리지 않는다. LLM 추천은 배정 직전 입력과 같을 때만 쓴다.
 - 환경은 팀 READ 계약 전까지 fixture 다 (/health 의 env.contract_complete 로 표시).
 """
 
@@ -167,25 +169,21 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     app = FastAPI(title="ADAIR Orchestrator", version=config.SCHEMA_VERSION,
                   description="총괄 오케스트레이터 — 규칙 판단 + Local/Safety 검증")
     lock = threading.Lock()          # 판단·추적은 한 번에 하나씩 (장부 순서 보장)
-    llm_gate = threading.Lock()      # LLM 호출끼리만 직렬화. 추적·취소·접수는 이 잠금을 기다리지 않는다
+    dispatch_gate = threading.Lock() # 배정(평가·출동 HTTP·LLM)끼리 직렬화. 추적·취소·접수는 이 잠금을 기다리지 않는다
     stop = threading.Event()
 
     def dispatch_all() -> dict:
-        """대기 임무 배정. 긴 LLM 호출은 lock 밖에서 하고, 결과는 배정 직전의 입력과 같을 때만 쓴다."""
-        with llm_gate:
-            with lock:
-                req = orch.llm_request()
+        """대기 임무 배정. LLM 호출과 기체 평가·출동 HTTP 모두 lock 밖에서 한다 (dispatch_gate 로만 직렬화)."""
+        with dispatch_gate:
+            req = orch.llm_request()
             if req:
-                prop = orch.llm_call(req)            # lock 밖 — 이 동안 poll·resolve·접수가 진행된다
-                with lock:
-                    orch.llm_store(req, prop)
-        with lock:
+                orch.llm_store(req, orch.llm_call(req))
             return orch.dispatch_pending(allow_llm_call=False)
 
     @app.on_event("startup")
     def _recover_on_start():
         # 송신 전후에 멈춘 PREPARED 시도를 제공자 상태와 대조 (재송신 없음)
-        with lock:
+        with dispatch_gate, lock:
             orch.recover()
 
     if poll_interval_s:
@@ -253,7 +251,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                 # 다른 대기 임무와 함께 우선순위 순서로 배정
                 result = dispatch_all()["results"].get(task.task_id)
             else:
-                with lock:
+                with dispatch_gate:
                     result = orch.dispatch(task.task_id)
         task = orch.ledger.get_task(task.task_id)
         return {"accepted": True, "created": created, "task": _task_view(orch, task), "dispatch": result}
@@ -280,17 +278,18 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
 
     @app.post("/tasks/{task_id}/dispatch")
     def dispatch(task_id: str):
-        with lock:
+        with dispatch_gate:
             return orch.dispatch(task_id)
 
     @app.post("/tasks/{task_id}/manual_dispatch")
     def manual_dispatch(task_id: str, body: ManualIn):
-        with lock:
+        with dispatch_gate:
             return orch.manual_dispatch(task_id, body.reason)
 
     @app.post("/tasks/{task_id}/resolve")
     def resolve(task_id: str, body: ResolveIn):
-        with lock:
+        # RETRY 는 재배정(평가·출동 HTTP)을 하므로 배정 잠금으로, 나머지(취소·idle 확인·재관측 생성)는 짧은 장부 작업
+        with (dispatch_gate if body.action == "RETRY" else lock):
             return orch.resolve(task_id, body.action, body.reason, body.attempt_id, body.request_id)
 
     @app.get("/attempts/{attempt_id}")
@@ -381,7 +380,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
 
     @app.post("/priority/choose")
     def priority_choose(body: ChooseIn):
-        with lock:
+        with dispatch_gate:
             return orch.choose_priority(body.order, body.reason)
 
     @app.get("/board", response_class=HTMLResponse)
@@ -405,7 +404,7 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
             if config.AUTO_DISPATCH_ON_CHANGE:
                 redispatched = [{"task_id": k, **v} for k, v in dispatch_all()["results"].items()]
             else:
-                with lock:
+                with dispatch_gate:
                     # 새 입력·자원 변화가 재개 조건인 보류 Task 만 다시 평가한다
                     for t in orch.ledger.list_tasks(["HOLD", "PENDING"]):
                         if t.purpose_status == "PENDING" or t.resume_condition in (

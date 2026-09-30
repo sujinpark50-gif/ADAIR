@@ -32,8 +32,8 @@ from typing import Dict, List, Optional, Tuple
 from . import config, llm as llm_mod, negotiation, observation, priority, safety
 from .env_adapter import ENV_TRANSIENT_ERRORS, missing_snapshot_fields
 from .knowledge import Knowledge
-from .ledger import (ACTIVE, OCCUPYING_SUBSTATUSES, AttemptConflict, Ledger, ReservationConflict, RunClosed,
-                     RunNotActive, RunSwitchBlocked, content_hash, new_id)
+from .ledger import (ACTIVE, OCCUPYING_SUBSTATUSES, AttemptConflict, IllegalTransition, Ledger,
+                     ReservationConflict, RunClosed, RunNotActive, RunSwitchBlocked, content_hash, new_id)
 from .models import (AREA_KINDS, COMPLETION_AREA_ALL, COMPLETION_TARGET_POINT, MISSION_OPEN_SUBSTATUSES,
                      TERMINAL_PURPOSES, Requirements, ResourceView, Target, Task, can_transition)
 from .prefilter import filter_candidates
@@ -77,6 +77,9 @@ class Orchestrator:
         self.priority_mode = config.PRIORITY_MODE
         self._llm_memo = {}                   # 추천 입력 해시 → 추천 (같은 입력이면 재사용, 호출 절약)
         self._synced = set()                  # 이미 장부에 넣은 신고·기상 키 (같은 run 안에서 다시 쓰지 않음)
+        # 지금 이 프로세스가 출동 요청을 보내는 중인 실행시도. 추적(poll)은 송신이 끝날 때까지 건드리지 않는다
+        # (배정은 공유 잠금 밖에서 HTTP 를 부르므로 추적과 동시에 돈다 — 내부 과제 2)
+        self._sending = set()
         self._gate_logged = None
 
     # ------------------------------------------------------------------
@@ -497,6 +500,16 @@ class Orchestrator:
         return True
 
     def dispatch(self, task_id: str, _restart: int = 0) -> dict:
+        """Task 하나를 배정한다. 배정은 공유 잠금 밖에서 돌 수 있어, 그 사이 다른 스레드가 같은 Task 를
+        취소·보류하면 장부가 상태 되돌림을 거절한다(IllegalTransition). 그 경우 이번 배정을 멈춘다."""
+        try:
+            return self._dispatch(task_id, _restart)
+        except IllegalTransition as e:
+            self.ledger.log("DISPATCH_ABORTED", task_id=task_id, reason="TASK_CHANGED_CONCURRENTLY",
+                            detail={"error": str(e)})
+            return {"status": "SKIPPED", "reason": "TASK_CHANGED_CONCURRENTLY"}
+
+    def _dispatch(self, task_id: str, _restart: int = 0) -> dict:
         task = self.ledger.get_task(task_id)
         if task is None:
             return {"status": "NOT_FOUND"}
@@ -793,6 +806,14 @@ class Orchestrator:
         rid = view.resource_id
         attempt_id = new_id("ATT")
         command = self._payload(task, view, snap, did, attempt_id, mods)
+        if view.resource_type != "UAV":
+            # 평가에서 UGV 가 고른 도로 노드로 실행한다 (내부 과제 3, UGV-01). 평가한 조건 = 보낼 조건 이 되도록
+            # 평가 조건에도 같은 노드를 넣는다 → Safety 의 동일성 검사가 그대로 확인한다
+            node = (local.get("constraints") or {}).get("target_node")
+            node_id = node.get("node_id") if isinstance(node, dict) else node
+            if isinstance(node_id, str) and node_id:
+                evaluated = {**evaluated, "target_node": node_id}
+                command["target_node"] = node_id
         current = self.view_for(task)
         try:
             fresh = client.state(rid) if view.resource_type == "UAV" else next(
@@ -810,6 +831,14 @@ class Orchestrator:
         self.ledger.update_decision(did, safety=verdict.response, safety_reasons=verdict.reasons)
         if verdict.response != "ALLOW":
             return {"restart": "SNAPSHOT_CHANGED" in verdict.reasons, "excluded_reason": "SAFETY:" + verdict.reason}
+        self._sending.add(attempt_id)
+        try:
+            return self._reserve_and_send(task, view, client, did, attempt_id, command, current)
+        finally:
+            self._sending.discard(attempt_id)
+
+    def _reserve_and_send(self, task, view, client, did, attempt_id, command, current) -> dict:
+        rid = view.resource_id
         try:
             self.ledger.prepare_attempt(attempt_id, task.task_id, did, rid, {"resource_type": view.resource_type,
                                                                               "payload": command})
@@ -822,10 +851,13 @@ class Orchestrator:
             self.ledger.log("ATTEMPT_REFUSED", task_id=task.task_id, decision_id=did, attempt_id=attempt_id,
                             resource_id=rid, reason="OPEN_ATTEMPT_OR_CLOSED_TASK", detail={"error": str(e)})
             return {"abort": "OPEN_ATTEMPT_EXISTS"}
-        task.owner_attempt_id = attempt_id          # 이제부터 이 시도가 목적 담당 (장부에 저장 → 재시작 후에도 유지)
-        self.ledger.save_task(task)
-        self._set_purpose(task, "APPROVED", basis="SAFETY_ALLOW_RESERVED", attempt_id=attempt_id,
-                          sim=current.simulation_time_s)
+        task.owner_attempt_id = attempt_id          # 담당 지정은 prepare_attempt 가 같은 트랜잭션에서 저장했다
+        if not self._set_purpose(task, "APPROVED", basis="SAFETY_ALLOW_RESERVED", attempt_id=attempt_id,
+                                 sim=current.simulation_time_s):
+            # 평가·Safety 도중 다른 스레드가 이 Task 를 취소·변경했다 → 보내지 않고 예약을 푼다
+            self.ledger.set_attempt_status(attempt_id, "NOT_SENT", {"reason": "TASK_CHANGED_BEFORE_SEND"}, release=True)
+            return {"done": True, "status": "SKIPPED", "reason": "TASK_CHANGED_BEFORE_SEND",
+                    "purpose_status": task.purpose_status}
         result, info = client.execute(rid, command)
         self.ledger.log("EXECUTION_SENT", task_id=task.task_id, decision_id=did, attempt_id=attempt_id,
                         resource_id=rid, result=result, detail=info, sim_time_s=current.simulation_time_s)
@@ -869,11 +901,13 @@ class Orchestrator:
         if active:                                   # run 전환 직후 멈췄던 경우를 위한 멱등 정리 (F07)
             self.ledger.close_pending_applies_of_other_runs(active, "RUN_ENDED")
         applies = self.process_pending_applies()      # 환경 응답 대기·임무 반영 대기도 이어서 처리
+        followups = self.run_followups()               # 관측과 함께 남긴 후속 작업(자동 측정 임무 등)
         self.ledger.log("RECOVERY_SCAN", result="DONE", detail={"prepared_found": [a["attempt_id"] for a in pending],
                                                                 "results": results, "events_resumed": events,
-                                                                "applies_resumed": applies})
+                                                                "applies_resumed": applies,
+                                                                "followups_resumed": followups})
         return {"prepared_found": len(pending), "results": results, "events_resumed": events,
-                "applies_resumed": applies}
+                "applies_resumed": applies, "followups_resumed": followups}
 
     def resume_events(self) -> List[str]:
         """활성 run 에서 접수(RECEIVED)만 된 이벤트를 반영한다. 다른 run 의 이벤트는 건드리지 않는다."""
@@ -905,6 +939,7 @@ class Orchestrator:
             if u:
                 updates.append(u)
         updates.extend(self.process_pending_applies())
+        self.run_followups()
         if first_error is not None:
             raise first_error
         return updates
@@ -1038,6 +1073,8 @@ class Orchestrator:
 
     def _track(self, att: dict, client) -> Optional[dict]:
         aid, rid, tid = att["attempt_id"], att["resource_id"], att["task_id"]
+        if aid in self._sending:
+            return None                      # 이 프로세스가 지금 출동 요청을 보내는 중 — 결과가 기록된 뒤 추적한다
         task = self.ledger.get_task(tid)
         detail = dict(att["detail"] or {})
         status, data = client.task_status(rid, aid)
@@ -1275,7 +1312,14 @@ class Orchestrator:
                 self._reopen(task, "OBSERVATION_FAILED:" + obs["failure_reason"], aid)
             elif need_ack:
                 self.ledger.add_pending_apply(obs, run, task.task_id, aid, True)
-            else:
+            if (not closed and obs["result"] == "DETECTED" and config.AUTO_ENV_SENSE_ENABLED
+                    and task.kind != "ENV_SENSE"):
+                # 불 발견 뒤 만들 자동 측정 임무를 관측과 함께 장부에 남긴다 — 멈췄다 켜져도 같은 요청 ID 로 만든다
+                self.ledger.add_followup(f"AUTO_SENSE:{obs['observation_id']}", run, task.task_id, aid, "AUTO_SENSE", {
+                    "observation_id": obs["observation_id"], "detections": obs.get("detections", []),
+                    "measured_here": aux is not None, "visit_cell": visit.nav_target.cell_id,
+                    "incident_id": task.incident_id, "kind": task.kind})
+            if not (closed or obs["result"] == "FAILED" or need_ack):
                 out = self._conclude(att, task, obs, {"accepted": None, "skipped": True}, detail,
                                      update_attempt=False)
         att["substatus"] = "OBSERVED"             # 저장이 끝난 뒤에 메모리 상태를 바꾼다
@@ -1296,8 +1340,7 @@ class Orchestrator:
             out = self._process_apply(main_row, snap.run_id, task=task, att=att, detail=detail)
         if aux_row is not None:
             self._process_apply(aux_row, snap.run_id)
-        if obs["result"] == "DETECTED" and not replay:
-            self._auto_sense(visit, obs, self.view(), measured_here=aux is not None)
+        self.run_followups()
         return out or {"attempt_id": aid, "substatus": att["substatus"], "task": task.purpose_status}
 
     def _remember(self, obs: dict, visit: Task, pos: dict, rid: str, sim, after: Optional[dict]) -> None:
@@ -1506,8 +1549,11 @@ class Orchestrator:
             if t.kind == "ENV_SENSE" or "WEATHER" in t.requirements.extra_sensors:
                 return None                                   # 이미 그 칸에서 잴 예정
             if t.requirements.sensor == "THERMAL":
-                t.requirements.extra_sensors = tuple(sorted(set(t.requirements.extra_sensors) | {"WEATHER"}))
-                self.ledger.save_task(t)
+                # 목적 상태는 건드리지 않고 추가 측정 칸만 고친다 (배정 중인 다른 스레드의 상태를 되돌리지 않게)
+                def attach(body):
+                    req = body.setdefault("requirements", {})
+                    req["extra_sensors"] = sorted(set(req.get("extra_sensors") or ()) | {"WEATHER"})
+                self.ledger.modify_task(t.task_id, attach)
                 self.ledger.log("TASK_MERGED", task_id=t.task_id, result="WEATHER_ATTACHED",
                                 detail={"cell_id": c["cell_id"], "reason": "SENSE_POINT_HAS_OPEN_RECON"})
                 return None
@@ -1540,12 +1586,38 @@ class Orchestrator:
                         sim_time_s=snap.simulation_time_s, detail=out)
         return out
 
-    def _auto_sense(self, task: Task, obs: dict, snap, measured_here: bool = False) -> List[str]:
-        if not config.AUTO_ENV_SENSE_ENABLED or task.kind == "ENV_SENSE" or snap.run_gate:
+    def run_followups(self) -> List[dict]:
+        """장부에 남은 후속 작업을 수행한다 (poll·recover·관측 직후). 임무 생성은 요청 ID 로 멱등이라 다시 해도
+        새로 생기지 않는다. 계획 기록과 '끝남' 표시는 한 트랜잭션이다 (재시작 뒤 기록이 두 번 남지 않음)."""
+        rows = self.ledger.pending_followups()
+        if not rows:
             return []
+        snap = self.view()
+        if snap.run_gate:
+            return []
+        done = []
+        for row in rows:
+            if row["kind"] != "AUTO_SENSE":
+                continue
+            b = row["body"]
+            created, plans = self._auto_sense(row["task_id"], b["kind"], b["incident_id"], b["visit_cell"],
+                                              b["detections"], snap, b["measured_here"])
+            with self.ledger._tx():
+                for p in plans:
+                    self.ledger.log("ENV_SENSE_PLANNED", task_id=row["task_id"],
+                                    result="CREATED" if created else "EXISTING", detail={**p, "created": created})
+                self.ledger.finish_followup(row["key"], {"created": created, "fire_cells": [p["fire_cell"] for p in plans]})
+            done.append({"key": row["key"], "created": created})
+        return done
+
+    def _auto_sense(self, source_task_id: str, kind: str, incident_id: str, visit_cell: Optional[str],
+                    detections: List[dict], snap, measured_here: bool = False):
+        """불 발견 → 불난 칸 + 바람이 향하는 쪽 위험 칸에 기상 측정. (새로 만든 임무 ID 목록, 계획 기록 목록)"""
+        if not config.AUTO_ENV_SENSE_ENABLED or kind == "ENV_SENSE" or snap.run_gate:
+            return [], []
         cells = {c["cell_id"]: c for c in snap.fire_cells + snap.risk_cells}
-        created = []
-        for det in obs.get("detections", []):
+        created, plans = [], []
+        for det in detections:
             fire = cells.get(det["cell_id"])
             if not fire or fire.get("lat") is None:
                 continue
@@ -1556,16 +1628,15 @@ class Orchestrator:
             sp["wind_ref"] = {k: wd.get(k) for k in ("basis", "source", "station_id", "distance_m", "status")}
             sp["wind_ref"]["sim_time_s"] = wd.get("observed_sim_s")
             for c in sp["points"]:
-                if c["cell_id"] == fire["cell_id"] and measured_here and fire["cell_id"] == task.nav_target.cell_id:
+                if c["cell_id"] == fire["cell_id"] and measured_here and fire["cell_id"] == visit_cell:
                     continue                                  # 불 발견한 그 방문에서 이미 측정함
-                tid = self._attach_or_create_sense(c, task.incident_id, snap.run_id)
+                tid = self._attach_or_create_sense(c, incident_id, snap.run_id)
                 if tid:
                     created.append(tid)
-            self.ledger.log("ENV_SENSE_PLANNED", task_id=task.task_id, result="CREATED" if created else "EXISTING",
-                            detail={"fire_cell": fire["cell_id"], "points": [c["cell_id"] for c in sp["points"]],
-                                    "selection": sp["note"], "wind_ref": sp["wind_ref"], "created": created,
-                                    "measured_in_same_visit": measured_here})
-        return created
+            plans.append({"fire_cell": fire["cell_id"], "points": [c["cell_id"] for c in sp["points"]],
+                          "selection": sp["note"], "wind_ref": sp["wind_ref"], "measured_in_same_visit": measured_here,
+                          "source_task_id": source_task_id})
+        return created, plans
 
     # ------------------------------------------------------------------
     # 확산 예측 → 사전 감시 임무 (구현 완료, config.PREEMPTIVE_MONITOR_ENABLED 로 꺼 둠)

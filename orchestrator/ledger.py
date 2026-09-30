@@ -132,6 +132,18 @@ CREATE TABLE IF NOT EXISTS pending_applies (
     resolved_wall REAL,
     ack TEXT
 );
+CREATE TABLE IF NOT EXISTS followups (
+    key TEXT PRIMARY KEY,
+    run_id TEXT,
+    task_id TEXT,
+    attempt_id TEXT,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT,
+    created_wall REAL NOT NULL,
+    done_wall REAL
+);
 CREATE TABLE IF NOT EXISTS observations (
     observation_id TEXT PRIMARY KEY,
     attempt_id TEXT NOT NULL,
@@ -407,6 +419,17 @@ class Ledger:
             c.execute("UPDATE tasks SET purpose_status=?, body=?, updated_wall=? WHERE task_id=?",
                       (task.purpose_status, _dumps(task.to_dict()), time.time(), task.task_id))
 
+    def modify_task(self, task_id: str, fn) -> None:
+        """저장된 Task 본문의 일부만 고친다 (fn 이 본문 dict 를 수정). 목적 상태는 바꿀 수 없다."""
+        with self._tx() as c:
+            row = c.execute("SELECT purpose_status, body FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if row is None:
+                return
+            body = json.loads(row["body"])
+            fn(body)
+            body["purpose_status"] = row["purpose_status"]
+            c.execute("UPDATE tasks SET body=?, updated_wall=? WHERE task_id=?", (_dumps(body), time.time(), task_id))
+
     def get_task(self, task_id: str) -> Optional[Task]:
         row = self._conn.execute("SELECT body FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         return Task.from_dict(json.loads(row["body"])) if row else None
@@ -475,6 +498,12 @@ class Ledger:
                       "substatus, detail, created_wall, updated_wall, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                       (attempt_id, task_id, decision_id, resource_id, _dumps(command),
                        content_hash(command), "PREPARED", None, now, now, trow["run_id"] if trow else None))
+            if trow:
+                # 목적 담당 시도를 같은 트랜잭션에서 기록한다 — 종료 여부 확인·예약·담당 지정이 한 번에 (다른 스레드의
+                # 취소와 엇갈려도 반쪽 상태가 남지 않는다)
+                body = json.loads(c.execute("SELECT body FROM tasks WHERE task_id=?", (task_id,)).fetchone()["body"])
+                body["owner_attempt_id"] = attempt_id
+                c.execute("UPDATE tasks SET body=?, updated_wall=? WHERE task_id=?", (_dumps(body), now, task_id))
         return self.get_attempt(attempt_id)
 
     def set_attempt_status(self, attempt_id: str, substatus: str, detail: Optional[dict] = None,
@@ -508,6 +537,33 @@ class Ledger:
     # 관측 원본 (F01). 실행시도마다 역할(MAIN 주 관측 / AUX 함께 한 측정)별로 한 번 확정한다.
     # 복구할 때는 이 원본을 다시 쓴다 — 재시작 시점의 환경을 읽어 새 관측으로 바꾸지 않는다.
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 후속 작업 (관측과 함께 남기고, 재시작 후 같은 요청 ID 로 다시 수행한다)
+    # ------------------------------------------------------------------
+    def add_followup(self, key: str, run_id: Optional[str], task_id: str, attempt_id: str, kind: str,
+                     body: dict) -> bool:
+        with self._tx() as c:
+            cur = c.execute("INSERT OR IGNORE INTO followups VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (key, run_id, task_id, attempt_id, kind, _dumps(body), "PENDING", None, time.time(), None))
+            return cur.rowcount == 1
+
+    def pending_followups(self, run_id=ACTIVE) -> List[dict]:
+        where, args = self._scope(run_id)
+        return [{"key": r["key"], "run_id": r["run_id"], "task_id": r["task_id"], "attempt_id": r["attempt_id"],
+                 "kind": r["kind"], "body": _loads(r["body"])}
+                for r in self._conn.execute(f"SELECT * FROM followups WHERE {where} AND status='PENDING' "
+                                            "ORDER BY created_wall, rowid", args)]
+
+    def followups(self, task_id: str) -> List[dict]:
+        return [{"key": r["key"], "kind": r["kind"], "status": r["status"], "result": _loads(r["result"])}
+                for r in self._conn.execute("SELECT * FROM followups WHERE task_id=? ORDER BY created_wall, rowid",
+                                            (task_id,))]
+
+    def finish_followup(self, key: str, result: dict, status: str = "DONE"):
+        with self._tx() as c:
+            c.execute("UPDATE followups SET status=?, result=?, done_wall=? WHERE key=? AND status='PENDING'",
+                      (status, _dumps(result), time.time(), key))
+
     def save_observation(self, obs: dict, attempt_id: str, role: str, run_id: Optional[str], task_id: str) -> bool:
         with self._tx() as c:
             cur = c.execute("INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?)",
