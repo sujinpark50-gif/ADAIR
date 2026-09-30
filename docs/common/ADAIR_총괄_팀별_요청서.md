@@ -1,6 +1,6 @@
 # ADAIR 총괄 오케스트레이터 — 팀별 요청서
 
-- 갱신: 2026-09-30 (최신) · 기준: 브랜치 `feat/orchestrator-final` (`888b29a` 이후)
+- 갱신: 2026-09-30 (최신, 검토 B01~B08·D01~D03 반영) · 기준: 브랜치 `feat/orchestrator-final` (`747d74a` 위 작업본)
 - 근거: `docs/orchestration/ADAIR_오케스트레이터_구현요청_코드대조_수정본 (1).md` §11 형식, `docs/orchestration/ADAIR_총괄_구현준비.md`
 - 총괄 쪽은 아래 계약을 **가짜(fixture)로 먼저 구현·시험**해 두었다. 각 팀이 제공하면 가짜만 교체한다.
 - 상태 표기: **A** 코드와 시험으로 확인 · **B** fixture 에서만 확인 · **C** 타 팀 계약·연동 대기 · **D** 최종 발표 미완료
@@ -40,6 +40,9 @@
 | UAV-05 | 드론 | 관측 고정값(312.5℃) 제거, 기상 센서 형식 | 관측 근거 | P1 |
 | UAV-06 | 드론 | 복귀 중 기체의 재배정 가능 여부 합의 | 점유 해제 시점 | P1 |
 | UAV-07 | 드론 | **한 방문에 여러 측정**(정찰+기상) 요청 형식, 기상 전용 이동 평가 | 같은 칸 중복 비행 | P1 |
+| UAV-08 | 드론 | **구역 관측 증거**: 여러 지점·프레임을 한 임무로, 프레임별 위치·높이·범위 목록 | 구역 감시(MONITOR) 완료 판정 | P1 |
+| UAV-09 · UGV-03 | 드론·UGV | **중단(abort) 요청** API 와 그 결과 상태 | 취소해도 기체는 끝까지 감 | P1 |
+| ENV-08 | 환경 | 현장 기상 측정의 **유효시간 근거** (기상 갱신 주기 등) | 현장 측정을 판단에 쓸 수 있는 기간 | P1 |
 | UGV-01 | UGV | 평가 때 고른 목적지로 실행 (target_node 고정) | 평가·실행 목적지 불일치 | P1 |
 | UGV-02 | UGV | 실행 기록 영속·재시작 후 조회, 기상 센서 형식 | 불명 처리, 현장 측정 | P2 |
 | INT-01 | 통합 | 웹 출동 경로를 새 총괄 경유로 | 총괄·Safety·정보 경계 우회 | P0 |
@@ -60,7 +63,8 @@
 | 계약 요청 | 한 실행(run)에 환경 인스턴스 하나. `READ` 는 상태 불변, `ADVANCE(steps)`, `APPLY(observation)` 분리 |
 | 응답 예시 | `{"run_id":"RUN-INJE-01","state_version":42,"simulation_time_s":1800.0,"scenario_start_kst":"2019-04-04T14:45:00+09:00","map_version":"INJE-2019-v1","crs":"EPSG:5186","vertical_datum":"(확인 필요)"}` |
 | 단위·시계 | 시뮬레이션 초(float). `scenario_start_kst` 는 시뮬레이션 0초의 실제 시각 (기상청 재생·화면 시각 기준) |
-| 오류 | 같은 run 안에서 버전 역행 금지. run 이 바뀌면 새 `run_id` (총괄은 `RUN_CHANGED` 로 처리) |
+| 오류 | 같은 run 안에서 버전 역행 금지. run 이 바뀌면(환경 재시작 포함) **반드시 새 `run_id`** |
+| 총괄 처리 (2026-09-30) | 활성 run 은 하나. 신고·관측·기상·Task·요청/이벤트 키는 run 안에서만 유효. 새 `run_id` 가 오면 이전 run 의 기체 점유가 모두 풀린 뒤에만 전환하고(그 전에는 판단 보류·추적만), 닫힌 run 의 snapshot·이벤트는 거절. 같은 run 에서 버전이 역행하면 판단 보류(`SNAPSHOT_STALE`). 같은 `run_id` 를 재시작 후 다시 쓰면 총괄이 이전 지식을 이어받으므로 새 run 이면 새 ID 를 줘야 한다 |
 | 수락 시험 | READ 를 여러 번 불러도 `state_version` 불변 |
 | 총괄 상태 | B — 기본 서버(`build_default`)도 `FixtureEnv`. `/health` 에 `truth_env.shared_team_env=false` 로 표시 |
 
@@ -98,15 +102,25 @@
 | 항목 | 내용 |
 |---|---|
 | 계약 요청 | `APPLY(observation)` 는 `observation_id` 로 한 번만 반영하고 ACK `{accepted, state_version, duplicate}`. 열화상(`detections`, `covered_cells`)과 기상(`values`) 모두 |
+| 총괄 처리 (2026-09-30) | ACK 가 필요한 임무는 ACK 전에 완료하지 않는다. 응답이 없으면(시간 초과·연결 끊김) **같은 `observation_id` 로 다시 APPLY** 하므로 멱등이 필수. 거절(`accepted=false`)은 재관측 대기. 도로 상황 등 APPLY 계약이 없는 관측에는 ACK 를 요구하지 않는다 (요구하는 요청은 접수 거절). 열화상 관측은 `covered_cells`(칸 전체를 봄)·`partial_cells`(일부만)·`cell_coverage`(칸별 겹친 범위·비율)로 보낸다 — 일부만 본 칸을 전체 관측으로 반영하지 말 것 |
 | 금지 | 관측만으로 UNBURNED→BURNING 임의 변경, 도착만으로 진화 |
 | 총괄 상태 | B — 임무 완료 근거에 `evidence_level=SIMULATION_TEST` (모의 센서 + 가짜 환경 ACK) 로 표시. 실제 환경 연동 완료 아님 |
 
 ### ENV-06 신고 이벤트
 | 항목 | 내용 |
 |---|---|
-| 계약 요청 | 시나리오 시각표의 신고를 이벤트로: `{cell_id, sim_time_s, source:"119_CALL", note}`. 총괄 `/events` `FIRE_REPORT` 로 보내도 됨 |
+| 계약 요청 | 시나리오 시각표의 신고를 이벤트로: `{cell_id, sim_time_s, source:"119_CALL", note}`. 총괄 `/events` `FIRE_REPORT` 로 보내도 됨. 가능하면 **사건 ID(`incident_id`)** 와 `run_id` 를 함께 |
+| 총괄 처리 (2026-09-30) | 신고를 받으면 총괄이 최초 정찰(RECON)을 한 번 만든다. 사건 ID 가 없어 대체키 `INC-AUTO:{run}:{cell}:{n}` 을 쓴다: 그 칸을 볼 정찰이 이미 열려 있으면 중복 신고, 이미 불이 확인된 칸이면 새 임무 없음, 그 밖에는 새 사건. 신고 칸이 지도에 없으면 좌표를 만들지 않고 보류한다 (`TARGET_LOCATION_UNKNOWN`) → 신고 칸은 ENV-02 `map_cells` 에 있어야 출동 가능 |
+| `/events` 응답 | 202 접수·반영 / 200 같은 `event_id`·같은 내용 재전송 / **409** 같은 `event_id`·다른 내용(`EVENT_ID_CONFLICT`), `run_id` 불일치 / **422** 잘못된 요청(예: `cell_id` 없음, 시뮬레이션 시각이 미래) — 422 는 `event_id` 를 쓰지 않으므로 고쳐서 같은 ID 로 다시 보낼 수 있다 |
 | 근거 | 백서 140~146쪽 (발화·신고·대피·헬기 불가·대응 2단계 시각). 시연의 14:45 신고는 시험값이며 백서 대조 필요 |
 | 총괄 상태 | A (`FIRE_REPORT`, `FixtureEnv.reports_until`) |
+
+### ENV-08 현장 기상 측정의 유효시간 근거
+| 항목 | 내용 |
+|---|---|
+| 차단 문제 | 총괄은 기상을 항목별(풍속·풍향·기온·습도)로 최신성을 따진다. 관측소 값은 자료 제공 간격(기상청 시간자료 3600초)을 유효시간으로 쓰지만, **현장 측정은 근거가 되는 값이 없다** |
+| 계약 요청 | 진짜 세계의 기상이 얼마마다 바뀌는지(갱신 주기), 또는 측정값마다 `valid_for_s` |
+| 총괄 상태 | 값이 정해질 때까지 현장 측정 유효시간은 **미설정**이며, 미설정이면 현장 측정은 `POLICY_NOT_SET` 으로 표시되고 판단에는 관측소 값을 쓴다 (임의 기본값을 두지 않음). 설정: `ORCH_FIELD_WEATHER_MAX_AGE_S` |
 
 ### ENV-07 (F2) 진화 효과
 | 항목 | 내용 |
@@ -121,13 +135,29 @@
 
 | ID | 현재 코드 | 요청 | 총괄 쪽 현재 처리 |
 |---|---|---|---|
-| UAV-01 | 실행 상태가 메모리(`_tasks`)에만 있어 재시작하면 404. 중복 키 없음 | `ExecuteRequest` 에 `execution_attempt_id`(또는 idempotency key), 같은 키 재요청 시 같은 결과. **상태 영속**, 재시작 후 `/task/{id}` 조회 | `task_id` 칸에 총괄 `attempt_id` 를 넣어 보냄. 총괄 재시작 시 송신 직전·직후 시도(`PREPARED`)를 `/task/{attempt_id}` 로 대조: 같은 시도를 보고하면 추적 재개, **404·조회 불가는 UNKNOWN**(점유 유지, 재송신·재출동 없음, 수동 해소). 제공자 멱등성 없이는 **물리 명령 최대 1회를 보장하지 않음** |
+| UAV-01 | 실행 상태가 메모리(`_tasks`)에만 있어 재시작하면 404. 중복 키 없음. 상태 조회 응답(`TaskStatus`)에 자원 ID 가 없음 | `ExecuteRequest` 에 `execution_attempt_id`(또는 idempotency key), 같은 키 재요청 시 같은 결과. **상태 영속**, 재시작 후 `/task/{id}` 조회. `TaskStatus` 에 `uav_id` 포함 (총괄은 응답의 실행 식별자·자원 ID·상태 값을 검증하고, 맞지 않으면 그 응답을 쓰지 않고 불명 처리한다. UGV 서버는 이미 `resource_id` 를 준다) | `task_id` 칸에 총괄 `attempt_id` 를 넣어 보냄. 총괄 재시작 시 송신 직전·직후 시도(`PREPARED`)를 `/task/{attempt_id}` 로 대조: 같은 시도를 보고하면 추적 재개, **404·조회 불가는 UNKNOWN**(점유 유지, 재송신·재출동 없음, 수동 해소). 제공자 멱등성 없이는 **물리 명령 최대 1회를 보장하지 않음** |
 | UAV-02 | `RETURN_MARGIN_INSUFFICIENT` COUNTER 가 `observe_duration_s` 를 제안하지만 `EvaluateRequest` 에 그 칸이 없음. `MODERATE_WIND` 는 note 만 | COUNTER 는 재평가 요청에 실을 수 있는 필드만 제안하거나, `observe_duration_s` 를 요청 필드로 추가 | 구체 수정값만 재평가(드론당 2회). 실제 서버 COUNTER 는 모두 "실행 불가"로 다음 후보 (능선 목표 시험에서 확인) |
 | UAV-03 | DEM 경로 미구현 (책임은 드론팀 확정) | 평가 응답에 `route_id, route_version, route_hash`, 실행은 같은 해시만 | Safety 에 평가·실행 조건 동일성 검사 있음. 경로 해시 칸은 계약 후 추가 |
 | UAV-04 | `deadline` 을 현재 UTC 와 비교 | `remaining_time_s`(시뮬레이션 초) | 기한을 보내지 않음 |
 | UAV-05 | 관측값이 항상 `312.5℃ / hotspot` | 모의임을 명시하거나 제거. 기상 센서(`WEATHER`) 지원 여부·형식 | 고정값 무시(`uav_reported_values_ignored` 로 원문만 보관), 총괄 모의 센서 사용 |
 | UAV-06 | 복귀 중(RETURNING)은 BUSY 아님 | 복귀 중 재배정 허용 여부 합의 | 착륙·READY 확인 전까지 점유 유지 |
 | UAV-07 | `observation_type` 하나만 받음, `WEATHER` 는 미지원(`REQUIRED_CAPABILITY_UNAVAILABLE`) | ① 한 방문에서 여러 측정: 예) `measurements: ["THERMAL","WEATHER"]`, 결과도 측정별로. ② 기상 측정만 하는 임무의 이동 가능성 평가 | 총괄은 같은 칸 중복 방문을 막으려 정찰에 기상 측정을 붙이고(`extra_sensors`), 불 발견 방문에서 바로 측정. 기상 전용 임무는 `observation_type` 없이 보내 **이동 가능성만** 평가받음 (측정은 총괄 모의 센서) |
+
+### UAV-08 구역 관측 증거 (2026-09-30 추가)
+| 항목 | 내용 |
+|---|---|
+| 현재 코드 | 실행은 목표 한 지점(goto + 체류)뿐. 관측도 그 한 지점 기준 |
+| 차단 문제 | 구역 감시(MONITOR)는 필수 셀 **전체**가 관측돼야 완료다. 총괄 시험 프레임은 지면 위 90m 에서 54×45m 라 90m 칸 하나도 한 번에 덮지 못한다. 총괄은 한 점 결과를 구역 완료로 올리지 않으므로, 지금 계약으로는 실제 지도의 구역 감시가 완료되지 않는다 (남은 칸을 한 번씩 방문한 뒤 `AREA_EVIDENCE_UNSUPPORTED` 로 보류) |
+| 계약 요청 | ① 한 임무에서 여러 지점을 도는 실행(경로/스캔). ② 관측 증거를 프레임 목록으로: 프레임마다 `observation_id`, 관측 위치(lat, lon, alt_m_amsl), 지면 위 높이, 기수 방향(heading), 센서 시야(또는 지상 범위 사각형), 관측 시각. ③ 실제 센서 profile(시야각·해상도)과 탐지 판정 기준 |
+| 합의 필요 | 칸 일부만 덮인 경우의 인정 기준(비율 임계값 등). 총괄은 합의 전까지 "칸 전체가 누적으로 덮여야 함"만 쓰고 임의 비율을 두지 않는다. 주기 감시(몇 분마다 다시 볼지)도 미정 |
+| 총괄 상태 | 누적·부분 겹침·중복 관측 제거·미완료 보류는 A (fixture), 실제 구역 완료는 C |
+
+### UAV-09 · UGV-03 중단(abort) 요청 (2026-09-30 추가)
+| 항목 | 내용 |
+|---|---|
+| 차단 문제 | 총괄에서 임무를 취소해도 기체에 중단을 전달할 방법이 없다 |
+| 계약 요청 | 실행 식별자로 중단을 요청하는 API 와 그 뒤의 상태(복귀 중·정지·READY) 보고 |
+| 총괄 상태 | 취소는 목적만 끝낸다. 중단 명령을 보냈다고 표시하지 않으며(`stop_command_sent=false`), 기체가 돌아와 READY 가 확인될 때까지 추적·점유를 유지한다. 취소 뒤에 온 관측은 '취소 이후 수신'으로 보관만 하고 완료 근거로 쓰지 않는다 |
 
 ## UGV팀
 
@@ -164,7 +194,7 @@
 | 항목 | 내용 |
 |---|---|
 | 포트·배포 | 총괄 8200 (임시, UGV 가 8100 사용). 배포 위치 합의 필요 |
-| 총괄 API | `GET /health` (환경 종류·분석 출처·LLM 상태), `POST /tasks`, `GET /tasks[/{id}]`, `/tasks/{id}/decisions`·`/events`, `POST /tasks/{id}/manual_dispatch` (사람이 지금 보내기, 이유 필수), `POST /tasks/{id}/resolve` (불명·취소 수동 해소), `POST /dispatch_pending`, `POST /events` (`FIRE_REPORT`·`ENV_UPDATED`·`RESOURCE_CHANGED`), `GET /state`, `GET /priority/board`, `POST /priority/mode`, `POST /priority/choose`, `GET /board`(총괄 내장 한글 화면) |
+| 총괄 API | `GET /health` (환경 종류·분석 출처·LLM 상태), `POST /tasks`, `GET /tasks[/{id}]`, `/tasks/{id}/decisions`·`/events`, `POST /tasks/{id}/manual_dispatch` (사람이 지금 보내기, 이유 필수), `POST /tasks/{id}/resolve` (`RETRY` 실패·보류 뒤 재평가 / `CANCEL` / `CONFIRM_RESOURCE_IDLE` / `RECHECK` 끝난 임무의 재관측 — 완료·취소된 임무의 `RETRY` 는 거절), `POST /dispatch_pending`, `POST /events` (`FIRE_REPORT`·`ENV_UPDATED`·`RESOURCE_CHANGED`, 응답 코드는 ENV-06), `GET /state`, `GET /priority/board`, `POST /priority/mode`, `POST /priority/choose`, `GET /board`(총괄 내장 한글 화면) |
 | 동작 기본값 | 우선순위 모드 **자동**(애매한 묶음도 검증 통과한 AI 추천 순서로 출발, 실패 시 규칙). 수동 모드(`HUMAN_CHOICE`)는 화면 전환. 상황 변화(새 임무·신고·자원 반납) 때 자동 배정 — 주기 실행 없음 |
 | 화면 표시 요청 | 기존 관제에 붙일 때 다음을 구분 표시: 확인 전 신고 / 정찰 확인, `시험 주입값` 분석, `SIMULATED` 측정, 완료 근거 `SIMULATION_TEST` |
 | 총괄 상태 | 총괄 내장 화면 A, 기존 관제 연결 C |
@@ -191,7 +221,13 @@
 | 분석 교체 지점 | `Orchestrator(analysis=...)` — `analyze(belief)` 만 구현 | B (`InjectedAnalysis`) |
 | 환경 교체 지점 | `read / advance / apply / map_cells / reports_until` | B (`FixtureEnv`) |
 | 드론·UGV 연결 | `resources.py` — UAV Agent(mock)·UGV 서버(sim) 연동 시험 | A (mock/sim) |
-| 재시작 복구 (`PREPARED` 대조, 불명 시 점유 유지) | `engine.recover()` | A (`test_recovery`), 물리 1회 보장은 C |
+| 재시작 복구 (`PREPARED` 대조, 불명 시 점유 유지, 미반영 이벤트 재처리) | `engine.recover()` | A (`test_recovery`, `test_event_intake`), 물리 1회 보장은 C |
+| 목적 상태 전이 검증 (취소·완료는 되살아나지 않음), 재관측 `RECHECK` | `models.PURPOSE_TRANSITIONS`, `engine._set_purpose`, `ledger.save_task` | A (`test_state_transitions`) |
+| 제공자 응답 검증 (실행 식별자·자원 ID·상태) | `engine._response_problem` | A (fixture) |
+| run 범위 격리 (단일 활성 run, 점유 중 전환 차단, 이전 장부 격리) | `ledger.activate_run`, `engine._ensure_run` | A (`test_run_isolation`) |
+| 이벤트 접수 (검증 → 접수키 → 반영, 충돌 409) + 신고 시 최초 정찰 | `engine.ingest_event`, `_initial_recon` | A (`test_event_intake`, HTTP) |
+| 기상 항목별 최신성·대체·재측정 | `knowledge.weather_for`, `engine._request_remeasure` | A (로직) / 현장 측정 유효시간은 C (ENV-08) |
+| 완료조건 분리 (정찰 = 목표 지점, 감시 = 필수 셀 전체 누적) | `engine._conclude`, `_conclude_area`, `observation.simulate` | A (fixture) / 실제 구역 완료는 C (UAV-08) |
 | 같은 칸 중복 방문 방지 (측정 합치기) | `engine._attach_or_create_sense`, `_merge_pending_sense_into` | A |
 | 우선순위 (인명 우선·비슷함 0.1·엇갈림) + 자동/수동 모드 + 지금 보내기 | `priority.py`, `engine.dispatch_pending`, `manual_dispatch` | A (규칙) / B (데이터) |
 | LLM 추천 + 결정론적 검증·재사용 | `llm.py` | A |
