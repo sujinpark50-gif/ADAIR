@@ -9,7 +9,7 @@
    실제로는 승인 없이 불가하다 (NOTE.md / API_DEFINE.md 참고).
 
 실행 (PX4 강원 월드가 떠 있고 기체가 시동·이륙 가능 상태):
-  ~/uav-venv4/bin/python uav/tools/demo_fly_over_ridge.py [--profile ridge_profile.json]
+  .venv/bin/python uav/tools/demo_fly_over_ridge.py [--profile ridge_profile.json]
 
 --profile: [[lat, lon, 지면고도], ...] 원통→기린 직선 지형 단면. 주면 로그에 지형 여유고도를 찍는다.
 MAVSDK 는 GCS 링크(14550)로 붙어 UAV Agent(14540)와 경합하지 않는다.

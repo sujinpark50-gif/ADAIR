@@ -15,12 +15,12 @@ UAV 1대 = PX4 컨테이너 1개 + UAV Agent 프로세스 1개입니다. API 사
 ```bash
 docker pull px4io/px4-sitl-gazebo:latest
 
-python3 -m venv ~/uav-venv4
-source ~/uav-venv4/bin/activate
-pip install "mavsdk>=4,<5" fastapi uvicorn pydantic
+# repo 루트에서 실행 — .venv 를 만들고 requirements.txt 를 설치합니다.
+./uav/etc/setup-venv.sh
 ```
 
 > `mavsdk`는 반드시 4.x여야 합니다. 3.x에서는 real 모드가 동작하지 않습니다.
+> 버전은 [requirements.txt](../requirements.txt)가 고정하므로 직접 pip install 하지 마세요.
 
 ## 1. PX4 + Gazebo 기동 (real 모드일 때만, mock이면 건너뜀)
 
@@ -36,7 +36,7 @@ cd uav/etc
 ## 2. UAV Agent 기동
 
 ```bash
-source ~/uav-venv4/bin/activate
+source .venv/bin/activate      # repo 루트 기준
 cd uav/uav-agent
 
 UAV_ID=A-uav1 UAV_MODE=real uvicorn main:app --host 0.0.0.0 --port 8000   # PX4 연동
