@@ -23,3 +23,4 @@ adair_integration_fix.patch
 # 로컬 작업 지시 프롬프트 (공유 안 함)
 docs/common/ADAIR_오퍼스_오케스트레이터_수정프롬프트_최종.md
 docs/common/ADAIR_오퍼스_추가수정요구_R01-R04.md
+environment/.state/

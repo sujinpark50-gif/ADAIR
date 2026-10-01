@@ -1,0 +1,13 @@
+{
+  "source": "루트 config.py BASE_A/BASE_B 값을 옮김 (2026-10 멘토 패치)",
+  "coordinate_status": "UNVERIFIED",
+  "note": "INT-04: 원통 좌표가 config.py·uav/NOTE.md·UGV·환경에서 서로 다르다. 팀이 실제 좌표 하나를 확정하면 이 파일만 고치고, 다른 파일은 이 파일을 읽도록 바꾼다. 아래 alternatives 는 결정을 돕기 위한 기록이며 판단에 쓰지 않는다.",
+  "stations": [
+    {"base_id": "A", "name": "원통119안전센터", "lat": 38.1155, "lon": 128.1566},
+    {"base_id": "B", "name": "기린119안전센터", "lat": 37.9430, "lon": 128.2760}
+  ],
+  "alternatives": {
+    "A": [{"lat": 38.1205, "lon": 128.2018, "from": "uav/NOTE.md (도로명 북면 원통로 276 기준이라고 적힘)"}],
+    "B": [{"lat": 37.9645, "lon": 128.3062, "from": "uav/NOTE.md (기린면 대내로 34-14 기준이라고 적힘)"}]
+  }
+}
