@@ -63,6 +63,7 @@ canvas{display:block}
 #resources,#live{margin-top:12px;font-size:12px;color:var(--ink-2);text-align:left}
 #resources b,#live b{color:var(--ink);font-weight:500}
 #live .ok{color:#7FD99A} #live .down{color:#FF8A7A}
+#live{max-height:30vh;overflow:auto}
 #legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin-top:6px}
 #legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;background:var(--c)}
 details{font-size:12px;color:var(--ink-2);margin-top:6px}
@@ -248,7 +249,34 @@ if (BURN){
 const liveMesh = new THREE.InstancedMesh(tileGeo, new THREE.MeshLambertMaterial({color:0xffffff}), 8000);
 liveMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(8000*3), 3);
 liveMesh.count = 0; scene.add(liveMesh);
-const C_BURN = new THREE.Color('#FF6A2B'), C_HOT = new THREE.Color('#FFD08A'), C_CHAR = new THREE.Color('#3B302B');
+const C_BURN = new THREE.Color('#E3241B'), C_HOT = new THREE.Color('#FFE08A'), C_CHAR = new THREE.Color('#2A2320');
+// 불꽃: 타는 칸마다 붉은 원뿔이 흔들린다 (재현·LIVE 공통). 새로 붙은 칸은 몇 초간 밝게 번쩍인다
+const FLAME_MAX = 8000;
+const flames = new THREE.InstancedMesh(new THREE.ConeGeometry(CELL*0.42, 1, 7),
+  new THREE.MeshBasicMaterial({color:0xFF4A1C, transparent:true, opacity:.9, blending:THREE.AdditiveBlending, depthWrite:false}), FLAME_MAX);
+flames.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(FLAME_MAX*3), 3);
+flames.count = 0; scene.add(flames);
+let flameList = [];                              // [gx, gy, 처음 본 실제 시각(ms)]
+const firstSeen = new Map();
+function setFlames(cells){                       // cells: [[gx,gy]...] 지금 타는 칸
+  const now = performance.now(), keep = new Set();
+  flameList = cells.slice(0, FLAME_MAX).map(([gx,gy]) => { const id = gy*COLS+gx; keep.add(id);
+    if (!firstSeen.has(id)) firstSeen.set(id, now); return [gx, gy, firstSeen.get(id)]; });
+  for (const id of firstSeen.keys()) if (!keep.has(id)) firstSeen.delete(id);
+  flames.count = flameList.length;
+}
+const FL_A = new THREE.Color('#FF2A10'), FL_B = new THREE.Color('#FFB020'), FL_NEW = new THREE.Color('#FFF2B0');
+function animateFlames(now){
+  for (let n=0;n<flameList.length;n++){
+    const [gx,gy,born] = flameList[n], age = (now-born)/1000;
+    const fresh = Math.max(0, 1 - age/3);                       // 붙은 지 3초 동안 크고 밝게
+    const h = (90 + 70*Math.sin(now/180 + n*1.7) * 0.5 + 60) * (1 + fresh*1.5);
+    M.makeScale(1, h, 1); M.setPosition(X(gx), Y(gx,gy,8) + h/2, Z(gy)); flames.setMatrixAt(n, M);
+    const c = FL_A.clone().lerp(FL_B, 0.5+0.5*Math.sin(now/240 + n)); if (fresh) c.lerp(FL_NEW, fresh);
+    flames.setColorAt(n, c);
+  }
+  flames.instanceMatrix.needsUpdate = true; if (flames.instanceColor) flames.instanceColor.needsUpdate = true;
+}
 
 // 불 위치 표식: 초기 불은 90 m 칸 한두 개라 27 km 지도에서 안 보인다 → 연기 기둥과 라벨로 위치를 알린다
 const plume = new THREE.Group();
@@ -269,7 +297,7 @@ function setPlume(cells){                       // cells: [[gx,gy,state]...] 지
   for (const [gx,gy] of src){ cx+=gx; cy+=gy; } cx/=src.length; cy/=src.length;
   fireBox = {cx, cy, x0, x1, y0, y1};
   const h = burning.length ? 900 + Math.min(1800, burning.length*12) : 300, base = Y(cx,cy,0);
-  plumeCore.scale.y = h*0.45; plumeCore.position.y = h*0.225; plumeCore.visible = burning.length > 0;
+  plumeCore.visible = false;
   plumeSmoke.scale.y = h; plumeSmoke.position.y = h*0.5 + h*0.2;
   plume.position.set(X(cx), base, Z(cy)); plume.visible = true;
   const ha = (cells.length*CELL*CELL/1e4).toFixed(1);
@@ -470,7 +498,9 @@ function draw(force){
     if (burning && (showSolid || state.view==='truth')){ M.makeTranslation(X(gx), y+14, Z(gy)); glow.setMatrixAt(n, M); } else glow.setMatrixAt(n, ZERO);
   }
   [solid, ghost, glow].forEach(m => m.instanceMatrix.needsUpdate = true); solid.instanceColor.needsUpdate = true;
-  setPlume(state.mode === 'live' ? ((state.live && state.live.fire) || []) : visibleFire);
+  const nowFire = state.mode === 'live' ? ((state.live && state.live.fire) || []) : visibleFire;
+  setPlume(nowFire);
+  setFlames(nowFire.filter(c => c[2] === 1));
   // 예측
   const list = (state.fc && state.mode === 'replay') ? (row[state.scen].forecast || []) : [];
   fcMesh.count = Math.min(list.length, 4000);
@@ -513,17 +543,20 @@ function draw(force){
     uav.position.set(X(gx), Y(gx,gy,90*EX), Z(gy));
     uav.userData.cone.visible = night;
     uav.userData.rotors.forEach((r,i) => r.rotation.y = t*3 + i);
-    const base = D.vehicles[0].path.at(-1);
+    const base = (D.vehicles[0]._path || D.vehicles[0].path).at(-1);
     uav2.position.set(X(base[0]+0.6), Y(base[0],base[1],12), Z(base[1])); uav2.userData.cone.visible = false;
   }
   // 차량 (실제 도로망 경로, 14:45 출동 가정)
   for (const [obj, v] of [[engine, D.vehicles[0]], [ugv, D.vehicles[1]]]){
     if (!v || state.mode === 'live'){ obj.visible = false; continue; }
     obj.visible = true;
-    const tt = v.t; let j = tt.findIndex(x => x > t);
+    // 집결지: 경로에서 발화점까지 700 m 안으로 처음 들어가는 지점 (불 위에 차를 세우지 않는다)
+    if (v._stage == null){ v._stage = v.path.findIndex(p => Math.hypot(p[0]-spring.gx, p[1]-spring.gy)*CELL <= 700);
+      if (v._stage < 1) v._stage = v.path.length-1; v._path = v.path.slice(0, v._stage+1); v._t = v.t.slice(0, v._stage+1); }
+    const tt = v._t; const vp = v._path; let j = tt.findIndex(x => x > t);
     let p, q, w;
-    if (j < 0){ p = q = v.path.at(-1); w = 0; } else if (j === 0){ p = q = v.path[0]; w = 0; }
-    else { p = v.path[j-1]; q = v.path[j]; w = (t-tt[j-1])/(tt[j]-tt[j-1]); }
+    if (j < 0){ p = q = vp.at(-1); w = 0; } else if (j === 0){ p = q = vp[0]; w = 0; }
+    else { p = vp[j-1]; q = vp[j]; w = (t-tt[j-1])/(tt[j]-tt[j-1]); }
     const gx = p[0]+(q[0]-p[0])*w + (obj===ugv?0.5:0), gy = p[1]+(q[1]-p[1])*w;
     obj.position.set(X(gx), Y(gx,gy,20), Z(gy));
     if (q !== p) obj.rotation.y = -Math.atan2(q[1]-p[1], q[0]-p[0]);
@@ -586,6 +619,7 @@ function loop(now){
   if (state.playing){ state.t += dt * Number($('#speed').value); if (state.t >= T_END){ state.t = T_END; state.playing = false; play.textContent='▶'; } draw(); }
   else if (!reduce){ helicopter.userData.rot.rotation.y += dt*20; }
   helicopter.userData.rot.rotation.y += dt*20;
+  if (!reduce || state.playing) animateFlames(now);
   controls.update(); renderer.render(scene, camera); placeLabels();
   requestAnimationFrame(loop);
 }

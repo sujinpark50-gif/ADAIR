@@ -28,7 +28,11 @@ UAV_HOME_ENV=""
 if [[ $LAUNCH == forward && $MODE == mock ]]; then
   UAV_HOME_ENV="$("$PY" - <<'PYX'
 import json, gz_bridge as gb
-p = json.load(open("web/static/inje2019/scenario.json", encoding="utf-8"))["vehicles"][0]["path"][-1]
+import math
+d = json.load(open("web/static/inje2019/scenario.json", encoding="utf-8"))
+path, sp = d["vehicles"][0]["path"], d["spring"]
+# 집결지 = 소방차 경로에서 발화점 700 m 안으로 처음 들어가는 지점 (불 바로 위에서 이착륙하지 않는다)
+p = next((q for q in path if math.hypot(q[0] - sp["gx"], q[1] - sp["gy"]) * 90 <= 700), path[-1])
 lat, lon = gb.grid_cell_to_latlon(p[0], p[1]); print(f"{lat:.6f},{lon:.6f},{gb.terrain_elev(round(p[0]), round(p[1])):.1f}")
 PYX
 )"
