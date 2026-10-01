@@ -90,6 +90,7 @@ details li{margin:2px 0}
     <button data-mode="replay" aria-pressed="true">재현 (기록·계산)</button>
     <button data-mode="live" aria-pressed="false">실시간 연결 LIVE</button>
     <button data-scar="1" aria-pressed="true" hidden>위성 실제 피해지</button>
+    <button id="gofire">불로 이동</button>
   </div>
   <p class="hint" id="modehint"></p>
   <div class="seg" role="group" aria-label="시나리오" id="scenseg">
@@ -249,6 +250,33 @@ liveMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(800
 liveMesh.count = 0; scene.add(liveMesh);
 const C_BURN = new THREE.Color('#FF6A2B'), C_HOT = new THREE.Color('#FFD08A'), C_CHAR = new THREE.Color('#3B302B');
 
+// 불 위치 표식: 초기 불은 90 m 칸 한두 개라 27 km 지도에서 안 보인다 → 연기 기둥과 라벨로 위치를 알린다
+const plume = new THREE.Group();
+const plumeCore = new THREE.Mesh(new THREE.CylinderGeometry(25, 55, 1, 16, 1, true),
+  new THREE.MeshBasicMaterial({color:0xFF7A30, transparent:true, opacity:.35, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide}));
+const plumeSmoke = new THREE.Mesh(new THREE.CylinderGeometry(220, 60, 1, 16, 1, true),
+  new THREE.MeshBasicMaterial({color:0xB8B0A8, transparent:true, opacity:.16, depthWrite:false, side:THREE.DoubleSide}));
+plume.add(plumeCore, plumeSmoke); scene.add(plume);
+const fireLabel = Object.assign(document.createElement('div'), {className:'label'}); fireLabel.style.background = 'rgba(160,40,10,.85)';
+document.getElementById('labels').appendChild(fireLabel);
+let fireBox = null;
+function setPlume(cells){                       // cells: [[gx,gy,state]...] 지금 보이는 불
+  const burning = cells.filter(c => c[2] === 1);
+  if (!cells.length){ plume.visible = false; fireLabel.style.display = 'none'; fireBox = null; return; }
+  const src = burning.length ? burning : cells;
+  let cx=0, cy=0, x0=1e9, x1=-1e9, y0=1e9, y1=-1e9;
+  for (const [gx,gy] of cells){ x0=Math.min(x0,gx); x1=Math.max(x1,gx); y0=Math.min(y0,gy); y1=Math.max(y1,gy); }
+  for (const [gx,gy] of src){ cx+=gx; cy+=gy; } cx/=src.length; cy/=src.length;
+  fireBox = {cx, cy, x0, x1, y0, y1};
+  const h = burning.length ? 900 + Math.min(1800, burning.length*12) : 300, base = Y(cx,cy,0);
+  plumeCore.scale.y = h*0.45; plumeCore.position.y = h*0.225; plumeCore.visible = burning.length > 0;
+  plumeSmoke.scale.y = h; plumeSmoke.position.y = h*0.5 + h*0.2;
+  plume.position.set(X(cx), base, Z(cy)); plume.visible = true;
+  const ha = (cells.length*CELL*CELL/1e4).toFixed(1);
+  fireLabel.textContent = burning.length ? `불 · 타는 칸 ${burning.length} · 누적 ${ha} ha` : `다 탄 자리 · ${ha} ha`;
+  fireLabel.style.display = ''; fireLabel._obj = plume; fireLabel._dy = h*0.6;
+}
+
 // 표식: 발화점, 원통119, 보호 시설
 const labels = document.getElementById('labels'); const marks = [];
 function mark(gx, gy, text, color, h=40){
@@ -323,6 +351,13 @@ document.querySelectorAll('[data-mode]').forEach(b => b.onclick = async () => {
     : '기록된 시각과 미리 계산한 결과를 되감아 본다.';
   draw(true);
 });
+$('#gofire').onclick = () => {
+  const b = fireBox || {cx: spring.gx, cy: spring.gy, x0: spring.gx, x1: spring.gx, y0: spring.gy, y1: spring.gy};
+  const span = Math.max(8, b.x1-b.x0, b.y1-b.y0) * CELL;
+  controls.target.set(X(b.cx), Y(b.cx,b.cy), Z(b.cy));
+  camera.position.set(X(b.cx) + span*1.4, Y(b.cx,b.cy) + span*2.2, Z(b.cy) + span*1.8);
+  controls.update();
+};
 $('[data-fc]').onclick = e => { state.fc = !state.fc; e.target.setAttribute('aria-pressed', state.fc); draw(true); };
 const scrub = $('#scrub'), play = $('#play');
 scrub.oninput = () => { state.t = scrub.value/1000*T_END; draw(true); };
@@ -415,7 +450,7 @@ function draw(force){
   $('#resources').innerHTML = resourcesHTML(t);
   const row = D.timeline[k], known = KNOWN[state.scen === 'A' ? 'A' : state.scen];
   // 화재 칸 (재현)
-  const caBurned = new Set();
+  const caBurned = new Set(), visibleFire = [];
   for (let n=0;n<fireIdx.length && state.mode === 'replay';n++){
     const i = fireIdx[n], gx = i % COLS, gy = Math.floor(i / COLS);
     const ignT = IGN[i]*TICK, outT = OUT[i] >= 0 ? OUT[i]*TICK : Infinity;
@@ -425,6 +460,7 @@ function draw(force){
     const showSolid = on && (state.view === 'truth' || isKnown);
     const showGhost = on && state.view === 'known' && !isKnown;
     const y = Y(gx, gy, 5);
+    if (showSolid) visibleFire.push([gx, gy, burning ? 1 : 2]);
     if (showSolid){
       M.makeTranslation(X(gx), y, Z(gy)); solid.setMatrixAt(n, M);
       const c = burning ? C_BURN.clone().lerp(C_HOT, Math.max(0, 1 - (t-ignT)/(TICK*1.5))) : C_CHAR;
@@ -434,6 +470,7 @@ function draw(force){
     if (burning && (showSolid || state.view==='truth')){ M.makeTranslation(X(gx), y+14, Z(gy)); glow.setMatrixAt(n, M); } else glow.setMatrixAt(n, ZERO);
   }
   [solid, ghost, glow].forEach(m => m.instanceMatrix.needsUpdate = true); solid.instanceColor.needsUpdate = true;
+  setPlume(state.mode === 'live' ? ((state.live && state.live.fire) || []) : visibleFire);
   // 예측
   const list = (state.fc && state.mode === 'replay') ? (row[state.scen].forecast || []) : [];
   fcMesh.count = Math.min(list.length, 4000);
@@ -535,6 +572,7 @@ function placeLabels(){
   for (const m of marks) put(m.el, m.obj, m.dy);
   if (uav.visible) put(uavLabel, uav, 160);
   put(windLabel, windArrow, 120);
+  if (fireLabel._obj && fireLabel.style.display !== 'none') put(fireLabel, fireLabel._obj, fireLabel._dy);
 }
 
 setInterval(async () => {
