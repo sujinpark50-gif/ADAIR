@@ -130,6 +130,7 @@ def modes():
     except Exception:
         pass
     return {"demo_extinguish": bool(config.WEB_DEMO_EXTINGUISH),
+            "dispatch_via_orch": bool(config.WEB_DISPATCH_VIA_ORCH),
             "uav_agent": UAV_AGENT, "uav_id": UAV_ID, "uav_mode": uav_mode}
 
 @app.get("/api/state")
@@ -269,6 +270,8 @@ async def fly(req: FlyReq):
     except Exception as e:
         # 고도를 확정하지 못하면 출동하지 않는다 (fail-closed)
         return {"ok": False, "verdict": None, "reason": "TARGET_UNRESOLVED", "detail": str(e)}
+    if config.WEB_DISPATCH_VIA_ORCH:
+        return await _fly_via_orch(req, target)
     tid = "WEB-"+uuid.uuid4().hex[:8]; did = "DEC-"+uuid.uuid4().hex[:8]
     base = {"task_id": tid, "decision_id": did, "target": target, "observation_type": "THERMAL"}
     async with httpx.AsyncClient(timeout=30) as cx:
@@ -282,6 +285,29 @@ async def fly(req: FlyReq):
             return {"ok": False, "verdict": ev.get("verdict"), "reason": ev.get("reason"), "target": target}
         ex = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)).json()
     return {"ok": True, "task_id": ex.get("task_id", tid), "target": target, "eta_sec": ev.get("eta_sec")}
+
+async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
+    """INT-01: 관제판 출동을 총괄 POST /tasks 로 보낸다 (UAV 직접 호출 없음).
+
+    클릭 한 번 = request_id 하나. 같은 request_id 재전송은 총괄이 같은 임무로 처리한다.
+    접수(202)는 출동 성공이 아니다 — 진행은 총괄 판단 패널(/priority/board)에서 본다.
+    """
+    body = {"request_id": "WEB-FLY-" + uuid.uuid4().hex[:12], "kind": "RECON",
+            "target": {"lat": target["lat"], "lon": target["lon"],
+                       "ground_amsl_m": target["alt_m_amsl"], "cell_id": f"{req.col}_{req.row}"},
+            "requirements": {"resource_types": ["UAV"], "sensor": "THERMAL"}}
+    try:
+        async with httpx.AsyncClient(timeout=30) as cx:
+            r = await cx.post(f"{config.ORCH_URL.rstrip('/')}/tasks", json=body)
+        j = r.json()
+    except Exception as e:
+        return {"ok": False, "via": "orch", "reason": "ORCH_UNREACHABLE", "detail": str(e), "target": target}
+    if r.status_code not in (200, 202):
+        return {"ok": False, "via": "orch", "reason": f"ORCH_HTTP_{r.status_code}", "detail": j, "target": target}
+    t = j.get("task") or {}
+    return {"ok": True, "via": "orch", "request_id": body["request_id"], "task_id": t.get("task_id"),
+            "created": j.get("created"), "purpose_status": t.get("purpose_status"),
+            "hold_reason": t.get("hold_reason"), "target": target}
 
 @app.get("/", response_class=HTMLResponse)
 def index(): return HTML
@@ -326,7 +352,7 @@ small{color:#6f8a96}
  </div>
  <div class=panel>
    <h3>출동</h3>
-   <div class=modes><span id=mExt class=badge>진화 시연: 확인 중</span><span id=mUav class=badge>드론 서버: 확인 중</span></div>
+   <div class=modes><span id=mExt class=badge>진화 시연: 확인 중</span><span id=mUav class=badge>드론 서버: 확인 중</span><span id=mDisp class=badge>출동 경로: 확인 중</span></div>
    <div class=row>col <input id=col type=number value=60> row <input id=row type=number value=70>
      <button id=fly>🔥 출동</button><button id=clr>궤적 지우기</button><button id=auto style="background:#0C8E7E">자동 시작</button></div>
    <h3>산불(CA)</h3>
@@ -472,6 +498,8 @@ async function tickModes(){try{const m=await(await fetch('/api/modes')).json();
  e.className='badge'+(m.demo_extinguish?' on':''); e.title='WEB_DEMO_EXTINGUISH (서버 시작 시 결정, 화면에서 변경 불가)';
  const u=$('mUav'); u.textContent=m.uav_mode?('드론 서버: '+m.uav_mode+' ('+m.uav_id+')'):'드론 서버: 연결 안 됨';
  u.className='badge'+(m.uav_mode==='real'?' real':(m.uav_mode?'':' bad')); u.title=m.uav_agent;
+ const d=$('mDisp'); d.textContent=m.dispatch_via_orch?'출동 경로: 총괄 경유':'출동 경로: 드론 직접';
+ d.className='badge'+(m.dispatch_via_orch?' real':''); d.title='WEB_DISPATCH_VIA_ORCH (INT-01, 서버 시작 시 결정)';
 }catch(err){}}
 setInterval(tickModes,10000);setTimeout(tickModes,300);
 // INT-03 총괄 판단 요약 — 표기는 총괄 /board 와 같은 말을 쓴다. 불명·환경 반영 대기는 실패로 표시하지 않는다.
@@ -507,6 +535,13 @@ setInterval(tickEnv,1500);setInterval(tickState,1000);setInterval(tickUgv,3000);
 $('fly').onclick=async()=>{const col=+$('col').value,row=+$('row').value;
  $('log').textContent='출동('+col+','+row+')…';
  const r=await(await fetch('/api/fly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({col,row})})).json();
+ if(r.via==='orch'){
+   if(r.ok){tgt={col,row,lat:r.target.lat,lon:r.target.lon};
+     const p=(O_PURPOSE[r.purpose_status]||[r.purpose_status||'-'])[0];
+     const h=r.hold_reason?(' · '+(O_HOLD[r.hold_reason.split(':')[0]]||'사유 기록됨')):'';
+     $('log').textContent='총괄에 출동 요청 접수 ('+(r.task_id||'-')+') · '+p+h+' — 진행은 아래 총괄 판단에서 확인';}
+   else{$('log').textContent='⛔ 총괄 출동 요청 실패: '+(r.reason||'');}
+   draw();return;}
  if(r.ok){tgt={col,row,lat:r.target.lat,lon:r.target.lon};trail=[];_driveT={};_driveStart={};_extd={};
    $('log').textContent='✅ ACCEPT\\n타깃 '+JSON.stringify(r.target)+'\\ntask '+r.task_id;}
  else{$('log').textContent='⛔ '+(r.verdict||'')+' '+(r.reason||'');}

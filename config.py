@@ -76,6 +76,12 @@ WEB_DEMO_EXTINGUISH = os.environ.get("WEB_DEMO_EXTINGUISH", "0") == "1"
 # 총괄 오케스트레이터 서버 (박수진, orchestrator/api.py, 기본 8200) — 관제판 우측 "총괄 판단" 패널이 읽는 곳 (INT-03)
 ORCH_URL = os.environ.get("ORCH_URL", "http://127.0.0.1:8200")
 
+# 관제판 "출동" 버튼의 경로 (총괄 팀별 요청서 INT-01)
+# 꺼짐(기본): 기존처럼 관제판이 UAV 서버에 직접 evaluate→execute.
+# 켜짐(WEB_DISPATCH_VIA_ORCH=1): 총괄 POST /tasks 로만 보낸다. 출동 여부·Safety·실행은 총괄이 결정하고
+#   관제판은 UAV 를 직접 부르지 않는다. 총괄 시나리오(기상·환경) 준비 후 켠다.
+WEB_DISPATCH_VIA_ORCH = os.environ.get("WEB_DISPATCH_VIA_ORCH", "0") == "1"
+
 # ---------------------------------------------------------------------------
 # 3. 시뮬레이션 실행 설정
 # ---------------------------------------------------------------------------
