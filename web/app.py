@@ -126,7 +126,12 @@ def ugv(col: int = 60, row: int = 70):
 
 @app.post("/api/extinguish")
 def extinguish(cell: dict):
-    """자원이 도착한 화재셀을 진화 처리(관측으로 UNBURNED 반영)."""
+    """자원이 도착한 화재셀을 진화 처리(관측으로 UNBURNED 반영).
+
+    INT-02: 시연 전용. config.WEB_DEMO_EXTINGUISH 가 꺼져 있으면(기본) 환경을 바꾸지 않는다.
+    """
+    if not config.WEB_DEMO_EXTINGUISH:
+        return {"ok": False, "disabled": True, "reason": "DEMO_EXTINGUISH_OFF"}
     try:
         col=int(cell["col"]); row=int(cell["row"])
         lat,lon=gb.grid_cell_to_latlon(col,row)
@@ -189,7 +194,7 @@ def auto_tick():
 @app.post("/api/auto/done")
 def auto_done():
     t = _AUTO.get("target")
-    if t:
+    if t and config.WEB_DEMO_EXTINGUISH:   # INT-02: 시연 전용 스위치가 켜졌을 때만 진화 반영
         try:
             lat,lon = gb.grid_cell_to_latlon(t["col"], t["row"]); x,y = gb.latlon_to_epsg(lat,lon)
             fire_connector._engine().apply_observation({"reporter_id":"AUTO","world_x":x,"world_y":y,"fire_state":"UNBURNED"})
@@ -366,8 +371,10 @@ async function tickUgv(){try{const col=+$('col').value,row=+$('row').value;
   (u.routes||[]).forEach(rt=>{ if(rt.reachable && (_driveT[rt.id]||0)>=0.999 && !_extd[rt.id]){
      _extd[rt.id]=true;
      fetch('/api/extinguish',{method:'POST',headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({col:+$('col').value,row:+$('row').value})}).catch(()=>{});
-     $('log').textContent=rt.id+' 화재 도착 → 진화 반영';if(window.__autoActive&&window.__autoActive()){window.__autoDone();_extd={};}
+       body:JSON.stringify({col:+$('col').value,row:+$('row').value})})
+       .then(r=>r.json()).then(d=>{ $('log').textContent = rt.id + (d && d.disabled
+         ? ' 화재 지점 도착 (진화 효과 미반영 — 환경 모델 진화 기능 대기)'
+         : ' 화재 도착 → 진화 반영 (시연 전용)'); }).catch(()=>{});if(window.__autoActive&&window.__autoActive()){window.__autoDone();_extd={};}
   }});
   const reach=(u.routes||[]).filter(r=>r.reachable).length, tot=(u.routes||[]).length;
   const eta=(u.routes||[]).map(r=>r.eta_sec).filter(x=>x!=null);
