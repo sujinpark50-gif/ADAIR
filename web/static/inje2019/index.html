@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>2019 인제 남전리 산불 — 드론이 있었다면</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --pine:#0F1D24; --pine-2:#16282F; --panel:rgba(15,29,36,.82); --line:rgba(205,222,214,.16);
+  --ink:#E7EEEA; --ink-2:#A9BBB4; --ember:#FF6A2B; --char:#3B302B; --drone:#72D6E8; --engine:#E2313F;
+  --ugv:#E9B44C; --known:#72D6E8; --forecast:#F2C14E; --on-ink:#0F1D24;
+  --font:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){ --panel:rgba(244,247,245,.9); --ink:#11232A; --ink-2:#4B6168; --line:rgba(17,35,42,.16); --on-ink:#F4F7F5;} }
+:root[data-theme="light"]{ --panel:rgba(244,247,245,.9); --ink:#11232A; --ink-2:#4B6168; --line:rgba(17,35,42,.16); --on-ink:#F4F7F5;}
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*,*::before,*::after{box-sizing:inherit}
+html,body{height:100%;margin:0}
+body{background:var(--pine);color:var(--ink);font-family:var(--font);font-size:14px;line-height:1.5;overflow:hidden}
+#stage{position:fixed;inset:0}
+canvas{display:block}
+.panel{position:absolute;background:var(--panel);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+#head{top:calc(12px + env(safe-area-inset-top,0px));left:12px;max-width:min(430px,calc(100vw - 24px))}
+#head h1{font-size:19px;font-weight:700;margin:0 0 2px;letter-spacing:-.01em}
+#head p{margin:0 0 12px;color:var(--ink-2);font-size:13px}
+.seg{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 8px}
+.seg button{font:inherit;font-size:13px;color:var(--ink);background:transparent;border:1px solid var(--line);
+  border-radius:6px;padding:5px 10px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--on-ink);border-color:var(--ink)}
+.seg button:focus-visible,#play:focus-visible,#scrub:focus-visible{outline:2px solid var(--drone);outline-offset:2px}
+.hint{font-size:12px;color:var(--ink-2);margin:2px 0 0}
+#clock{top:calc(12px + env(safe-area-inset-top,0px));right:12px;width:min(300px,calc(100vw - 24px));text-align:right}
+#t-kst{font-size:44px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+#t-sub{color:var(--ink-2);font-size:13px;margin-top:4px}
+#t-sky{display:inline-block;margin-top:6px;font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--line)}
+#metrics{margin-top:14px;text-align:left}
+.m{display:grid;grid-template-columns:1fr auto auto;gap:2px 10px;align-items:baseline;font-variant-numeric:tabular-nums}
+.m .h{font-size:12px;color:var(--ink-2);white-space:nowrap}
+.m .v{font-weight:500;text-align:right}
+.m .a{color:var(--ink-2)}
+.m .b{color:var(--drone)}
+.bar{grid-column:1/-1;height:4px;background:var(--line);border-radius:2px;position:relative;margin:0 0 8px}
+.bar i{position:absolute;top:0;bottom:0;left:0;border-radius:2px}
+#bottom{left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));padding:10px 14px 12px}
+#row{display:flex;gap:12px;align-items:center}
+#play{font:inherit;font-weight:700;width:38px;height:32px;border-radius:6px;border:1px solid var(--line);background:var(--ink);color:var(--on-ink);cursor:pointer}
+#speed{font:inherit;font-size:12px;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px}
+#track{position:relative;flex:1;height:44px}
+#night{position:absolute;top:14px;height:10px;background:rgba(114,214,232,.14);border-radius:2px}
+#scrub{position:absolute;left:0;right:0;top:10px;width:100%;margin:0;background:transparent;-webkit-appearance:none;appearance:none;height:18px}
+#scrub::-webkit-slider-runnable-track{height:2px;background:var(--line)}
+#scrub::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--ember);margin-top:-6px}
+#scrub::-moz-range-track{height:2px;background:var(--line)}
+#scrub::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--ember);border:0}
+.ev{position:absolute;top:28px;width:1px;height:8px;background:var(--ink-2)}
+.ev span{position:absolute;top:9px;left:-6px;font-size:11px;color:var(--ink-2);white-space:nowrap}
+#evtext{font-size:13px;margin-top:6px;min-height:20px}
+#evtext b{font-weight:500}
+#legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin-top:6px}
+#legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;background:var(--c)}
+details{font-size:12px;color:var(--ink-2);margin-top:6px}
+details summary{cursor:pointer;color:var(--ink)}
+details li{margin:2px 0}
+.label{position:absolute;font-size:12px;color:#E7EEEA;background:rgba(15,29,36,.7);padding:1px 6px;border-radius:4px;
+  white-space:nowrap;pointer-events:none;transform:translate(-50%,-140%)}
+#msg{position:absolute;inset:0;display:grid;place-items:center;font-size:15px;color:var(--ink-2)}
+@media (max-width:720px){
+  #t-kst{font-size:30px} #metrics{display:none} #head p{display:none} .ev span{display:none}
+  #clock{width:auto}
+}
+@media (prefers-reduced-motion: reduce){ #play{transition:none} }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="msg">지형과 화재 기록을 불러오는 중…</div>
+<div id="labels"></div>
+
+<section id="head" class="panel" aria-label="보기 설정">
+  <h1>2019.4.4 인제 남전리 산불 — 드론이 있었다면</h1>
+  <p>같은 불, 같은 바람. 총괄이 아는 것만 달라진다.</p>
+  <div class="seg" role="group" aria-label="시나리오">
+    <button data-scen="A" aria-pressed="true">A 실제 기록 근사</button>
+    <button data-scen="B" aria-pressed="false">B 드론 · 현장 이착륙</button>
+    <button data-scen="Bb" aria-pressed="false">B′ 드론 · 원통 기지 출발</button>
+  </div>
+  <div class="seg" role="group" aria-label="보기">
+    <button data-view="truth" aria-pressed="false">진짜 세계</button>
+    <button data-view="known" aria-pressed="true">총괄이 아는 세계</button>
+    <button data-fc="1" aria-pressed="true">2시간 확산 예측</button>
+  </div>
+  <p class="hint" id="viewhint"></p>
+  <details>
+    <summary>가정과 한계</summary>
+    <ul id="assume"></ul>
+  </details>
+</section>
+
+<section id="clock" class="panel" aria-live="polite">
+  <div id="t-kst">--:--</div>
+  <div id="t-sub"></div>
+  <span id="t-sky"></span>
+  <div id="metrics"></div>
+</section>
+
+<section id="bottom" class="panel" aria-label="시간">
+  <div id="row">
+    <button id="play" aria-label="재생">▶</button>
+    <select id="speed" aria-label="재생 속도">
+      <option value="300">5분/초</option><option value="900" selected>15분/초</option><option value="2700">45분/초</option>
+    </select>
+    <div id="track"><div id="night"></div><input id="scrub" type="range" min="0" max="1000" value="0" step="1" aria-label="시뮬레이션 시각"></div>
+  </div>
+  <div id="evtext"></div>
+  <div id="legend">
+    <span style="--c:#FF6A2B">타는 칸</span><span style="--c:#3B302B">다 탄 칸</span>
+    <span style="--c:rgba(255,106,43,.35)">총괄이 모르는 불</span><span style="--c:#F2C14E">예측 도달 칸</span>
+    <span style="--c:#72D6E8">드론</span><span style="--c:#E2313F">소방차</span><span style="--c:#E9B44C">UGV</span>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(async function(){
+const msg = document.getElementById('msg');
+let D;
+try {
+  D = window.__SCENARIO__ || await (await fetch('scenario.json')).json();
+} catch (e) {
+  msg.textContent = 'scenario.json 을 읽지 못했다. 저장소 루트에서 python tools/inje2019_whatif.py 를 먼저 실행할 것.';
+  return;
+}
+msg.remove();
+
+// ── 데이터 ───────────────────────────────────────────────────────────────
+const dec = (s, T) => { const b = atob(s), u = new Uint8Array(b.length); for (let i=0;i<b.length;i++) u[i]=b.charCodeAt(i); return new T(u.buffer); };
+const COLS = D.grid.cols, ROWS = D.grid.rows, CELL = D.grid.cell_m, TICK = D.tick_s;
+const elev = dec(D.elev_dm_u16, Uint16Array), fuel = dec(D.fuel_u8, Uint8Array);
+const IGN = dec(D.ign_step_i16, Int16Array), OUT = dec(D.out_step_i16, Int16Array);
+const KNOWN = {A: dec(D.knownA_step_i16, Int16Array), B: dec(D.knownB_step_i16, Int16Array), Bb: dec(D.knownBb_step_i16, Int16Array)};
+const T_END = D.steps * TICK;
+const T0 = new Date(D.start_kst);
+const EX = 1.6;                                    // 높이 과장
+const X = gx => (gx - (COLS-1)/2) * CELL, Z = gy => (gy - (ROWS-1)/2) * CELL;
+function hAt(gx, gy){                              // 쌍선형 지면고도(m)
+  gx = Math.max(0, Math.min(COLS-1.001, gx)); gy = Math.max(0, Math.min(ROWS-1.001, gy));
+  const x0 = Math.floor(gx), y0 = Math.floor(gy), fx = gx-x0, fy = gy-y0, e = (x,y)=>elev[y*COLS+x]/10;
+  return (e(x0,y0)*(1-fx)+e(x0+1,y0)*fx)*(1-fy) + (e(x0,y0+1)*(1-fx)+e(x0+1,y0+1)*fx)*fy;
+}
+const Y = (gx, gy, agl=0) => hAt(gx, gy)*EX + agl;
+
+// ── 장면 ────────────────────────────────────────────────────────────────
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.setSize(innerWidth, innerHeight);
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const DAY = new THREE.Color('#8FA7AE'), DUSK = new THREE.Color('#33454C'), NIGHT = new THREE.Color('#0B151B');
+scene.background = DAY.clone();
+scene.fog = new THREE.Fog(scene.background, 14000, 42000);
+const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 10, 120000);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.maxPolarAngle = Math.PI*0.47;
+const spring = D.spring;
+controls.target.set(X(spring.gx+8), Y(spring.gx, spring.gy), Z(spring.gy-8));
+camera.position.set(X(spring.gx+30), Y(spring.gx,spring.gy)+3300, Z(spring.gy+30));
+const hemi = new THREE.HemisphereLight(0xdfeee8, 0x2a3328, 0.75); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 0.9); sun.position.set(-6000, 9000, 4000); scene.add(sun);
+
+// 지형
+const geo = new THREE.BufferGeometry();
+const pos = new Float32Array(COLS*ROWS*3), col = new Float32Array(COLS*ROWS*3);
+const FUEL_C = [new THREE.Color('#77786A'), new THREE.Color('#7E9157'), new THREE.Color('#4E6D3F'), new THREE.Color('#2E4C33')];
+for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++){
+  const i = r*COLS+c, h = elev[i]/10;
+  pos[i*3]=X(c); pos[i*3+1]=h*EX; pos[i*3+2]=Z(r);
+  const base = FUEL_C[Math.min(3, fuel[i])].clone().lerp(new THREE.Color('#C9CDBE'), Math.max(0, (h-700)/900)*0.35);
+  col[i*3]=base.r; col[i*3+1]=base.g; col[i*3+2]=base.b;
+}
+const idx = [];
+for (let r=0;r<ROWS-1;r++) for (let c=0;c<COLS-1;c++){ const a=r*COLS+c, b=a+1, d=a+COLS, e=d+1; idx.push(a,d,b, b,d,e); }
+geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+geo.setIndex(idx); geo.computeVertexNormals();
+scene.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({vertexColors:true})));
+
+// 도로 (박유홍 실제 도로망)
+{
+  const pts = [];
+  for (const [ax,ay,bx,by] of D.roads){
+    const n = Math.max(2, Math.ceil(Math.hypot(bx-ax,by-ay)));
+    for (let k=0;k<n;k++){
+      const t0=k/n, t1=(k+1)/n, x0=ax+(bx-ax)*t0, y0=ay+(by-ay)*t0, x1=ax+(bx-ax)*t1, y1=ay+(by-ay)*t1;
+      pts.push(X(x0), Y(x0,y0,6), Z(y0), X(x1), Y(x1,y1,6), Z(y1));
+    }
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts,3));
+  scene.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({color:0xE3D5B0, transparent:true, opacity:.8})));
+}
+
+// 화재 칸 (24시간 안에 한 번이라도 탄 칸만 인스턴스로)
+const fireIdx = []; for (let i=0;i<IGN.length;i++) if (IGN[i]>=0) fireIdx.push(i);
+const tileGeo = new THREE.BoxGeometry(CELL*0.94, 10, CELL*0.94);
+const solid = new THREE.InstancedMesh(tileGeo, new THREE.MeshLambertMaterial({color:0xffffff}), fireIdx.length);
+const ghost = new THREE.InstancedMesh(tileGeo, new THREE.MeshBasicMaterial({color:0xFF6A2B, transparent:true, opacity:.3, depthWrite:false}), fireIdx.length);
+const glow = new THREE.InstancedMesh(new THREE.PlaneGeometry(CELL*1.6, CELL*1.6).rotateX(-Math.PI/2),
+  new THREE.MeshBasicMaterial({color:0xFF7A30, transparent:true, opacity:.55, blending:THREE.AdditiveBlending, depthWrite:false}), fireIdx.length);
+[solid, ghost, glow].forEach(m => { m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); });
+solid.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(fireIdx.length*3), 3);
+const fcGeo = new THREE.BoxGeometry(CELL*0.9, 4, CELL*0.9);
+const fcMesh = new THREE.InstancedMesh(fcGeo, new THREE.MeshBasicMaterial({color:0xF2C14E, transparent:true, opacity:.55, depthWrite:false}), 4000);
+fcMesh.count = 0; scene.add(fcMesh);
+const M = new THREE.Matrix4(), ZERO = new THREE.Matrix4().makeScale(0,0,0);
+const C_BURN = new THREE.Color('#FF6A2B'), C_HOT = new THREE.Color('#FFD08A'), C_CHAR = new THREE.Color('#3B302B');
+
+// 표식: 발화점, 원통119, 보호 시설
+const labels = document.getElementById('labels'); const marks = [];
+function mark(gx, gy, text, color, h=40){
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(18, 18, h, 12), new THREE.MeshLambertMaterial({color}));
+  m.position.set(X(gx), Y(gx,gy)+h/2, Z(gy)); scene.add(m);
+  const el = document.createElement('div'); el.className='label'; el.textContent=text; labels.appendChild(el);
+  marks.push({obj:m, el, dy:h+40}); return m;
+}
+mark(spring.gx, spring.gy, '남전약수터 (발화 지점 부근)', 0xFF6A2B, 30);
+for (const s of D.sites) mark(s.gx, s.gy, s.name, 0xE7EEEA, 50);
+{ const b = D.base_A; const m = mark(Math.max(b.gx, 1), Math.max(b.gy, 1), b.name + ' 방향 (지도 밖)', 0xE2313F, 30); }
+
+// 탈것 모델
+function drone(){
+  const g = new THREE.Group(), mat = new THREE.MeshLambertMaterial({color:0x72D6E8, emissive:0x1d4a52});
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(60,14,60), mat));
+  const rotors = [];
+  for (const [dx,dz] of [[1,1],[1,-1],[-1,1],[-1,-1]]){
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(70,6,8), mat); arm.position.set(dx*28,0,dz*28); arm.rotation.y = Math.atan2(dz,dx); g.add(arm);
+    const rot = new THREE.Mesh(new THREE.CylinderGeometry(30,30,2,16), new THREE.MeshBasicMaterial({color:0xBDEFF7, transparent:true, opacity:.45}));
+    rot.position.set(dx*52,10,dz*52); g.add(rot); rotors.push(rot);
+  }
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(70, 240, 24, 1, true), new THREE.MeshBasicMaterial({color:0x72D6E8, transparent:true, opacity:.16, side:THREE.DoubleSide, depthWrite:false}));
+  cone.position.y = -120; g.add(cone); g.userData = {rotors, cone};
+  g.scale.setScalar(2.2); scene.add(g); return g;
+}
+function truck(color, len=120){
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(len, 46, 50), new THREE.MeshLambertMaterial({color})));
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(len*0.3, 30, 48), new THREE.MeshLambertMaterial({color:0xF2F2EC}));
+  cab.position.set(len*0.42, 34, 0); g.add(cab); g.scale.setScalar(1.6); scene.add(g); return g;
+}
+function heli(){
+  const g = new THREE.Group(), mat = new THREE.MeshLambertMaterial({color:0xD9D9CF});
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(40, 12, 10), mat));
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(110, 10, 10), mat); tail.position.x = -80; g.add(tail);
+  const rot = new THREE.Mesh(new THREE.BoxGeometry(240, 2, 12), new THREE.MeshBasicMaterial({color:0x222222})); rot.position.y = 44; g.add(rot);
+  g.userData = {rot}; g.scale.setScalar(2); scene.add(g); return g;
+}
+const uav = drone(), uav2 = drone(), engine = truck(0xE2313F), ugv = truck(0xE9B44C, 90), helicopter = heli();
+const uavLabel = Object.assign(document.createElement('div'), {className:'label'}); labels.appendChild(uavLabel);
+
+// 바람 화살표 (기상청 인제 211 — '불어가는' 방향으로 그림)
+const windArrow = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), 900, 0xE7EEEA, 260, 160);
+scene.add(windArrow);
+const windLabel = Object.assign(document.createElement('div'), {className:'label'}); labels.appendChild(windLabel);
+
+// ── UI ──────────────────────────────────────────────────────────────────
+const state = {t: 0, playing: false, scen: 'A', view: 'known', fc: true};
+const $ = s => document.querySelector(s);
+const NAMES = {A:'A 실제 기록 근사', B:'B 드론 · 현장 이착륙', Bb:'B′ 드론 · 원통 기지 출발'};
+$('#assume').innerHTML = D.assumptions.map(a => `<li>${a}</li>`).join('') +
+  `<li>보정: ${D.calibration.anchor} → CA 한 스텝 ${D.tick_s}초 (12개 seed 평균 ${D.calibration.chosen.mean_ha_19h} ha, 최소~최대 ${D.calibration.chosen.min}~${D.calibration.chosen.max}칸)</li>` +
+  `<li>시뮬 24시간 면적 ${D.summary.truth_ha_24h} ha (진압 없음) · 실제 최종 ${D.summary.final_reported_ha} ha (사흘, 진압 포함)</li>`;
+document.querySelectorAll('[data-scen]').forEach(b => b.onclick = () => { state.scen = b.dataset.scen;
+  document.querySelectorAll('[data-scen]').forEach(x => x.setAttribute('aria-pressed', x===b)); draw(true); });
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view;
+  document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', x===b)); draw(true); });
+$('[data-fc]').onclick = e => { state.fc = !state.fc; e.target.setAttribute('aria-pressed', state.fc); draw(true); };
+const scrub = $('#scrub'), play = $('#play');
+scrub.oninput = () => { state.t = scrub.value/1000*T_END; draw(true); };
+play.onclick = () => { state.playing = !state.playing; play.textContent = state.playing ? '❚❚' : '▶'; play.setAttribute('aria-label', state.playing?'일시정지':'재생'); };
+// 야간 띠, 사건 눈금
+const pct = t => Math.max(0, Math.min(100, t/T_END*100));
+const nightS = D.events.find(e => e.text.startsWith('일몰')).t, nightE = D.events.find(e => e.text.startsWith('일출')).t;
+Object.assign($('#night').style, {left: pct(nightS)+'%', width: (pct(nightE)-pct(nightS))+'%'});
+let lastLab = -99;
+for (const e of D.events){ if (e.t < 0 || e.t > T_END) continue;
+  const d = document.createElement('div'); d.className='ev'; d.style.left = pct(e.t)+'%'; d.title = `${e.kst.slice(11)} ${e.text} (${e.src})`;
+  if (pct(e.t) - lastLab > 4){ d.innerHTML = `<span>${e.kst.slice(11)}</span>`; lastLab = pct(e.t); }
+  $('#track').appendChild(d); }
+
+const fmt = t => { const d = new Date(T0.getTime() + t*1000); const p = n => String(n).padStart(2,'0');
+  const k = new Date(d.getTime() + 9*3600*1000); return {date:`${p(k.getUTCMonth()+1)}.${p(k.getUTCDate())}`, hm:`${p(k.getUTCHours())}:${p(k.getUTCMinutes())}`}; };
+
+function metricsHTML(row){
+  const a = row.A, b = row[state.scen === 'A' ? 'B' : state.scen], bn = state.scen === 'A' ? 'B' : state.scen;
+  const mx = Math.max(1, row.truth_ha);
+  const line = (h, va, vb, unit, max, better) => `<div class="h">${h}</div><div class="v a">A ${va ?? '–'}${unit}</div><div class="v b">${bn==='Bb'?'B′':'B'} ${vb ?? '–'}${unit}</div>
+    <div class="bar"><i style="width:${Math.min(100,(va??0)/max*100)}%;background:var(--ink-2);opacity:.6"></i></div>
+    <div class="bar" style="margin-top:-6px"><i style="width:${Math.min(100,(vb??0)/max*100)}%;background:var(--drone)"></i></div>`;
+  const pc = v => v==null ? null : Math.round(v*100);
+  return `<div class="m">
+    <div class="h">진짜 세계 소실 면적</div><div class="v" style="grid-column:2/4">${row.truth_ha} ha</div><div class="bar"></div>
+    ${line('총괄이 모르는 불', a.unknown_burning_ha, b.unknown_burning_ha, ' ha', mx/2+1)}
+    ${line('2시간 예측 재현율', pc(a.forecast_recall), pc(b.forecast_recall), '%', 100)}
+    ${line('2시간 예측 정밀도', pc(a.forecast_precision), pc(b.forecast_precision), '%', 100)}
+  </div>`;
+}
+
+function draw(force){
+  const t = state.t, k = Math.min(D.steps, Math.floor(t / TICK)), frac = (t - k*TICK)/TICK;
+  const row = D.timeline[k], known = KNOWN[state.scen === 'A' ? 'A' : state.scen];
+  // 화재 칸
+  let gi = 0;
+  for (let n=0;n<fireIdx.length;n++){
+    const i = fireIdx[n], gx = i % COLS, gy = Math.floor(i / COLS);
+    const ignT = IGN[i]*TICK, outT = OUT[i] >= 0 ? OUT[i]*TICK : Infinity;
+    const on = t >= ignT, burning = on && t < outT;
+    const isKnown = known[i] >= 0 && known[i] <= k;
+    const showSolid = on && (state.view === 'truth' || isKnown);
+    const showGhost = on && state.view === 'known' && !isKnown;
+    const y = Y(gx, gy, 5);
+    if (showSolid){
+      M.makeTranslation(X(gx), y, Z(gy)); solid.setMatrixAt(n, M);
+      const c = burning ? C_BURN.clone().lerp(C_HOT, Math.max(0, 1 - (t-ignT)/(TICK*1.5))) : C_CHAR;
+      solid.setColorAt(n, c);
+    } else solid.setMatrixAt(n, ZERO);
+    if (showGhost){ M.makeTranslation(X(gx), y+2, Z(gy)); ghost.setMatrixAt(n, M); } else ghost.setMatrixAt(n, ZERO);
+    if (burning && (showSolid || state.view==='truth')){ M.makeTranslation(X(gx), y+14, Z(gy)); glow.setMatrixAt(n, M); } else glow.setMatrixAt(n, ZERO);
+  }
+  [solid, ghost, glow].forEach(m => m.instanceMatrix.needsUpdate = true); solid.instanceColor.needsUpdate = true;
+  // 예측
+  const list = state.fc ? (row[state.scen].forecast || []) : [];
+  fcMesh.count = Math.min(list.length, 4000);
+  for (let n=0;n<fcMesh.count;n++){ const i = list[n], gx = i%COLS, gy = Math.floor(i/COLS);
+    M.makeTranslation(X(gx), Y(gx,gy,3), Z(gy)); fcMesh.setMatrixAt(n, M); }
+  fcMesh.instanceMatrix.needsUpdate = true;
+
+  // 하늘
+  const night = t > nightS && t < nightE;
+  const sky = night ? NIGHT : (t > nightS - 3600 && t <= nightS ? DAY.clone().lerp(DUSK, (t-(nightS-3600))/3600)
+              : (t >= nightE && t < nightE+3600 ? DUSK.clone().lerp(DAY, (t-nightE)/3600) : DAY));
+  scene.background.copy(sky); scene.fog.color.copy(sky);
+  sun.intensity = night ? 0.12 : 0.9; hemi.intensity = night ? 0.25 : 0.75;
+
+  // 화선 중심 (진짜 세계의 타는 칸 — 탈것 배치용 표시. 총괄 판단에는 쓰지 않는다)
+  let cx = 0, cy = 0, cn = 0;
+  for (const i of fireIdx){ if (IGN[i] <= k && (OUT[i] < 0 || OUT[i] > k)){ cx += i%COLS; cy += Math.floor(i/COLS); cn++; } }
+  if (!cn){ cx = spring.gx; cy = spring.gy; } else { cx/=cn; cy/=cn; }
+
+  // 헬기: 낮에만 (일몰 뒤 진화 중단)
+  helicopter.visible = !night;
+  const ang = t/300;
+  helicopter.position.set(X(cx + 9*Math.cos(ang)), Y(cx,cy,420), Z(cy + 9*Math.sin(ang)));
+  helicopter.rotation.y = -ang;
+
+  // 드론 (B·B′ 에서만)
+  const droneOn = state.scen !== 'A';
+  uav.visible = uav2.visible = droneOn; uavLabel.style.display = droneOn ? '' : 'none';
+  if (droneOn){
+    const tour = row.drone.tour;
+    let gx, gy;
+    if (night && tour.length){
+      const f = Math.min(tour.length-1, frac*(tour.length-1)), a = Math.floor(f), b = Math.min(tour.length-1, a+1), w = f-a;
+      gx = tour[a][0]*(1-w)+tour[b][0]*w; gy = tour[a][1]*(1-w)+tour[b][1]*w;
+      uavLabel.textContent = `${row.drone.active} 열화상 화선 순회 (${state.scen==='Bb'?'B′는 같은 길을 짧게':'2대 교대'})`;
+    } else {
+      gx = cx + 5*Math.cos(t/200); gy = cy + 5*Math.sin(t/200);
+      uavLabel.textContent = night ? '드론 대기' : '드론 · 낮에는 헬기와 같은 화선을 본다';
+    }
+    uav.position.set(X(gx), Y(gx,gy,90*EX), Z(gy));
+    uav.userData.cone.visible = night;
+    uav.userData.rotors.forEach((r,i) => r.rotation.y = t*3 + i);
+    const base = D.vehicles[0].path.at(-1);
+    uav2.position.set(X(base[0]+0.6), Y(base[0],base[1],12), Z(base[1])); uav2.userData.cone.visible = false;
+  }
+  // 차량 (실제 도로망 경로, 14:45 출동 가정)
+  for (const [obj, v] of [[engine, D.vehicles[0]], [ugv, D.vehicles[1]]]){
+    if (!v){ obj.visible = false; continue; }
+    const tt = v.t; let j = tt.findIndex(x => x > t);
+    let p, q, w;
+    if (j < 0){ p = q = v.path.at(-1); w = 0; } else if (j === 0){ p = q = v.path[0]; w = 0; }
+    else { p = v.path[j-1]; q = v.path[j]; w = (t-tt[j-1])/(tt[j]-tt[j-1]); }
+    const gx = p[0]+(q[0]-p[0])*w + (obj===ugv?0.5:0), gy = p[1]+(q[1]-p[1])*w;
+    obj.position.set(X(gx), Y(gx,gy,20), Z(gy));
+    if (q !== p) obj.rotation.y = -Math.atan2(q[1]-p[1], q[0]-p[0]);
+  }
+  // 바람 (불어오는 방향 → 불어가는 방향으로 바꿔 그림)
+  const to = (row.wind_from_deg + 180) % 360 * Math.PI/180;
+  windArrow.position.set(X(cx-14), Y(cx-14, cy+10, 700), Z(cy+10));
+  windArrow.setDirection(new THREE.Vector3(Math.sin(to), 0, -Math.cos(to)));
+  windArrow.setLength(300 + row.wind_ms*140, 220, 140);
+  windLabel.textContent = `인제 관측소 ${row.wind_ms} m/s · ${row.wind_from_deg}°에서`;
+
+  // 시계·지표·문구
+  const f = fmt(t); $('#t-kst').textContent = f.hm;
+  $('#t-sub').textContent = `2019.${f.date} · ${NAMES[state.scen]}`;
+  $('#t-sky').textContent = night ? (state.scen==='A' ? '밤 — 공중 관측 없음' : '밤 — 열화상 드론 순회') : '낮 — 헬기 육안 관측';
+  $('#metrics').innerHTML = metricsHTML(row);
+  const evs = D.events.filter(e => e.t <= t + 60);
+  const last = evs.at(-1);
+  $('#evtext').innerHTML = last ? `<b>${last.kst.slice(5).replace('T',' ')}</b> ${last.text} <span style="color:var(--ink-2)">— ${last.src}</span>` : '';
+  $('#viewhint').textContent = state.view === 'known'
+    ? '실선 칸은 총괄이 아는 불, 흐린 주황은 그 시각 총괄이 모르는 불이다.'
+    : '진짜 세계(시뮬레이션)의 모든 불. 총괄 판단에는 이 화면이 들어가지 않는다.';
+  if (!force) scrub.value = Math.round(t/T_END*1000);
+}
+
+const v3 = new THREE.Vector3();
+function placeLabels(){
+  const W = innerWidth, H = innerHeight;
+  const put = (el, obj, dy) => { v3.copy(obj.position); v3.y += dy; v3.project(camera);
+    const vis = v3.z < 1 && obj.visible !== false; el.style.display = vis ? '' : 'none';
+    el.style.left = (v3.x*0.5+0.5)*W+'px'; el.style.top = (-v3.y*0.5+0.5)*H+'px'; };
+  for (const m of marks) put(m.el, m.obj, m.dy);
+  if (uav.visible) put(uavLabel, uav, 160);
+  put(windLabel, windArrow, 120);
+}
+
+let last = performance.now();
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function loop(now){
+  const dt = Math.min(0.1, (now-last)/1000); last = now;
+  if (state.playing){ state.t += dt * Number($('#speed').value); if (state.t >= T_END){ state.t = T_END; state.playing = false; play.textContent='▶'; } draw(); }
+  else if (!reduce){ helicopter.userData.rot.rotation.y += dt*20; }
+  helicopter.userData.rot.rotation.y += dt*20;
+  controls.update(); renderer.render(scene, camera); placeLabels();
+  requestAnimationFrame(loop);
+}
+addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+state.t = 0; draw(); requestAnimationFrame(loop);
+// 첫 화면: 19:06 일몰 직후로 바로 갈 수 있게 키보드 단축
+addEventListener('keydown', e => { if (e.key === ' ' && e.target === document.body){ e.preventDefault(); play.click(); } });
+})();
+</script>
+</body>
+</html>

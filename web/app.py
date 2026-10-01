@@ -240,6 +240,12 @@ async def fly(req: FlyReq):
         ex = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)).json()
     return {"ok": True, "task_id": ex.get("task_id", tid), "target": target, "eta_sec": ev.get("eta_sec")}
 
+@app.get("/inje3d")
+def inje3d():
+    """2019 인제 산불 '드론이 있었다면' 3D 재현 (three.js). 데이터: python tools/inje2019_whatif.py"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/static/inje2019/index.html")
+
 @app.get("/", response_class=HTMLResponse)
 def index(): return HTML
 
