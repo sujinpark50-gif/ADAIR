@@ -5,6 +5,8 @@
 
     python tools/burn_scar_s2.py                         # → web/static/inje2019/burn_scar.json
     python tools/burn_scar_s2.py --firms-key <MAP_KEY>   # NASA FIRMS 열점(위성 화점)도 함께 (키 무료 발급)
+    python tools/burn_scar_s2.py --wide                  # 진단: 발화점 중심 20 km 창에서 실제 피해지가 어디 있는지
+                                                         #       (CA 격자는 발화점 서쪽 1.3 km 에서 끝난다)
 
 방법 (기술문서 8절 '검증' 그대로)
   1. 산불 전·후 Sentinel-2 L2A 장면을 고른다 (기본: 2019-04-01~04-03 중 구름 적은 것 / 04-06~04-12).
@@ -47,6 +49,45 @@ def load_grid():
     from src.grid import EnvironmentGrid
     g = EnvironmentGrid(config_path=str(ROOT / "environment" / "config" / "environment_config.yaml"), seed=0)
     return {"crs": g.crs, "transform": g.transform, "cols": g.cols, "rows": g.rows, "res": float(g.cell_resolution)}
+
+
+def wide_grid(half_km=10.0):
+    """발화점 중심 창. 강원 DEM(dem_gangwon.tif)과 같은 90 m 격자에 맞춘다 (CA 격자와도 칸 경계가 같다)."""
+    import rasterio
+    from rasterio.transform import from_origin
+    from rasterio.warp import transform as warp
+    with rasterio.open(ROOT / "environment" / "data" / "processed" / "gangwon" / "dem_gangwon.tif") as d:
+        crs, t = d.crs, d.transform
+    xs, ys = warp("EPSG:4326", crs, [SPRING[1]], [SPRING[0]])
+    n = int(round(half_km * 1000 / 90))
+    c0 = int((xs[0] - t.c) // t.a) - n
+    r0 = int((t.f - ys[0]) // -t.e) - n
+    return {"crs": crs, "transform": from_origin(t.c + c0 * t.a, t.f + r0 * t.e, t.a, -t.e),
+            "cols": 2 * n, "rows": 2 * n, "res": float(t.a)}
+
+
+def describe_components(mask, G, ca=None):
+    """피해 연결 성분별 면적·중심·발화점에서 방향, CA 격자 안 비율."""
+    from scipy import ndimage
+    from rasterio.warp import transform as warp
+    lab, n = ndimage.label(mask == 1, structure=np.ones((3, 3)))
+    t = G["transform"]; cell_ha = G["res"] ** 2 / 10_000
+    out = []
+    for k in range(1, n + 1):
+        rr, cc = np.nonzero(lab == k)
+        xs = t.c + (cc + 0.5) * t.a; ys = t.f + (rr + 0.5) * t.e
+        lons, lats = warp(G["crs"], "EPSG:4326", [float(xs.mean())], [float(ys.mean())])
+        dx = (lons[0] - SPRING[1]) * 111320 * math.cos(math.radians(SPRING[0])); dy = (lats[0] - SPRING[0]) * 111320
+        inside = None
+        if ca is not None:
+            ct = ca["transform"]
+            gc = (xs - ct.c) / ct.a; gr = (ys - ct.f) / ct.e
+            inside = float(np.mean((gc >= 0) & (gc < ca["cols"]) & (gr >= 0) & (gr < ca["rows"])))
+        out.append({"area_ha": round(len(rr) * cell_ha, 1), "lat": round(lats[0], 5), "lon": round(lons[0], 5),
+                    "from_spring_km": round(math.hypot(dx, dy) / 1000, 2),
+                    "bearing_deg": round((math.degrees(math.atan2(dx, dy)) + 360) % 360),
+                    "inside_ca_grid": None if inside is None else round(inside, 2)})
+    return sorted(out, key=lambda c: -c["area_ha"])
 
 
 def grid_bbox_wgs84(G):
@@ -166,7 +207,10 @@ def main(argv=None):
     ap.add_argument("--max-cloud", type=float, default=40)
     ap.add_argument("--threshold", type=float, default=0.27)
     ap.add_argument("--firms-key", default=None)
+    ap.add_argument("--wide", action="store_true", help="발화점 중심 20 km 창에서 피해지 위치 진단")
     a = ap.parse_args(argv)
+    if a.wide:
+        return main_wide(a)
     G = load_grid()
     bbox = grid_bbox_wgs84(G)
     print(f"격자 {G['cols']}×{G['rows']} @ {G['res']} m, bbox {tuple(round(v, 4) for v in bbox)}")
@@ -191,6 +235,27 @@ def main(argv=None):
     print(json.dumps({k: v for k, v in doc.items() if k not in ("mask_u8", "dnbr_i8", "firms")}, ensure_ascii=False, indent=1))
     print(f"FIRMS 열점 {len(hot)}개" if a.firms_key else "FIRMS 생략 (--firms-key 로 추가)")
     print(f"저장: {OUT}")
+
+
+def main_wide(a):
+    W, CA = wide_grid(), load_grid()
+    bbox = grid_bbox_wgs84(W)
+    pres, posts = find_scenes(bbox, a.pre, a.post, a.max_cloud)
+    print(f"넓은 창 {W['cols']}×{W['rows']} (발화점 중심 ±10 km)\n전: {pres[0].id}\n후: {posts[0].id}")
+    pre, post = read_scene(pres[0], W), read_scene(posts[0], W)
+    rep = {}
+    for th in (0.27, 0.44):
+        mask, _, info = burn_mask(pre, post, W, threshold=th, radius_km=8.0, min_cells=3)
+        comps = describe_components(mask, W, CA)
+        rep[str(th)] = {"area_ha": info["area_ha"], "components": comps[:8]}
+        print(f"\n[dNBR ≥ {th}] 발화점 8 km 안 피해 합계 {info['area_ha']} ha (아리랑3호 {ARIRANG_HA} ha)")
+        for c in comps[:8]:
+            print(f"  {c['area_ha']:7.1f} ha  발화점에서 {c['from_spring_km']:5.2f} km, 방위 {c['bearing_deg']:3d}°"
+                  f"  ({c['lat']}, {c['lon']})  CA 격자 안 {int((c['inside_ca_grid'] or 0) * 100)}%")
+    out = OUT.with_name("burn_scar_wide.json")
+    out.write_text(json.dumps({"pre_scene": pres[0].id, "post_scene": posts[0].id, "window": "spring ±10 km, 90 m",
+                               "by_threshold": rep}, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"\n저장: {out}")
 
 
 if __name__ == "__main__":

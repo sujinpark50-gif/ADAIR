@@ -253,9 +253,9 @@ const C_BURN = new THREE.Color('#FF6A2B'), C_HOT = new THREE.Color('#FFD08A'), C
 // 불 위치 표식: 초기 불은 90 m 칸 한두 개라 27 km 지도에서 안 보인다 → 연기 기둥과 라벨로 위치를 알린다
 const plume = new THREE.Group();
 const plumeCore = new THREE.Mesh(new THREE.CylinderGeometry(25, 55, 1, 16, 1, true),
-  new THREE.MeshBasicMaterial({color:0xFF7A30, transparent:true, opacity:.35, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide}));
+  new THREE.MeshBasicMaterial({color:0xFF5A1F, transparent:true, opacity:.6, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide}));
 const plumeSmoke = new THREE.Mesh(new THREE.CylinderGeometry(220, 60, 1, 16, 1, true),
-  new THREE.MeshBasicMaterial({color:0xB8B0A8, transparent:true, opacity:.16, depthWrite:false, side:THREE.DoubleSide}));
+  new THREE.MeshBasicMaterial({color:0x5E5650, transparent:true, opacity:.28, depthWrite:false, side:THREE.DoubleSide}));
 plume.add(plumeCore, plumeSmoke); scene.add(plume);
 const fireLabel = Object.assign(document.createElement('div'), {className:'label'}); fireLabel.style.background = 'rgba(160,40,10,.85)';
 document.getElementById('labels').appendChild(fireLabel);

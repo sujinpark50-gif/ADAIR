@@ -82,3 +82,38 @@ def test_no_change_no_burn(tmp_path, G):
     pre = read(scene(tmp_path, G, "pre"), G)
     mask, _, info = burn.burn_mask(pre, pre, G)
     assert info["area_ha"] == 0.0
+
+
+def test_wide_window_finds_scar_outside_ca_grid(tmp_path, G):
+    """실제 피해지가 CA 격자 밖(발화점 서쪽)에 있으면: CA 격자 판정은 놓치고, 넓은 창 진단은 찾아 '격자 안 0%'로 알린다."""
+    from rasterio.transform import from_origin
+    from rasterio.warp import transform as warp
+    W = burn.wide_grid()
+    res = 10.0
+    x0, y0 = warp("EPSG:4326", "EPSG:32652", [128.03], [38.10])
+    x1, y1 = warp("EPSG:4326", "EPSG:32652", [128.20], [37.96])
+    Wd, Hd = int((x1[0] - x0[0]) / res), int((y0[0] - y1[0]) / res)
+    tr = from_origin(x0[0], y0[0], res, res)
+    bx, by = warp("EPSG:4326", "EPSG:32652", [128.100], [38.040])          # 발화점 서북서 약 3 km
+    cx, cy = (bx[0] - x0[0]) / res, (y0[0] - by[0]) / res
+    yy, xx = np.mgrid[0:Hd, 0:Wd]
+    def write(name, burned):
+        b08 = np.full((Hd, Wd), 3000, np.uint16); b12 = np.full((Hd, Wd), 1200, np.uint16)
+        if burned:
+            m = np.hypot(xx - cx, yy - cy) * res <= 1000
+            b08[m], b12[m] = 1500, 2200
+        paths = {}
+        for band, arr in (("B08", b08), ("B12", b12), ("SCL", np.full((Hd, Wd), 4, np.uint8))):
+            p = tmp_path / f"{name}_{band}.tif"
+            with rasterio.open(p, "w", driver="GTiff", width=Wd, height=Hd, count=1, dtype=arr.dtype,
+                               crs="EPSG:32652", transform=tr) as d:
+                d.write(arr, 1)
+            paths[band] = str(p)
+        return paths
+    pre_p, post_p = write("pre", False), write("post", True)
+    _, _, info_ca = burn.burn_mask(read(pre_p, G), read(post_p, G), G)
+    assert info_ca["area_ha"] < 20                                  # CA 격자에서는 거의 안 보인다
+    mask, _, info_w = burn.burn_mask(read(pre_p, W), read(post_p, W), W, radius_km=8.0, min_cells=3)
+    comps = burn.describe_components(mask, W, G)
+    assert abs(comps[0]["area_ha"] - 314) / 314 < 0.12
+    assert comps[0]["inside_ca_grid"] < 0.05 and 250 <= comps[0]["bearing_deg"] <= 320
