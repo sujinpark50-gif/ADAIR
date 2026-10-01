@@ -13,8 +13,11 @@
      선행연구도 4월 3일(전)·4월 8일(후) 장면을 썼다.
   2. NIR(B08)·SWIR2(B12)를 CA 격자(EPSG:5186, 90 m)에 바로 재투영해 읽는다 (COG 개요 사용 → 수십 MB 안쪽).
      구름·그림자(SCL 3·8·9·10)는 둘 중 하나라도 걸리면 '판정 불가' 칸으로 둔다.
-  3. NBR = (B08 − B12)/(B08 + B12),  dNBR = NBR_전 − NBR_후.  dNBR ≥ 0.27(USGS 중-저 피해 기준) 을 피해로 본다.
-  4. 남전약수터 반경 안의 연결 성분만 남긴다 (다른 원인 변화 제거). 면적을 아리랑3호 판독 342.2 ha 와 비교해 출력.
+  3. NBR = (B08 − B12)/(B08 + B12),  dNBR = NBR_전 − NBR_후.  dNBR ≥ 0.1(USGS '낮은 피해' 하한) 을 피해로 본다.
+     2019 인제 산불은 대부분 지표화(낮은 피해)라 0.27(중-저) 로는 대부분이 빠진다 — 실측: 0.27 → 90 ha, 0.1 → 304 ha.
+     물(SCL 6)이 한쪽 장면에만 있는 칸(호수 수위 변화)은 판정 불가로 둔다. 소양호 호안이 0.27 이상으로 잡혔었다.
+  4. 발화점에서 0.5 km 안에 닿는 연결 성분만 남긴다 (먼 곳의 밭·개간·물가 변화 제거). 아리랑3호 판독 342.2 ha 와 비교.
+     실측: 1 km 로 넓히면 소양호 호안 쪽 67 ha 덩어리(0.82 km)가 함께 붙는다 — 그 덩어리는 호안 띠 위에 있어 제외.
 
 결과는 '관측 사실'이지만 한계가 있다: 90 m 칸으로 평균내면 가장자리가 뭉개지고, 4월 초 식생 변화·지형 그림자가
 dNBR 에 섞일 수 있다. 임계값은 --threshold 로 바꿔 민감도를 본다.
@@ -42,6 +45,7 @@ ARIRANG_HA = 342.2                      # 국립산림과학원 아리랑3호 �
 KST = timezone(timedelta(hours=9))
 START_KST = datetime(2019, 4, 4, 14, 45, tzinfo=KST)
 CLOUD_SCL = (3, 8, 9, 10)               # 구름 그림자, 구름(중·고), 권운
+WATER_SCL = 6
 
 
 # ── 격자 ──────────────────────────────────────────────────────────────────
@@ -148,11 +152,12 @@ def nbr(b08, b12):
     return v
 
 
-def burn_mask(pre, post, G, threshold=0.27, radius_km=6.0, min_cells=2):
+def burn_mask(pre, post, G, threshold=0.1, radius_km=0.5, min_cells=2):
     """pre/post = (b08, b12, scl) 격자 배열. 반환: mask(uint8: 0 아님·1 피해·255 판정불가), 정보"""
     from scipy import ndimage
     n0, n1 = nbr(pre[0], pre[1]), nbr(post[0], post[1])
     bad = np.isin(pre[2], CLOUD_SCL) | np.isin(post[2], CLOUD_SCL) | np.isnan(n0) | np.isnan(n1)
+    bad |= (pre[2] == WATER_SCL) ^ (post[2] == WATER_SCL)          # 한쪽만 물 = 수위 변화 (화재 아님)
     dnbr = n0 - n1
     burned = (dnbr >= threshold) & ~bad
     lab, nlab = ndimage.label(burned, structure=np.ones((3, 3)))
@@ -162,7 +167,7 @@ def burn_mask(pre, post, G, threshold=0.27, radius_km=6.0, min_cells=2):
     t = G["transform"]
     sc, sr = (xs[0] - t.c) / t.a - 0.5, (ys[0] - t.f) / t.e - 0.5
     rr, cc = np.mgrid[0:G["rows"], 0:G["cols"]]
-    near = np.hypot(rr - sr, cc - sc) * G["res"] <= radius_km * 1000
+    near = np.hypot(rr - sr, cc - sc) * G["res"] <= radius_km * 1000   # 성분이 이 반경 안에 한 칸이라도 닿아야 함
     keep = [k for k in range(1, nlab + 1) if (lab == k).sum() >= min_cells and ((lab == k) & near).any()]
     mask = np.zeros(burned.shape, np.uint8)
     mask[np.isin(lab, keep)] = 1
@@ -170,7 +175,7 @@ def burn_mask(pre, post, G, threshold=0.27, radius_km=6.0, min_cells=2):
     cell_ha = G["res"] ** 2 / 10_000
     area = float((mask == 1).sum() * cell_ha)
     return mask, dnbr, {"threshold": threshold, "components_kept": len(keep), "area_ha": round(area, 1),
-                        "unknown_cells_near_fire": int((bad & near).sum()),
+                        "unknown_cells_near_fire": int((bad & (np.hypot(rr - sr, cc - sc) * G["res"] <= 6000)).sum()),
                         "vs_arirang_ratio": round(area / ARIRANG_HA, 3)}
 
 
@@ -205,7 +210,7 @@ def main(argv=None):
     ap.add_argument("--pre", default="2019-03-28/2019-04-03")
     ap.add_argument("--post", default="2019-04-06/2019-04-15")
     ap.add_argument("--max-cloud", type=float, default=40)
-    ap.add_argument("--threshold", type=float, default=0.27)
+    ap.add_argument("--threshold", type=float, default=0.1)
     ap.add_argument("--firms-key", default=None)
     ap.add_argument("--wide", action="store_true", help="발화점 중심 20 km 창에서 피해지 위치 진단")
     a = ap.parse_args(argv)
@@ -221,7 +226,7 @@ def main(argv=None):
     print("영상 읽는 중 (격자 크기로 재투영, 수십 MB)…")
     pre, post = read_scene(pre_item, G), read_scene(post_item, G)
     mask, dnbr, info = burn_mask(pre, post, G, threshold=a.threshold)
-    sens = {str(th): burn_mask(pre, post, G, threshold=th)[2]["area_ha"] for th in (0.1, 0.2, 0.27, 0.44)}
+    sens = {str(th): burn_mask(pre, post, G, threshold=th)[2]["area_ha"] for th in (0.1, 0.15, 0.2, 0.27, 0.44)}
     hot = firms(a.firms_key, bbox, G) if a.firms_key else []
     doc = {"source": "Sentinel-2 L2A (Microsoft Planetary Computer)", "method": "dNBR = NBR(전) − NBR(후), 90 m 격자 평균",
            "pre_scene": pre_item.id, "post_scene": post_item.id,
@@ -244,7 +249,7 @@ def main_wide(a):
     print(f"넓은 창 {W['cols']}×{W['rows']} (발화점 중심 ±10 km)\n전: {pres[0].id}\n후: {posts[0].id}")
     pre, post = read_scene(pres[0], W), read_scene(posts[0], W)
     rep = {}
-    for th in (0.27, 0.44):
+    for th in (0.1, 0.27):
         mask, _, info = burn_mask(pre, post, W, threshold=th, radius_km=8.0, min_cells=3)
         comps = describe_components(mask, W, CA)
         rep[str(th)] = {"area_ha": info["area_ha"], "components": comps[:8]}
