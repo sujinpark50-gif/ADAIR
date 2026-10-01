@@ -74,6 +74,21 @@ def env():
     return {"tick": _tick, "fire": fire, "risk": risk,
             "wind_speed": es.wind_speed, "spread": es.spread_direction}
 
+@app.get("/api/modes")
+def modes():
+    """관제판 상단 표시용: 지금 이 관제판이 어떤 모드로 실행 중인지.
+
+    - demo_extinguish: INT-02 시연 전용 진화 스위치 (서버 시작 시 WEB_DEMO_EXTINGUISH 로 결정)
+    - uav_mode: 연결된 UAV 서버의 /health 응답 mode (mock / real), 연결 실패 시 None
+    """
+    uav_mode = None
+    try:
+        uav_mode = httpx.get(f"{UAV_AGENT}/health", timeout=1.5).json().get("mode")
+    except Exception:
+        pass
+    return {"demo_extinguish": bool(config.WEB_DEMO_EXTINGUISH),
+            "uav_agent": UAV_AGENT, "uav_id": UAV_ID, "uav_mode": uav_mode}
+
 @app.get("/api/state")
 async def state():
     async with httpx.AsyncClient(timeout=10) as cx:
@@ -244,6 +259,11 @@ button{padding:9px 14px;border:0;border-radius:8px;font-weight:700;cursor:pointe
 .kv{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #22303f}
 .kv b{color:#8fd7c9}.log{font-family:monospace;font-size:12px;color:#9fe;white-space:pre-wrap;background:#0d1f14;border:1px solid #0C8E7E;border-radius:8px;padding:8px;margin-top:8px}
 small{color:#6f8a96}
+.modes{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 6px}
+.badge{font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px;border:1px solid #3a4a5d;color:#9fb3bf;background:#0f1720}
+.badge.on{color:#1b1206;background:#f0a33a;border-color:#f0a33a}
+.badge.real{color:#06131a;background:#5fd0ff;border-color:#5fd0ff}
+.badge.bad{color:#fff;background:#8a2b2b;border-color:#8a2b2b}
 </style></head><body>
 <header>🔥🚁 ADAIR — 강원 지형 · 산불 · 드론 실시간</header>
 <div class=wrap>
@@ -254,6 +274,7 @@ small{color:#6f8a96}
  </div>
  <div class=panel>
    <h3>출동</h3>
+   <div class=modes><span id=mExt class=badge>진화 시연: 확인 중</span><span id=mUav class=badge>드론 서버: 확인 중</span></div>
    <div class=row>col <input id=col type=number value=60> row <input id=row type=number value=70>
      <button id=fly>🔥 출동</button><button id=clr>궤적 지우기</button><button id=auto style="background:#0C8E7E">자동 시작</button></div>
    <h3>산불(CA)</h3>
@@ -391,6 +412,13 @@ function driveStep(){
   requestAnimationFrame(driveStep);
 }
 requestAnimationFrame(driveStep);
+async function tickModes(){try{const m=await(await fetch('/api/modes')).json();
+ const e=$('mExt'); e.textContent=m.demo_extinguish?'진화 시연: 켜짐 (시연 전용)':'진화 시연: 꺼짐';
+ e.className='badge'+(m.demo_extinguish?' on':''); e.title='WEB_DEMO_EXTINGUISH (서버 시작 시 결정, 화면에서 변경 불가)';
+ const u=$('mUav'); u.textContent=m.uav_mode?('드론 서버: '+m.uav_mode+' ('+m.uav_id+')'):'드론 서버: 연결 안 됨';
+ u.className='badge'+(m.uav_mode==='real'?' real':(m.uav_mode?'':' bad')); u.title=m.uav_agent;
+}catch(err){}}
+setInterval(tickModes,10000);setTimeout(tickModes,300);
 setInterval(tickEnv,1500);setInterval(tickState,1000);setInterval(tickUgv,3000);setTimeout(()=>{fit();tickEnv();tickState();tickUgv();},600);
 $('fly').onclick=async()=>{const col=+$('col').value,row=+$('row').value;
  $('log').textContent='출동('+col+','+row+')…';
