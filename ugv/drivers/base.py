@@ -23,8 +23,11 @@ class MotionDriver(ABC):
         """현재 모드/상태 문자열."""
 
     @abstractmethod
-    async def goto(self, waypoints: list[tuple[float, float]]) -> bool:
-        """웨이포인트 (lat, lon) 순서대로 이동 시작.
+    async def goto(self, waypoints: list[tuple[float, float]],
+                   speeds: list[float] | None = None) -> bool:
+        """웨이포인트 (lat, lon) 순서대로 이동 시작. 진행 중인 주행이 있으면 새 경로로 바꾼다.
+
+        speeds[i]: waypoints[i] 로 가는 구간 속도(m/s, 시뮬레이션 초 기준). 없으면 드라이버 기본 속도.
 
         시작에 성공하면 True, 실패하면 False. 도착까지 기다리지 않으며
         진행은 progress() 로 확인한다.

@@ -25,11 +25,18 @@ GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_r
 | `UGV_TARGET_SNAP_M` | `2000` | 화재에서 가장 가까운 도로 노드가 이보다 멀면 `TARGET_UNREACHABLE` |
 | `UGV_APPROACH_FALLBACK` | `0` | `1` 이면 가장 가까운 노드로 못 갈 때 다음 노드로 접근 |
 | `UGV_APPROACH_MAX_M` | `500` | fallback 접근 노드의 화재 거리 상한 |
+| `UGV_TIME_SCALE` | `1` | 시뮬레이션 초 / 벽시계 초. PX4 쪽 `PX4_SIM_SPEED_FACTOR`(px4-start.sh 의 `SPEED`)와 같은 값. sim 차량도 이 배율로 달린다 |
+| `UGV_SECONDS_PER_ENV_STEP` | `60` | 환경 CA 1스텝이 몇 시뮬레이션 초인가. **잠정값 (INT-05 미정)** |
+| `UGV_REPORT_URL` | (빈 값 = 끔) | 총괄 주소(예 `http://127.0.0.1:8200`). 주면 이벤트마다 `POST {URL}/events` 로 보고. 기본은 총괄 조회(polling)만 쓴다 |
+| `UGV_SCENARIO` | `ugv/scenarios/inje_girin.csv` | 도로 환경 시나리오 (CSV/JSON). 빈 값이면 시나리오 없음 |
 
 ## 구조
 
 - 서버 1개가 지상자원 전부(`ugv/config.py` 의 `RESOURCES`)를 맡는다. UAV 는 기체 1대당 서버 1개지만, UGV 는 자원들이 도로망 그래프 하나를 공유해야 도로 차단이 모든 자원의 판단에 동시에 반영된다.
-- 도로망은 환경 데이터(`environment/data/processed/roads_clipped.gpkg`)를 변환한 `ugv/data/road_network.json` (노드 534, 도로 672, 184 km). 거점 노드 id 는 `A`(원통119), `B`(기린119).
+- 도로망은 환경 데이터(`environment/data/processed/roads_reprojected.gpkg`, EPSG:5186)를 변환한 `ugv/data/road_network.json` (노드 534, 도로 672, 184 km, 도로 선형 포함). 거점 노드 id 는 `A`(인제119), `B`(기린119) — 좌표는 주소로 추정.
+- 모든 시각·ETA·속도는 **시뮬레이션 초** 기준 (`ugv/sim_clock.py`). 환경 스텝을 `POST /clock/env` 로 받으면 거기에 맞춘다.
+- 도로 환경(차단 도로·경유 불가 노드·혼잡)은 UGV 것이고 환경 모듈과 별개다. 시나리오 파일의 시간대가 정하고, `/roads/*` API 로 덧붙일 수 있다. 화재는 도로를 막지 않는다 (팀 결정).
+- 차량은 노드 사이 직선이 아니라 **도로 선형을 따라** 달린다 (`ugv/route_plan.py`). 주행 중 남은 경로가 막히면 지금 도로 끝에서 재탐색한다.
 - 도로 노드 id 는 UGV 내부 값이다. 호출측은 위경도로 요청하고, 응답의 `target_node` 로 실제 목적지를 확인한다.
 
 ## 엔드포인트 요약
@@ -45,9 +52,18 @@ GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_r
 | GET | `/ugv/{resource_id}/task/{task_id}` | 주행 진행·결과 |
 | GET | `/ugv/{resource_id}/observation` | 현재 위치의 도로 상태 관측 |
 | GET | `/graph/nodes/{node_id}` | 도로 노드 좌표 |
-| POST | `/env/fire_cells` | 화재 셀 반영 → 도로 차단 재계산 |
-| POST | `/env/congestion` | 시나리오용 혼잡 설정 |
-| GET | `/env/roads` | 현재 차단·혼잡 도로 |
+| GET | `/roads` | 막힌 도로(출처 포함)·경유 불가 노드·혼잡 도로 |
+| POST | `/roads/{road_id}/block` | 도로 직접 차단·해제 `{"blocked": true}` (출처 `manual`) |
+| POST | `/roads/nodes/{node_id}/block` | 노드 경유 불가·해제 — 닿은 도로 전부 차단 (출처 `manual`) |
+| POST | `/roads/closures/cells` | 격자 칸 묶음 구역 통제 (예전 `/env/fire_cells`, 출처 `cells`) |
+| POST | `/roads/congestion` | 혼잡 직접 설정 |
+| GET | `/roads/geometry?only_changed=true` | 시각화용 도로 선형 + 차단·혼잡 |
+| GET | `/ugv/{resource_id}/route` | 주행 중 경로 선형·남은 거리/시간·재탐색 횟수 |
+| GET | `/reports?limit=30` | 총괄에 보낸 보고 최근 목록·전송 통계 |
+| GET | `/clock` | 시뮬레이션 시계 (시각, 배율, 환경 동기 상태) |
+| POST | `/clock/env` | 환경 스텝 알림 `{"sim_step": n}` → 시계 동기. 스텝이 줄면 시나리오 재시작 |
+| GET | `/scenario` | 시나리오 규칙, 지금 켜진 것, 다가올 것, 켜짐/꺼짐 기록 |
+| POST | `/scenario/reset?sim_time_s=0` | 시계·시나리오 처음부터 (시연 반복용) |
 
 호출 순서: `state` → `evaluate` → (총괄·Safety 판단) → `execute` → `task` 폴링
 
@@ -69,6 +85,8 @@ GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_r
 | `driver_status` | string | sim: `IDLE`/`MISSION`/`ARRIVED`, px4: flight mode |
 | `updated_at` | float | 마지막 위치 반영 시각 (epoch s) |
 | `fault` | string \| null | `UNAVAILABLE` 일 때 이상 내용 `CODE: 설명` |
+| `current_road_id` | string \| null | 주행 중 지금 달리는 도로 |
+| `sim_time_s` | float | 응답 시점 시뮬레이션 초 |
 
 없는 자원이면 `404`.
 
@@ -120,7 +138,10 @@ GUI=1 ./ugv/tools/px4-start.sh 0                       # PX4 SITL rover (gz_r1_r
 
 `UGV_APPROACH_FALLBACK=1` 이면 3·4 에서 바로 거절하지 않고, 화재에서 `UGV_APPROACH_MAX_M` 안의 다음 노드를 가까운 순으로 시도한다. 성공하면 `detail` 에 접근 거리를 적는다.
 
-ETA 는 도로 길이 ÷ 도로등급별 속도(잠정: 고속국도 80, 일반국도 60, 지방도 50, 시군도 30 km/h) × 혼잡 배율이다. 거점 → 도로망 경계 구간(원통 3.2 km, 기린 2.1 km)은 포함하지 않는다.
+ETA(시뮬레이션 초)는 도로마다 `길이 ÷ min(도로등급별 속도, 차량 최고속도) × 혼잡 배율` 의 합이다.
+도로등급 속도(잠정): 고속국도 80, 일반국도 60, 지방도 50, 시군도 30 km/h. 차량 최고속도는 `ugv/config.py` `max_speed_mps`
+(Gazebo 차량 기준: UGV 2.0, 소방차 2.5 m/s) — 그래서 실제 ETA 는 사실상 차량 속도가 정한다 (A→B 29 km ≈ 4.1 h).
+PX4 차량도 같은 구간 속도로 달린다 (미션 항목별 속도).
 
 ## POST /ugv/{resource_id}/execute
 
@@ -175,7 +196,7 @@ UAV 와 같이 **화재 좌표(`target`)** 를 받는다. 목적지 도로 노�
 |---|---|---|
 | `STALLED` | `STALL_TIMEOUT_S`(60 s) 동안 `STALL_MOVE_M`(10 m) 도 못 움직이고 웨이포인트도 그대로 | `FAILSAFE_ACTIVE` |
 | `OFF_ROUTE` | 경로(노드를 이은 선)에서 `OFF_ROUTE_M`(100 m) 넘게 벗어남 | `FAILSAFE_ACTIVE` |
-| `VEHICLE_FAULT` | PX4: 상대고도 < `FALL_ALT_M`(-5 m, 추락), 미션 중 disarm, 미션 중 MISSION 모드 이탈 | `FAILSAFE_ACTIVE` |
+| `VEHICLE_FAULT` | PX4: 하강 속도 > `FALL_RATE_MPS`(8 m/s, 추락 — 지형 월드라 고도 자체로는 판정하지 않는다), 미션 중 disarm, 미션 중 MISSION 모드 이탈 | `FAILSAFE_ACTIVE` |
 | `TELEMETRY_LOST` | PX4: 위치 수신이 `STALE_AFTER_S`(10 s) 넘게 없음 | `COMMUNICATION_FAILURE` |
 
 `VEHICLE_FAULT`·`TELEMETRY_LOST` 는 출발 후 `FAULT_GRACE_S`(5 s) 이후부터, `FAULT_CONFIRM_S`(3 s) 이상 계속될 때만 확정한다 (arm·모드 전환 중 순간 신호 무시).
@@ -188,26 +209,26 @@ UAV 와 같이 **화재 좌표(`target`)** 를 받는다. 목적지 도로 노�
 {"resource_id": "A-ugv1", "location_lat": 38.09279, "location_lon": 128.179569,
  "observation_type": "ROAD_STATUS",
  "value": {"state": "READY", "current_node": "A", "current_task_id": null,
-           "blocked_roads": 5, "burning_cells": 2}}
+           "blocked_roads": 5, "blocked_nodes": 1}}
 ```
 
-## POST /env/fire_cells
+## 도로 환경 API (`/roads/*`)
 
-현재 BURNING 셀 **전체**(스냅샷)를 보낸다. 이전 화재 차단은 해제하고 다시 계산한다. 환경의 `get_fire_locations()` 결과를 그대로 넣어도 된다 (`x`, `y` 외 필드는 무시).
+도로 환경은 UGV 것이고 환경 모듈(화재)과 별개다. 차단은 출처별로 기록되어 서로 풀지 않는다:
+`scenario`(시나리오 파일), `manual`(API 직접), `cells`(구역 통제), 노드 차단은 `<출처>-node:<노드id>`.
 
-```json
-{"cells": [{"x": 134, "y": 123}, {"x": 135, "y": 123}]}
-```
+| 호출 | 본문 | 비고 |
+|---|---|---|
+| `POST /roads/{road_id}/block` | `{"blocked": true}` | false 로 해제. 시나리오가 같은 도로를 막고 있으면 그대로 막혀 있다 |
+| `POST /roads/nodes/{node_id}/block` | `{"blocked": true}` | 응답 `roads` 에 함께 막힌 도로 id |
+| `POST /roads/closures/cells` | `{"cells": [{"x": 134, "y": 123}], "margin": 1}` | 매 호출이 전체 목록(스냅샷). 빈 목록이면 해제. 칸·이웃 margin 칸을 지나는 도로 차단 |
+| `GET /roads` | | `blocked`, `blocked_by`, `blocked_nodes`, `congested` |
 
-차단 규칙: 도로가 지나는 격자 칸 또는 그 8방향 이웃이 BURNING 이면 그 도로는 차단. 환경 CA 에서 도로 칸은 대부분 연료 0 이라 직접 타지 않으므로 이웃까지 본다.
+주행 중인 차량은 남은 경로가 막히면 재탐색한다 (아래 "주행 중 도로 차단").
 
-**응답** `{"burning_cells": 2, "blocked_roads": 5, "newly_blocked": [...], "cleared": [...]}`
+## POST /roads/congestion
 
-이미 주행 중인 차량의 경로는 바꾸지 않는다.
-
-## POST /env/congestion
-
-환경에 혼잡 정보가 없으므로 시나리오용으로 직접 준다.
+혼잡 직접 설정. 시나리오 혼잡 시간대가 켜진 도로는 다음 갱신(1초) 때 시나리오 값으로 다시 덮인다.
 
 | 필드 | 기본 | 설명 |
 |---|---|---|
@@ -233,3 +254,65 @@ UAV 와 같이 **화재 좌표(`target`)** 를 받는다. 목적지 도로 노�
 - 주행 중 도로가 막혀도 경로를 다시 짜지 않는다.
 - task 기록은 메모리에만 있다. 서버를 재시작하면 사라진다.
 - 도로등급별 속도, 2,000 m 스냅 거리, 거점 위치는 잠정값이다 (팀 합의 필요).
+
+
+## 주행 중 도로 차단 (재탐색)
+
+주행 감시(`_watch_task`)가 0.5초마다 남은 경로(지금 달리는 도로 제외)에 막힌 도로가 있는지 본다.
+
+| 경우 | 동작 | task |
+|---|---|---|
+| 우회로 있음 | 지금 도로 끝 노드에서 재탐색, 새 경로로 미션 교체 | `IN_PROGRESS` 유지, `reroutes[]` 에 `{sim_time_s, result: REROUTED, blocked_road_id, eta_s}` |
+| 우회로 없음 | 멈추고 가장 가까운 노드에서 `READY` (고장이 아니므로 `UNAVAILABLE` 아님) | `FAILED`, `error: "ROAD_BLOCKED: ..."` |
+
+`progress` 에 `remaining_m`, `eta_remaining_sec`, `current_road_id`, `sim_time_s` 가 붙는다.
+
+## 시나리오 파일 (도로 환경)
+
+`ugv/scenarios/*.csv` 또는 `*.json` — 한 줄 = "이 대상은 start 부터 end 전까지 이렇다". 형식 상세는 `ugv/scenario.py` 머리말.
+
+| 열 | 값 |
+|---|---|
+| `kind` | `road`(도로 차단) / `node`(경유 불가 노드) / `congestion`(혼잡 — 막히게 할 도로만) |
+| `target` | road_id 또는 node_id. 여러 개는 `\|` 로 |
+| `start`, `end` | 초(`600`) / 시:분(`00:10`) / 환경 스텝(`step:10`). end 비우면 끝까지 |
+| `value` | congestion 배율 (2.0 = 통과시간 2배) |
+
+기본 `inje_girin.csv`:
+
+| 시간대 | 대상 | 내용 |
+|---|---|---|
+| 00:00–01:00 | 인제읍 시가지 7개 도로 | 혼잡 ×2.0 / ×1.5 |
+| 00:05–00:15 | 노드 494915 | 내린천로 입구 교차로 경유 불가 (+21분 우회) |
+| 00:10–01:30 | 도로 682500248 | 내린천로 낙석 (+46분) |
+| 00:20–02:00 | 도로 683400091 | 내린천로 기린 쪽 공사 (겹치면 +93분) |
+| 01:00–03:00 | 도로 683400513 | 대내로 기린 진입 혼잡 ×3.0 |
+
+규칙은 매 갱신마다 "지금 켜져 있어야 할 것"을 다시 계산한다. 시계가 되돌아가도(환경 새 실행, `/scenario/reset`) 그 시각에 맞게 다시 걸린다.
+갱신 간격은 벽시계 1초라 시뮬레이션 기준으로는 `UGV_TIME_SCALE` 초 단위로 반영된다 (500배속이면 약 500초 늦을 수 있다).
+
+
+## 총괄 보고 (push, `ugv/reporter.py`) — 기본 꺼짐
+
+총괄이 1초마다 조회(polling)하므로 기본으로는 보내지 않는다. 필요해지면 `UGV_REPORT_URL` 만 주면 된다.
+
+UGV 자원도 UAV 처럼 총괄이 개별로 지휘한다 (현장 지휘 역할 없음). 우리는 평가·수행하고 일이 생길 때마다 보고한다.
+기존 조회 경로(총괄이 1초마다 `GET /ugv/{id}/task/{task_id}`)는 그대로 두고 그 위에 더한다.
+
+형식 — 총괄 `POST /events` 그대로: `{"event_id", "type", "payload"}`.
+`event_id` 는 서버 기동 시각 + 순번이라 재시도해도 총괄이 중복으로 처리한다.
+`simulation_time_s` 는 보내지 않는다 (UGV 시계와 총괄 시계가 아직 안 묶여 있어 총괄이 미래 시각으로 거절할 수 있음). 우리 시각은 `payload.sim_time_s`.
+
+| type | 언제 | payload 주요 필드 (공통: resource_id, task_id, sim_time_s, state, position, fuel_pct) |
+|---|---|---|
+| `UGV_EVALUATED` | evaluate 응답 | decision_id, verdict, eta_sec, reason, detail, target_node |
+| `UGV_TASK_STARTED` | execute 로 출발 | decision_id, target_node, eta_sec, path |
+| `UGV_PROGRESS` | 달리는 도로가 바뀔 때 | waypoint, total, remaining_m, eta_remaining_sec, current_road_id |
+| `UGV_REROUTED` | 주행 중 차단으로 경로 변경 | blocked_road_id, eta_remaining_sec, reroutes |
+| `UGV_ARRIVED` | 목적지 도착 | target_node, observation(ROAD_STATUS), reroutes |
+| `UGV_TASK_FAILED` | 차단·우회 불가 / 차량 이상 / 내부 오류 | reason(ROAD_BLOCKED·STALLED·OFF_ROUTE·VEHICLE_FAULT·TELEMETRY_LOST·INTERNAL_ERROR), error |
+| `UGV_TASK_CANCELLED` | /stop | reason |
+| `RESOURCE_CHANGED` | 도착·실패·중지·이상 해제로 자원 상태가 바뀜 | why, current_node, fault — **총괄이 보류 임무를 다시 배정하는 계기** |
+
+총괄 쪽 처리: `RESOURCE_CHANGED` 는 재배정, `UGV_*` 는 현재 장부(`EXTERNAL_EVENT`)에 기록만 된다.
+보고 실패는 주행에 영향 없다 (3회 재시도 후 버리고 로그). A→B 29 km 한 번에 진행 보고가 약 70~90건 나온다.

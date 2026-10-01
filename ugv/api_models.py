@@ -25,6 +25,8 @@ class UgvState(BaseModel):
     driver_status: str                 # SimDriver: IDLE/MISSION/ARRIVED, PX4: flight mode
     updated_at: float                  # 마지막 텔레메트리 반영 시각 (epoch s, 0 이면 미수신)
     fault: str | None = None           # state=UNAVAILABLE 일 때 이상 내용 'CODE: 설명'. /stop 으로 해제
+    current_road_id: str | None = None # 주행 중 지금 달리는 도로
+    sim_time_s: float | None = None    # 응답 시점 시뮬레이션 초 (ugv/sim_clock.py)
 
 
 class EvaluateRequest(BaseModel):
@@ -46,7 +48,7 @@ class EvaluateResponse(BaseModel):
     decision_id: str
     resource_id: str
     verdict: Literal["ACCEPT", "REJECT"]
-    eta_sec: int | None                # ACCEPT 일 때만 값이 있다
+    eta_sec: int | None                # ACCEPT 일 때만 값이 있다. 시뮬레이션 초, 차량 최고속도·도로 제한속도·혼잡 반영
     reason: str | None                 # REJECT: BUSY / ROAD_BLOCKED / TARGET_UNREACHABLE
     detail: str | None
     target_node: TargetNode | None     # 실제로 향할 도로 노드 (스냅 실패 시 None)
@@ -74,18 +76,20 @@ class TaskStatus(BaseModel):
     resource_id: str
     status: Literal["STARTED", "IN_PROGRESS", "COMPLETED", "FAILED", "CANCELLED"]
     target_node: str
-    progress: dict | None              # {"phase": "ENROUTE", "waypoint": i, "total": n}
+    progress: dict | None              # {"phase": "ENROUTE", "waypoint": i, "total": n, "remaining_m", "eta_remaining_sec", "current_road_id", "sim_time_s"}
     observation: dict | None           # 도착 시 ROAD_STATUS 관측. 화재 관측이 아니다
     error: str | None = None
+    reroutes: list[dict] | None = None # 주행 중 차단으로 경로를 바꾼 기록 {sim_time_s, result, blocked_road_id, eta_s}
 
 
-class FireCell(BaseModel):
-    x: int                             # 환경 격자 열 (get_fire_locations 의 x)
-    y: int                             # 환경 격자 행 (get_fire_locations 의 y)
+class GridCell(BaseModel):
+    x: int                             # 환경 격자 열 (308 칸, 90 m)
+    y: int                             # 환경 격자 행 (236 칸)
 
 
-class FireCellsRequest(BaseModel):
-    cells: list[FireCell]              # 현재 BURNING 셀 전체 (스냅샷). get_fire_locations() 결과를 그대로 넣어도 된다
+class CellsRequest(BaseModel):
+    cells: list[GridCell]              # 통제할 칸 전체 (스냅샷). 빈 목록이면 구역 통제 전부 해제
+    margin: int = 1                    # 이웃 칸까지 몇 칸 더 볼지 (1 = 8방향 이웃 포함)
 
 
 class CongestionRequest(BaseModel):
@@ -95,3 +99,11 @@ class CongestionRequest(BaseModel):
     min_factor: float = 1.5            # random: 통과시간 배율 범위
     max_factor: float = 3.0
     roads: dict[str, float] | None = None   # 특정 도로 배율 직접 지정 (preset 적용 후 덮어씀)
+
+
+class BlockRequest(BaseModel):
+    blocked: bool = True
+
+
+class EnvClockRequest(BaseModel):
+    sim_step: int                      # 환경 CA 스텝 번호 (EnvironmentState.sim_step)

@@ -1,5 +1,6 @@
 # ugv/road_graph.py — 도로망 그래프와 경로 탐색
-# 간선은 무향, 비용은 Road.cost_s 그대로 사용 (속도·차량 상태는 고려하지 않음).
+# 간선은 무향. 비용은 Road.travel_s(max_speed_mps) — 차량 최고속도를 주면 min(도로, 차량) 속도로,
+# 안 주면 Road.cost_s(도로 제한속도 기준) 그대로.
 # 탐색 알고리즘은 RouteAlgorithm 으로 분리되어 있어 교체 가능.
 
 import heapq
@@ -12,13 +13,13 @@ class RouteAlgorithm(Protocol):
     """경로 탐색 전략. 도달 가능하면 (총비용, node_id 경로), 불가하면 None."""
 
     def search(
-        self, graph: "RoadGraph", start: str, goal: str
+        self, graph: "RoadGraph", start: str, goal: str, max_speed_mps: float | None = None
     ) -> tuple[float, list[str]] | None: ...
 
 
 class DijkstraAlgorithm:
     def search(
-        self, graph: "RoadGraph", start: str, goal: str
+        self, graph: "RoadGraph", start: str, goal: str, max_speed_mps: float | None = None
     ) -> tuple[float, list[str]] | None:
         dist: dict[str, float] = {start: 0.0}
         prev: dict[str, str] = {}
@@ -35,7 +36,7 @@ class DijkstraAlgorithm:
                 path.reverse()
                 return d, path
             for v, road in graph.neighbors(u):
-                nd = d + road.cost_s
+                nd = d + road.travel_s(max_speed_mps)
                 if nd == float("inf"):
                     continue  # blocked
                 if nd < dist.get(v, float("inf")):
@@ -117,11 +118,11 @@ class RoadGraph:
 
     # --- 경로 탐색 ---
 
-    def find_route(self, start_id: str, goal_id: str) -> RouteResult:
+    def find_route(self, start_id: str, goal_id: str, max_speed_mps: float | None = None) -> RouteResult:
         self.node(start_id)
         self.node(goal_id)
 
-        found = self.algorithm.search(self, start_id, goal_id)
+        found = self.algorithm.search(self, start_id, goal_id, max_speed_mps)
         if found is not None:
             eta, path = found
             return RouteResult(reachable=True, eta_s=eta, path=path)
@@ -131,6 +132,30 @@ class RoadGraph:
             path=None,
             blocked_road_id=self._find_blocking_road(start_id, goal_id),
         )
+
+    def road_between(self, a: str, b: str) -> Road:
+        """인접한 두 노드를 잇는 도로. 여러 개면 지금 가장 빠른 것 (경로 탐색이 고른 것과 같다)."""
+        cands = [road for nid, road in self._adj[a] if nid == b]
+        if not cands:
+            raise KeyError(f"{a}-{b} 를 잇는 도로 없음")
+        return min(cands, key=lambda r: r.cost_s)
+
+    def legs(self, path: list[str], max_speed_mps: float | None = None) -> list[dict]:
+        """노드 경로 → 도로 구간 목록. 각 구간의 선형은 진행 방향으로 뒤집어 준다.
+        [{"road_id", "from", "to", "points": [(lat, lon), ...](출발 노드 포함), "speed_mps", "distance_m"}]"""
+        out = []
+        for a, b in zip(path, path[1:]):
+            road = self.road_between(a, b)
+            if road.geometry and len(road.geometry) >= 2:
+                pts = [tuple(p) for p in road.geometry]
+                if road.node_a != a:
+                    pts.reverse()
+            else:
+                na, nb = self.node(a), self.node(b)
+                pts = [(na.lat, na.lon), (nb.lat, nb.lon)]
+            out.append({"road_id": road.road_id, "from": a, "to": b, "points": pts,
+                        "speed_mps": road.speed_mps(max_speed_mps), "distance_m": road.distance_m})
+        return out
 
     def _find_blocking_road(self, start_id: str, goal_id: str) -> str | None:
         """blocked 를 무시하면 도달 가능한 경우, 그 경로 위 첫 blocked 도로의 id."""

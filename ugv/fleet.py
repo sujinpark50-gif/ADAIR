@@ -8,11 +8,14 @@ from .road_graph import RoadGraph
 
 
 class GroundFleet:
-    def __init__(self, use_px4: bool = False, graph_data=graph_data_demo):
+    def __init__(self, use_px4: bool = False, graph_data=graph_data_demo, time_scale: float | None = None):
         # graph_data: NODES·ROADS 를 가진 모듈. 기본은 6노드 시연 도로망(graph_data_demo) —
         # 총괄 orchestrator_v012 가 GroundFleet() 로 만들고 F1·E1 을 이름으로 쓰므로 기본값을 유지한다.
-        # 실제 도로망은 graph_gpkg 를 넘긴다 (server.py)
+        # 실제 도로망은 graph_gpkg 와 time_scale 을 넘긴다 (server.py).
+        # time_scale 이 None 이면 기존 시연 동작: sim 차량이 DEMO_SPEED_MPS 로 달리고 ETA 는 도로 제한속도 기준.
+        # 값이 있으면 차량 max_speed_mps 로 ETA 를 내고, sim 차량도 그 속도 × time_scale 로 달린다.
         self.graph = RoadGraph(graph_data.NODES, graph_data.ROADS)
+        self.time_scale = time_scale
         self.agents: dict[str, GroundResourceAgent] = {}
 
         for cfg in config.RESOURCES:
@@ -28,7 +31,8 @@ class GroundFleet:
             )
             driver = self._make_driver(cfg, node, use_px4)
             self.agents[cfg["resource_id"]] = GroundResourceAgent(
-                resource, self.graph, driver
+                resource, self.graph, driver,
+                max_speed_mps=cfg.get("max_speed_mps") if time_scale is not None else None,
             )
 
     def _make_driver(self, cfg: dict, node, use_px4: bool) -> MotionDriver:
@@ -37,13 +41,15 @@ class GroundFleet:
             addr = f"udpin://{config.PX4_HOST}:{cfg['px4_port']}"
             return PX4Driver(
                 addr,
-                speed_mps=config.CRUISE_SPEED_MPS,
+                speed_mps=cfg.get("max_speed_mps", config.CRUISE_SPEED_MPS),
                 alt_m=config.MISSION_ALT_M,
+                time_scale=self.time_scale or 1.0,
             )
-        return SimDriver(
-            start=(node.lat, node.lon),
-            speed_mps=config.DEMO_SPEED_MPS,
-        )
+        if self.time_scale is None:     # 시연 도로망: 순간이동에 가까운 속도
+            return SimDriver(start=(node.lat, node.lon), speed_mps=config.DEMO_SPEED_MPS)
+        return SimDriver(start=(node.lat, node.lon),
+                         speed_mps=cfg.get("max_speed_mps", config.CRUISE_SPEED_MPS),
+                         time_scale=self.time_scale)
 
     # --- 생애주기 -------------------------------------------------------
 

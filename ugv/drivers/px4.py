@@ -19,7 +19,8 @@ log = logging.getLogger(__name__)
 TELEMETRY_RATE_HZ = 1.0
 ARM_SETTLE_S = 2.0   # arm 직후 곧바로 start_mission 하면 DENIED
 ACCEPT_RADIUS_M = 10.0                  # 웨이포인트 도착 반경. 2m 는 지나쳐 버린다
-MIN_WAYPOINT_GAP_M = 2 * ACCEPT_RADIUS_M
+# 웨이포인트 간격(2 × 도착 반경)은 ugv/route_plan.py 가 맞춰서 넘긴다. 여기서 다시 솎으면
+# 진행률 번호가 경로 계획과 어긋나므로 드라이버는 받은 그대로 올린다.
 
 
 @dataclass
@@ -29,8 +30,9 @@ class Snapshot:
     battery_pct: float = float("nan")   # MAVSDK remaining_percent 원값 그대로
     flight_mode: str = "UNKNOWN"
     armed: bool = False
-    rel_alt_m: float = 0.0              # 홈 기준 상대고도. 지상차량은 0 근처여야 한다
+    rel_alt_m: float = 0.0              # 홈 기준 상대고도. 지형 월드에서는 도로를 따라 수백 m 바뀐다
     updated_at: float = 0.0             # 마지막 위치 수신 시각 (monotonic)
+    descent_mps: float = 0.0            # 최근 하강 속도 (시뮬레이션 초당 m, 양수 = 내려감). 추락 판정용
 
 
 class PX4Driver(MotionDriver):
@@ -39,8 +41,10 @@ class PX4Driver(MotionDriver):
         address: str = "udpin://0.0.0.0:14540",
         speed_mps: float = 3.0,
         alt_m: float = 2.0,
+        time_scale: float = 1.0,
     ):
         self.address = address
+        self.time_scale = time_scale    # 하강 속도를 시뮬레이션 초 기준으로 바꿀 때 쓴다
         self.speed_mps = speed_mps
         self.alt_m = alt_m
         self.snapshot = Snapshot()
@@ -91,10 +95,14 @@ class PX4Driver(MotionDriver):
     async def _watch_position(self) -> None:
         try:
             async for p in self._drone.telemetry.position():
-                self.snapshot.lat = p.latitude_deg
-                self.snapshot.lon = p.longitude_deg
-                self.snapshot.rel_alt_m = p.relative_altitude_m
-                self.snapshot.updated_at = time.monotonic()
+                now, s = time.monotonic(), self.snapshot
+                if s.updated_at and now > s.updated_at:
+                    wall = now - s.updated_at
+                    s.descent_mps = (s.rel_alt_m - p.relative_altitude_m) / (wall * self.time_scale)
+                s.lat = p.latitude_deg
+                s.lon = p.longitude_deg
+                s.rel_alt_m = p.relative_altitude_m
+                s.updated_at = now
         except Exception:
             log.exception("position 구독 종료")
 
@@ -147,8 +155,8 @@ class PX4Driver(MotionDriver):
         s, (cur, total) = self.snapshot, self._progress
         if s.updated_at and time.monotonic() - s.updated_at > config.STALE_AFTER_S:
             return f"TELEMETRY_LOST: 위치 수신 {time.monotonic() - s.updated_at:.0f}초 없음"
-        if s.rel_alt_m < config.FALL_ALT_M:
-            return f"VEHICLE_FAULT: 상대고도 {s.rel_alt_m:.1f} m (추락)"
+        if s.descent_mps > config.FALL_RATE_MPS:
+            return f"VEHICLE_FAULT: 초당 {s.descent_mps:.1f} m 하강 (추락, 상대고도 {s.rel_alt_m:.0f} m)"
         if total and cur < total:
             if not s.armed:
                 return "VEHICLE_FAULT: 미션 중 disarm"
@@ -156,7 +164,9 @@ class PX4Driver(MotionDriver):
                 return f"VEHICLE_FAULT: 미션 중 모드 이탈 ({s.flight_mode})"
         return None
 
-    async def goto(self, waypoints: list[tuple[float, float]]) -> bool:
+    async def goto(self, waypoints: list[tuple[float, float]],
+                   speeds: list[float] | None = None) -> bool:
+        """주행 중 다시 부르면 새 미션으로 바꾼다 (경로 재탐색). 미션은 처음 항목부터 시작한다."""
         if not waypoints:
             return False
 
@@ -165,12 +175,20 @@ class PX4Driver(MotionDriver):
             self._progress_task = None
         self._progress = (0, len(waypoints))
 
-        waypoints = self._thin(waypoints)
-        self._progress = (0, len(waypoints))
-        plan = MissionPlan([self._waypoint(lat, lon) for lat, lon in waypoints])
+        # MAVSDK 는 항목 i 의 속도를 항목 i 에 도착한 뒤(DO_CHANGE_SPEED)부터 적용한다.
+        # speeds[i] 는 'i 로 가는 구간' 속도이므로 항목 i 에는 speeds[i+1](다음 구간)을 싣고,
+        # 첫 구간 속도는 기본 순항속도(self.speed_mps)를 그 구간 속도로 바꿔 쓴다.
+        speeds = list(speeds) if speeds else [self.speed_mps] * len(waypoints)
+        nxt = speeds[1:] + speeds[-1:]
+        self._first_speed = speeds[0]
+        plan = MissionPlan([self._waypoint(lat, lon, v) for (lat, lon), v in zip(waypoints, nxt)])
         try:
             await self._drone.mission.upload_mission(plan)
             log.info("미션 업로드 성공 (%d 개)", len(waypoints))
+            try:    # 첫 구간 속도. 실패해도 미션은 기본 순항속도로 간다
+                await self._drone.action.set_current_speed(self._first_speed)
+            except Exception as e:
+                log.warning("set_current_speed 실패: %s", e)
             await self._drone.action.arm()
             log.info("arm 성공")
             await asyncio.sleep(ARM_SETTLE_S)
@@ -212,11 +230,11 @@ class PX4Driver(MotionDriver):
             kept.append(waypoints[-1])
         return kept
 
-    def _waypoint(self, lat: float, lon: float) -> MissionItem:
+    def _waypoint(self, lat: float, lon: float, speed_mps: float | None = None) -> MissionItem:
         nan = float("nan")
         return MissionItem(
             lat, lon, self.alt_m,
-            self.speed_mps,
+            speed_mps or self.speed_mps,
             False,                 # is_fly_through
             nan, nan,
             MissionItem.CameraAction.NONE,
