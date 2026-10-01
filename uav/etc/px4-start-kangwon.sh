@@ -12,7 +12,7 @@
 W="$(cd "$(dirname "$0")/.." && pwd)/gazebo"   # uav/etc/ → uav/gazebo
 source "$W/spawn.env"
 
-GUI=0; WORLD=kangwon; FIRE_OPTS=()
+GUI=0; WORLD=kangwon; FIRE_OPTS=(); CMD_OPTS=()
 for arg in "$@"; do
   case "$arg" in
     --gui) GUI=1 ;;
@@ -32,7 +32,12 @@ if [ "$GUI" = 1 ]; then
     -v /mnt/wslg:/mnt/wslg
     -v "$W/gui.config":/root/.gz/sim/8/gui.config:ro)
 else
+  # `-d` = daemon mode. 대화형 pxh 셸을 띄우지 않는다.
+  # 없으면 PX4 가 `pxh> ` 프롬프트를 초당 ~830 KB 쏟아내고, 그 전량이
+  # dockerd/containerd-shim 을 거치며 CPU 1 코어를 통째로 태운다 (실측 110% → 12%).
+  # 로그 크기 제한(--log-opt)은 디스크만 지킬 뿐 이 CPU 낭비는 못 막는다.
   RUN_OPTS=(--restart unless-stopped -e HEADLESS=1)
+  CMD_OPTS=(-d)
 fi
 
 docker rm -f px4 2>/dev/null   # 유령 컨테이너 레코드 정리
@@ -48,7 +53,8 @@ docker run -d --name px4 \
   -v "$W/models/kangwon":/opt/px4-gazebo/share/gz/models/kangwon:ro \
   -e PX4_GZ_WORLD=$WORLD \
   -e PX4_GZ_MODEL_POSE="$PX4_GZ_MODEL_POSE" \
-  px4io/px4-sitl-gazebo:latest
+  px4io/px4-sitl-gazebo:latest \
+  "${CMD_OPTS[@]}"
 
 # 기동 대기 — 고정 sleep 을 쓰지 않는다.
 # 강원 지형 월드는 heightmap 로딩이 무거워 2 vCPU 에서 40초를 넘기는 경우가 있고,

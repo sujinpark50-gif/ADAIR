@@ -12,18 +12,29 @@
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
+import config
+
 
 class Position(BaseModel):
-    """위치. 단위 m, 좌표 WGS84.
+    """위치. 단위 m, 좌표 WGS84."""
+    lat: float
+    lon: float
+    alt_m_amsl: float = 0.0   # 해수면 기준
+    alt_m_agl: float = 0.0    # 지면 기준
 
-    드론은 goto(위도, 경도, 고도) 형태로 명령하므로 목표 고도가 필수다.
-    팀 Assignment.target_alt_m 이 여기 alt_m_amsl 로 들어온다(기본 0.0 이면 지형 무시).
-    팀 합의안(docs/uav/uav_final 4.1)은 AGL 전달이나, 현재는 목표 지면 AMSL 을 받는다.
+
+class Target(BaseModel):
+    """임무 목표. 비행고도 = alt_m_amsl + target_agl_m + config.AGL_MARGIN_M.
+
+    팀 합의안(docs/uav/uav_final 4.1): 고도는 AGL 로 전달하고 Orchestrator 가 정한다.
+    지면 고도는 팀 Assignment.target_alt_m 이 alt_m_amsl 로 들어온다.
+    target_agl_m 이 없으면 시나리오 기본값을 쓴다. 지면 고도는 추측하면 지형에
+    충돌할 수 있으므로 없으면 거절한다.
     """
     lat: float
     lon: float
-    alt_m_amsl: float = 0.0   # 해수면 기준 — 지형 위 여유고도 계산에 사용
-    alt_m_agl: float = 0.0    # 지면 기준
+    alt_m_amsl: Optional[float] = None    # 목표 지점 지면의 해발고도 — 없으면 거절
+    target_agl_m: float = config.DEFAULT_TARGET_AGL_M  # 지면 위 목표 높이
 
 
 class Battery(BaseModel):
@@ -59,7 +70,7 @@ class UavState(BaseModel):
 class EvaluateRequest(BaseModel):
     task_id: str
     decision_id: str
-    target: Position
+    target: Target
     observation_type: str = "THERMAL"
     deadline: Optional[str] = None
     # 풍속 주입. PX4 는 풍속을 발행하지 않으므로(실측 확인) 외부 제공이 유일한 출처다.
@@ -86,7 +97,7 @@ class EvaluateResponse(BaseModel):
 class ExecuteRequest(BaseModel):
     task_id: str
     decision_id: str
-    target: Position
+    target: Target
     observation_type: str = "THERMAL"
 
 
@@ -101,4 +112,5 @@ class TaskStatus(BaseModel):
     status: Literal["STARTED", "IN_PROGRESS", "COMPLETED", "FAILED"]
     progress: Optional[dict] = None
     observation: Optional[dict] = None
+    reason: Optional[str] = None   # FAILED 사유 코드 (예: RETURN_MARGIN_INSUFFICIENT)
     error: Optional[str] = None

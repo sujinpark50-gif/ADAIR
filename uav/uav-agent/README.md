@@ -30,9 +30,9 @@ mock은 한 서버에 여러 개 띄워도 됩니다. real은 현재 서버(2 vC
 
 ## 알려진 제약
 
-- real 모드의 `failsafe`, `link_quality`, `current_task_id`, `wind_ms`는 고정값입니다.
-- `current_task_id`가 execute 중에도 갱신되지 않아 `BUSY` 판정이 동작하지 않습니다.
-- execute의 `COMPLETED`는 도착·관측 완료가 아닙니다. 관측값은 고정값입니다.
-- 비행고도는 목표 지면 해발고도 + 50 m만 반영합니다. 경로 중간 지형은 고려하지 않습니다.
+- real 모드의 `failsafe`, `link_quality`, `wind_ms`는 고정값입니다.
+- 관측값(`max_temp_c: 312.5`)은 고정값입니다.
+- 비행고도는 목표 지면 해발고도 + `target_agl_m`(기본 80) + 10 m만 반영합니다. 경로 중간 지형은 고려하지 않습니다.
+- real 모드 임무는 실제 시간이 걸립니다(편도 10 km ≈ 20분). 통합 커넥터는 30초만 기다립니다.
 - 배터리 소모율 `BATTERY_DRAIN_PCT_S = 0.033`은 추정치이며 실측 보정 전입니다.
 - Task 상태는 메모리에만 있어 재시작하면 사라집니다.

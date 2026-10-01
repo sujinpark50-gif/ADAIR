@@ -248,7 +248,7 @@ mavsdk 3.x 가 깔린 환경으로 real 모드를 띄우면 실패한다.
    battery_needed = (편도ETA × 2 + 관측체류) × 소모율   (편도ETA 에 상승시간 포함)
    margin = battery_now - battery_needed
    - margin < 0               → REJECT / LOW_BATTERY
-   - margin < SAFETY_MARGIN   → COUNTER / RETURN_MARGIN_INSUFFICIENT (체류시간↓ 제안)
+   - margin < BATTERY_RESERVE_PCT → COUNTER / RETURN_MARGIN_INSUFFICIENT (체류시간↓ 제안)
 
 3단계: 시간 (deadline 이 있을 때만)
    - deadline 이미 지남        → REJECT / TIMEOUT
@@ -264,14 +264,14 @@ mavsdk 3.x 가 깔린 환경으로 real 모드를 띄우면 실패한다.
 
 ### 6-2. 설정값 (전부 잠정 — 팀 합의안 `docs/uav/uav_final` 10절)
 
-임계값은 **하드코딩하지 말고 설정 파일로 뺀다.** 풍속 8/10 m/s 는 합의안에서 잠정값으로 정했고, 20% 복귀 여유는 보편 기준이 아니라 기체 실측 후 확정할 값이다.
+임계값은 **하드코딩하지 말고 설정 파일로 뺀다.** 풍속 8/10 m/s 는 합의안에서 잠정값으로 정했고, 15% 복귀 여유는 PX4 저전압 경고(`BAT_LOW_THR` 15%)에 맞춘 잠정값이며, 소모율 실측 후 재검토한다.
 
 ```python
 # config.py — 값은 잠정. 팀 합의 후 확정
 WIND_LIMIT_MS        = 10.0   # 이상이면 REJECT/HIGH_WIND
 WIND_COUNTER_MS      = 8.0    # 이상이면 COUNTER 검토
-SAFETY_MARGIN_PCT    = 20.0   # 복귀 후 남아야 할 배터리
-CRUISE_SPEED_MS      = 15.0   # x500 기준 순항속도
+BATTERY_RESERVE_PCT  = 15.0   # 복귀 후 남아야 할 배터리
+CRUISE_SPEED_MS      = 10.0   # PX4 MPC_XY_CRUISE 와 같은 값으로 설정
 CLIMB_SPEED_MS       = 3.0
 BATTERY_DRAIN_PCT_S  = 0.033  # 초당 소모율 (100%/약 50분) — 실측 보정 필요
 OBSERVE_DURATION_S   = 60     # 관측 체류시간
@@ -307,11 +307,11 @@ MIN_CLEARANCE_M      = 50     # 지형 위 최소 여유고도
 | 시작 배터리 | 잔량 | 판정 |
 |---|---|---|
 | 95% | 36.3% | ACCEPT |
-| 78.5% | 19.8% | COUNTER (마진 20% 미달) |
+| 78.5% | 19.8% | ACCEPT (기존 마진 20% 기준에서는 COUNTER) |
 | 60% | 1.3% | COUNTER |
 | 40% | -18.7% | REJECT |
 
-Mock 기본 배터리를 95% 로 둔 이유다. 78.5% 로는 마진 기준(20%)에 0.2%p 차이로
+Mock 기본 배터리를 95% 로 둔 이유다. 78.5% 로는 당시 마진 기준(20%)에 0.2%p 차이로
 걸려 COUNTER 가 되는데, 반올림 수준의 차이로 판정이 갈리는 값을 기본 시연에
 쓰는 것은 부적절하다. **임계값을 원하는 답에 맞춰 조정한 것이 아니라
 시나리오의 시작 조건을 바꾼 것이다.**

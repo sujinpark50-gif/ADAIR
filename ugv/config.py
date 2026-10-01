@@ -3,18 +3,20 @@
 import os
 
 # 자원 배치
+# px4_port 는 PX4 인스턴스 번호 i 에 대해 14540 + i 로 정해진다.
+# 14540(i=0) 은 UAV 가 쓰므로 UGV 는 i=1 부터 — ugv/etc/docker-compose.yml 과 짝이다.
 RESOURCES = [
     {"resource_id": "A-ugv1",   "resource_type": "UGV",
-     "base": "A", "home_node": "A", "px4_port": 14540},
+     "base": "A", "home_node": "A", "px4_port": 14541},   # 컨테이너 px4-ugv0 (-i 1)
     {"resource_id": "A-fire1", "resource_type": "FIRE_ENGINE",
      "base": "A", "home_node": "A", "px4_port": None},
     {"resource_id": "B-ugv1",   "resource_type": "UGV",
-     "base": "B", "home_node": "B", "px4_port": 14541},
+     "base": "B", "home_node": "B", "px4_port": 14542},   # 컨테이너 px4-ugv1 (-i 2)
 ]
 
 # PX4 연결
 PX4_HOST = "0.0.0.0"
-PX4_BASE_PORT = 14540
+PX4_BASE_PORT = 14540   # 인스턴스 0 = UAV. UGV 는 위 RESOURCES 의 px4_port 를 쓴다.
 # UGV_DRIVER=px4 일 때 실제로 PX4 에 연결할 자원. 나머지는 sim.
 # 띄우지 않은 PX4 를 기다리면 서버가 시작되지 않으므로, 띄운 인스턴스만 적는다.
 PX4_RESOURCES = [r for r in os.getenv("UGV_PX4_RESOURCES", "A-ugv1").split(",") if r]
