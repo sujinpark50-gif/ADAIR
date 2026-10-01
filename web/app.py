@@ -74,6 +74,49 @@ def env():
     return {"tick": _tick, "fire": fire, "risk": risk,
             "wind_speed": es.wind_speed, "spread": es.spread_direction}
 
+@app.get("/api/orch")
+def orch_summary():
+    """INT-03: 총괄 판단 요약 (읽기 전용).
+
+    총괄 서버의 /health, /priority/board 를 받아 관제판 우측 패널에 필요한 것만 추린다.
+    관제판은 총괄 상태를 바꾸지 않는다 (출동·해소 버튼 없음). 상세 판단은 총괄의 /board 에서 본다.
+    """
+    base = config.ORCH_URL.rstrip("/")
+    out = {"connected": False, "url": base, "board_url": f"{base}/board"}
+    try:
+        health = httpx.get(f"{base}/health", timeout=1.5).json()
+        board = httpx.get(f"{base}/priority/board", timeout=1.5).json()
+    except Exception:
+        return out
+    # 목적 상태와 기체(실행 시도) 상태는 따로 보여 준다 — 완료됐어도 기체는 복귀 중일 수 있다 (요청서 INT-03)
+    attempts = {}
+    try:
+        st = httpx.get(f"{base}/state", timeout=1.5).json()
+        for a in st.get("active_attempts") or []:
+            attempts[a.get("task_id")] = {"substatus": a.get("substatus"), "resource_id": a.get("resource_id")}
+    except Exception:
+        pass
+    env = health.get("truth_env") or {}
+    known = board.get("known") or {}
+    tasks = []
+    for t in (board.get("auto_order") or [])[:8]:
+        tasks.append({k: t.get(k) for k in ("task_id", "kind", "cell_id", "purpose_status", "hold_reason",
+                                            "resume_condition", "resource_id", "risk_score", "human_risk")})
+        att = attempts.get(t.get("task_id")) or {}
+        tasks[-1]["attempt"] = att.get("substatus")
+        tasks[-1]["resource_id"] = tasks[-1]["resource_id"] or att.get("resource_id")
+    out.update({
+        "connected": True,
+        "env_class": env.get("class"), "env_shared": bool(env.get("shared_team_env")),
+        "run_id": known.get("run_id"), "sim_time_s": known.get("simulation_time_s"),
+        "mode": board.get("mode"),
+        "llm_ready": not (board.get("llm") or {}).get("not_ready_reason"),
+        "fires": len(known.get("fires") or []),
+        "groups": len(board.get("groups") or []),
+        "tasks": tasks,
+    })
+    return out
+
 @app.get("/api/modes")
 def modes():
     """관제판 상단 표시용: 지금 이 관제판이 어떤 모드로 실행 중인지.
@@ -87,6 +130,7 @@ def modes():
     except Exception:
         pass
     return {"demo_extinguish": bool(config.WEB_DEMO_EXTINGUISH),
+            "dispatch_via_orch": bool(config.WEB_DISPATCH_VIA_ORCH),
             "uav_agent": UAV_AGENT, "uav_id": UAV_ID, "uav_mode": uav_mode}
 
 @app.get("/api/state")
@@ -226,6 +270,8 @@ async def fly(req: FlyReq):
     except Exception as e:
         # 고도를 확정하지 못하면 출동하지 않는다 (fail-closed)
         return {"ok": False, "verdict": None, "reason": "TARGET_UNRESOLVED", "detail": str(e)}
+    if config.WEB_DISPATCH_VIA_ORCH:
+        return await _fly_via_orch(req, target)
     tid = "WEB-"+uuid.uuid4().hex[:8]; did = "DEC-"+uuid.uuid4().hex[:8]
     base = {"task_id": tid, "decision_id": did, "target": target, "observation_type": "THERMAL"}
     async with httpx.AsyncClient(timeout=30) as cx:
@@ -239,6 +285,29 @@ async def fly(req: FlyReq):
             return {"ok": False, "verdict": ev.get("verdict"), "reason": ev.get("reason"), "target": target}
         ex = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)).json()
     return {"ok": True, "task_id": ex.get("task_id", tid), "target": target, "eta_sec": ev.get("eta_sec")}
+
+async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
+    """INT-01: 관제판 출동을 총괄 POST /tasks 로 보낸다 (UAV 직접 호출 없음).
+
+    클릭 한 번 = request_id 하나. 같은 request_id 재전송은 총괄이 같은 임무로 처리한다.
+    접수(202)는 출동 성공이 아니다 — 진행은 총괄 판단 패널(/priority/board)에서 본다.
+    """
+    body = {"request_id": "WEB-FLY-" + uuid.uuid4().hex[:12], "kind": "RECON",
+            "target": {"lat": target["lat"], "lon": target["lon"],
+                       "ground_amsl_m": target["alt_m_amsl"], "cell_id": f"{req.col}_{req.row}"},
+            "requirements": {"resource_types": ["UAV"], "sensor": "THERMAL"}}
+    try:
+        async with httpx.AsyncClient(timeout=30) as cx:
+            r = await cx.post(f"{config.ORCH_URL.rstrip('/')}/tasks", json=body)
+        j = r.json()
+    except Exception as e:
+        return {"ok": False, "via": "orch", "reason": "ORCH_UNREACHABLE", "detail": str(e), "target": target}
+    if r.status_code not in (200, 202):
+        return {"ok": False, "via": "orch", "reason": f"ORCH_HTTP_{r.status_code}", "detail": j, "target": target}
+    t = j.get("task") or {}
+    return {"ok": True, "via": "orch", "request_id": body["request_id"], "task_id": t.get("task_id"),
+            "created": j.get("created"), "purpose_status": t.get("purpose_status"),
+            "hold_reason": t.get("hold_reason"), "target": target}
 
 @app.get("/", response_class=HTMLResponse)
 def index(): return HTML
@@ -264,6 +333,15 @@ small{color:#6f8a96}
 .badge.on{color:#1b1206;background:#f0a33a;border-color:#f0a33a}
 .badge.real{color:#06131a;background:#5fd0ff;border-color:#5fd0ff}
 .badge.bad{color:#fff;background:#8a2b2b;border-color:#8a2b2b}
+.orch{font-size:12px;margin-top:4px}
+.orch .meta{color:#9fb3bf;margin:4px 0 6px}
+.orch table{width:100%;border-collapse:collapse}
+.orch td{padding:3px 4px;border-top:1px solid #22303d;vertical-align:top}
+.st{display:inline-block;padding:1px 7px;border-radius:999px;font-weight:700;font-size:11px;white-space:nowrap}
+.st.wait{background:#2a3644;color:#c9d6de}.st.go{background:#1f5d8c;color:#fff}.st.ok{background:#1f7a4d;color:#fff}
+.st.fail{background:#8a2b2b;color:#fff}.st.cancel{background:#3a3a3a;color:#bbb}
+.orch .why{color:#8fa3ae;font-size:11px}
+.orch a,h3 small a{color:#5fd0ff}
 </style></head><body>
 <header>🔥🚁 ADAIR — 강원 지형 · 산불 · 드론 실시간</header>
 <div class=wrap>
@@ -274,7 +352,7 @@ small{color:#6f8a96}
  </div>
  <div class=panel>
    <h3>출동</h3>
-   <div class=modes><span id=mExt class=badge>진화 시연: 확인 중</span><span id=mUav class=badge>드론 서버: 확인 중</span></div>
+   <div class=modes><span id=mExt class=badge>진화 시연: 확인 중</span><span id=mUav class=badge>드론 서버: 확인 중</span><span id=mDisp class=badge>출동 경로: 확인 중</span></div>
    <div class=row>col <input id=col type=number value=60> row <input id=row type=number value=70>
      <button id=fly>🔥 출동</button><button id=clr>궤적 지우기</button><button id=auto style="background:#0C8E7E">자동 시작</button></div>
    <h3>산불(CA)</h3>
@@ -289,6 +367,9 @@ small{color:#6f8a96}
    <h3>지상자원(UGV)</h3><div class=kv><b>상태</b><span id=ugvinfo>-</span></div>
    <h3>자원 목록</h3><div id=fleet style="font-size:12px"></div>
    <div class=log id=log>대기…</div>
+   <h3>총괄 판단 <small>(읽기 전용 · 상세는 <a id=orchLink href="#" target=_blank>/board</a>)</small></h3>
+   <div class=modes><span id=mOrch class=badge>총괄 서버: 확인 중</span><span id=mEnv class=badge>환경: -</span></div>
+   <div class=orch><div class=meta id=orchMeta>-</div><table id=orchTasks></table></div>
  </div>
 </div>
 <script>
@@ -417,12 +498,50 @@ async function tickModes(){try{const m=await(await fetch('/api/modes')).json();
  e.className='badge'+(m.demo_extinguish?' on':''); e.title='WEB_DEMO_EXTINGUISH (서버 시작 시 결정, 화면에서 변경 불가)';
  const u=$('mUav'); u.textContent=m.uav_mode?('드론 서버: '+m.uav_mode+' ('+m.uav_id+')'):'드론 서버: 연결 안 됨';
  u.className='badge'+(m.uav_mode==='real'?' real':(m.uav_mode?'':' bad')); u.title=m.uav_agent;
+ const d=$('mDisp'); d.textContent=m.dispatch_via_orch?'출동 경로: 총괄 경유':'출동 경로: 드론 직접';
+ d.className='badge'+(m.dispatch_via_orch?' real':''); d.title='WEB_DISPATCH_VIA_ORCH (INT-01, 서버 시작 시 결정)';
 }catch(err){}}
 setInterval(tickModes,10000);setTimeout(tickModes,300);
+// INT-03 총괄 판단 요약 — 표기는 총괄 /board 와 같은 말을 쓴다. 불명·환경 반영 대기는 실패로 표시하지 않는다.
+const O_PURPOSE={PENDING:['대기','wait'],HOLD:['보류','wait'],EVALUATING:['판단 중','go'],APPROVED:['출동 승인','go'],
+ IN_EXECUTION:['출동 중','go'],COMPLETED:['완료','ok'],FAILED:['실패','fail'],CANCELLED:['취소','cancel'],UNKNOWN:['확인 필요','wait']};
+const O_HOLD={AWAITING_PRIORITY_CHOICE:'사람 선택 대기',NO_FEASIBLE_CANDIDATE:'보낼 자원 없음',HUMAN_PRIORITY_CHOSEN:'사람이 선택함',
+ EXECUTION_RESPONSE_LOST:'출동 응답 끊김',PROVIDER_LOST_TASK:'기체가 임무 기록 잃음',PROVIDER_OFFLINE:'기체 연락 두절',
+ OBSERVATION_REQUIREMENT_NOT_MET:'관측 범위 부족 · 재관측 필요',ENV_APPLY_NOT_ACKED:'환경 반영 미확인',ARRIVED_OBSERVATION_PENDING:'도착 · 관측 대기',
+ TARGET_LOCATION_UNKNOWN:'지도에 위치 없음 · 출동 보류',AREA_COVERAGE_INCOMPLETE:'구역 일부만 관측 · 남은 칸 대기',
+ ENV_APPLY_TIMEOUT:'환경 반영 응답 없음',ENV_APPLY_PENDING:'관측 완료 · 환경 반영 확인 대기',RUN_GATE:'실행(run) 전환 대기',
+ OPEN_ATTEMPT_EXISTS:'진행 중인 출동 있음',MANUAL_IDLE_CONFIRMED:'기체 정지 확인됨'};
+const O_ATT={PREPARED:'출동 준비',REQUESTED:'출동 요청함',STARTED:'이동 중',ARRIVED:'도착',OBSERVED:'관측 완료',
+ APPLIED:'환경 반영됨',RETURNING:'복귀 중',RELEASED:'반납 완료',UNKNOWN:'응답 확인 중',FAULTED:'기체 이상',NOT_SENT:'미전송'};
+const O_KIND={ENV_SENSE:'환경 측정',RECON:'정찰',MONITOR:'감시',RECHECK:'재확인',GROUND_RECON:'지상 확인',GROUND_SUPPORT:'지상 지원'};
+const O_MODE={AUTO_HIGHER_RISK:'자동 (AI 추천·규칙)',HUMAN_CHOICE:'수동 (사람이 선택)'};
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+async function tickOrch(){try{const o=await(await fetch('/api/orch')).json();
+ $('orchLink').href=o.board_url||'#';
+ const b=$('mOrch'); b.title=o.url;
+ if(!o.connected){b.textContent='총괄 서버: 연결 안 됨';b.className='badge bad';$('mEnv').textContent='환경: -';$('orchMeta').textContent='-';$('orchTasks').innerHTML='';return;}
+ b.textContent='총괄 서버: 연결됨';b.className='badge';
+ const e=$('mEnv'); e.textContent=o.env_shared?'환경: 팀 공유':'환경: 시험용 ('+(o.env_class||'-')+')'; e.className='badge'+(o.env_shared?'':' on');
+ $('orchMeta').textContent='판단 모드 '+(O_MODE[o.mode]||o.mode||'-')+' · 아는 불 '+o.fires+'곳 · 임무 '+o.tasks.length+'건'+(o.groups?' · 사람 선택 묶음 '+o.groups:'')+(o.llm_ready?'':' · AI 미사용(규칙)');
+ $('orchTasks').innerHTML=o.tasks.length?o.tasks.map((t,i)=>{const p=O_PURPOSE[t.purpose_status]||[t.purpose_status||'-','wait'];
+   const h=t.hold_reason?(O_HOLD[t.hold_reason.split(':')[0]]||'사유 기록됨'):'';
+   return '<tr><td>'+(i+1)+'</td><td>'+esc(O_KIND[t.kind]||t.kind)+' '+esc(t.cell_id||'')+(h?'<div class=why>'+esc(h)+'</div>':'')+'</td>'
+    +'<td><span class="st '+p[1]+'">'+esc(p[0])+'</span></td><td>'+esc(t.resource_id||'-')
+    +(t.attempt?'<div class=why>'+esc(O_ATT[t.attempt]||t.attempt)+'</div>':'')+'</td></tr>';}).join('')
+   :'<tr><td class=why>총괄이 아는 임무가 아직 없습니다 (신고·임무 접수 전)</td></tr>';
+}catch(err){}}
+setInterval(tickOrch,2000);setTimeout(tickOrch,500);
 setInterval(tickEnv,1500);setInterval(tickState,1000);setInterval(tickUgv,3000);setTimeout(()=>{fit();tickEnv();tickState();tickUgv();},600);
 $('fly').onclick=async()=>{const col=+$('col').value,row=+$('row').value;
  $('log').textContent='출동('+col+','+row+')…';
  const r=await(await fetch('/api/fly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({col,row})})).json();
+ if(r.via==='orch'){
+   if(r.ok){tgt={col,row,lat:r.target.lat,lon:r.target.lon};
+     const p=(O_PURPOSE[r.purpose_status]||[r.purpose_status||'-'])[0];
+     const h=r.hold_reason?(' · '+(O_HOLD[r.hold_reason.split(':')[0]]||'사유 기록됨')):'';
+     $('log').textContent='총괄에 출동 요청 접수 ('+(r.task_id||'-')+') · '+p+h+' — 진행은 아래 총괄 판단에서 확인';}
+   else{$('log').textContent='⛔ 총괄 출동 요청 실패: '+(r.reason||'');}
+   draw();return;}
  if(r.ok){tgt={col,row,lat:r.target.lat,lon:r.target.lon};trail=[];_driveT={};_driveStart={};_extd={};
    $('log').textContent='✅ ACCEPT\\n타깃 '+JSON.stringify(r.target)+'\\ntask '+r.task_id;}
  else{$('log').textContent='⛔ '+(r.verdict||'')+' '+(r.reason||'');}
