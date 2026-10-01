@@ -68,6 +68,18 @@ EVENTS = [  # (KST, 내용, 출처)
     ("2019-04-04T19:00", "산림 약 10 ha 소실 추정", "한국일보 2019-04-04 19시 현재 보도"),
     ("2019-04-04T19:06", "일몰, 헬기 진화 중단 — 야간 민가 방어", "강원 산불백서 142~146쪽"),
     ("2019-04-05T06:10", "일출(근사) — 헬기 재투입 가능", "천문 계산 근사값"),
+    ("2019-04-06T12:00", "주불 진화 (약 46시간)", "한국일보 2019-04-06"),
+]
+# 실제 투입 자원 — 보도 시각 기준 (그 시각까지 알려진 숫자만 보여 준다)
+RESOURCES = [
+    {"kst": "2019-04-04T14:45", "helicopters": 3, "note": "산림청 등 진화 헬기·진화대 투입 (초기 보도)",
+     "src": "서울신문 2019-04-04 포토 기사"},
+    {"kst": "2019-04-04T17:52", "helicopters": 6, "equipment": 39, "note": "대응 2단계, 헬기 6대 등 장비 39대",
+     "src": "한국일보 2019-04-04 17:52 기사"},
+    {"kst": "2019-04-04T19:00", "helicopters": 9, "equipment": 36, "personnel": 543, "evacuated": "17가구 35명",
+     "note": "19시 현재. 일몰 후 헬기 철수, 민가 방어선", "src": "한국일보 2019-04-04 기사 (19시 현재)"},
+    {"kst": "2019-04-06T12:00", "helicopters": 11, "equipment": 12, "personnel": 720,
+     "note": "주불 진화까지 누적 (군 헬기 6·주한미군 4 지원 별도)", "src": "한국일보 2019-04-06 기사"},
 ]
 DAY_AIR_END = "2019-04-04T19:06"     # 헬기 육안 관측 끝 (일몰)
 DAY_AIR_RESUME = "2019-04-05T06:10"  # 일출 근사
@@ -82,7 +94,7 @@ UAV_WIND_LIMIT_MS = 10.0
 UAV_ENDURANCE_S = (UAV_START_PCT - UAV_RESERVE_PCT) / UAV_DRAIN_PCT_S      # ≈ 2424 s
 
 HORIZON_S = 7200.0                   # 예측 비교 구간 2시간
-SIM_HOURS = 24.0
+SIM_HOURS = 32.25                    # 기상청 시간자료 끝(4/5 23:00)까지
 SEEDS = list(range(12))
 
 
@@ -371,7 +383,7 @@ def main():
     summary = {
         "tick_s": tick, "seed": seed, "ignition": {"col": ignition[0], "row": ignition[1]},
         "truth_ha_19h": timeline[min(range(len(timeline)), key=lambda i: abs(timeline[i]["t"] - t19))]["truth_ha"],
-        "truth_ha_24h": timeline[-1]["truth_ha"], "final_reported_ha": FINAL_AREA_HA,
+        "truth_ha_end": timeline[-1]["truth_ha"], "end_kst": timeline[-1]["kst"], "final_reported_ha": FINAL_AREA_HA,
         "night_steps": len(night),
         "night_unknown_burning_ha_mean": {x: avg("unknown_burning_ha", x) for x in ("A", "B", "Bb")},
         "night_forecast_recall_mean": {x: avg("forecast_recall", x) for x in ("A", "B", "Bb")},
@@ -399,6 +411,9 @@ def main():
         "base_A": {"gx": round(bx, 2), "gy": round(by, 2), "name": graph_gpkg.BASES["A"]["name"]},
         "spring": dict(zip(("gx", "gy"), map(lambda v: round(v, 2), (sc, sr)))),
         "timeline": timeline, "events": [{"kst": e[0], "t": sim_s(e[0]), "text": e[1], "src": e[2]} for e in EVENTS],
+        "resources": [{**r, "t": sim_s(r["kst"])} for r in RESOURCES],
+        "twin_env": {"ENV_IGNITION": f"{ignition[0]},{ignition[1]}", "ENV_TICK_S": str(int(tick)), "ENV_SEED": str(seed),
+                     "ENV_SCENARIO_START_KST": START_KST},
         "calibration": {"anchor": f"19:00 추정 {ANCHOR_19H_HA} ha", "target_cells": round(target_cells, 1),
                         "chosen": best, "table": table},
         "summary": summary,

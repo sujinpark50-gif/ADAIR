@@ -60,6 +60,9 @@ canvas{display:block}
 .ev span{position:absolute;top:9px;left:-6px;font-size:11px;color:var(--ink-2);white-space:nowrap}
 #evtext{font-size:13px;margin-top:6px;min-height:20px}
 #evtext b{font-weight:500}
+#resources,#live{margin-top:12px;font-size:12px;color:var(--ink-2);text-align:left}
+#resources b,#live b{color:var(--ink);font-weight:500}
+#live .ok{color:#7FD99A} #live .down{color:#FF8A7A}
 #legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin-top:6px}
 #legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;background:var(--c)}
 details{font-size:12px;color:var(--ink-2);margin-top:6px}
@@ -83,12 +86,18 @@ details li{margin:2px 0}
 <section id="head" class="panel" aria-label="보기 설정">
   <h1>2019.4.4 인제 남전리 산불 — 드론이 있었다면</h1>
   <p>같은 불, 같은 바람. 총괄이 아는 것만 달라진다.</p>
-  <div class="seg" role="group" aria-label="시나리오">
+  <div class="seg" role="group" aria-label="모드">
+    <button data-mode="replay" aria-pressed="true">재현 (기록·계산)</button>
+    <button data-mode="live" aria-pressed="false">실시간 연결 LIVE</button>
+    <button data-scar="1" aria-pressed="true" hidden>위성 실제 피해지</button>
+  </div>
+  <p class="hint" id="modehint"></p>
+  <div class="seg" role="group" aria-label="시나리오" id="scenseg">
     <button data-scen="A" aria-pressed="true">A 실제 기록 근사</button>
     <button data-scen="B" aria-pressed="false">B 드론 · 현장 이착륙</button>
     <button data-scen="Bb" aria-pressed="false">B′ 드론 · 원통 기지 출발</button>
   </div>
-  <div class="seg" role="group" aria-label="보기">
+  <div class="seg" role="group" aria-label="보기" id="viewseg">
     <button data-view="truth" aria-pressed="false">진짜 세계</button>
     <button data-view="known" aria-pressed="true">총괄이 아는 세계</button>
     <button data-fc="1" aria-pressed="true">2시간 확산 예측</button>
@@ -105,6 +114,8 @@ details li{margin:2px 0}
   <div id="t-sub"></div>
   <span id="t-sky"></span>
   <div id="metrics"></div>
+  <div id="resources"></div>
+  <div id="live"></div>
 </section>
 
 <section id="bottom" class="panel" aria-label="시간">
@@ -119,7 +130,7 @@ details li{margin:2px 0}
   <div id="legend">
     <span style="--c:#FF6A2B">타는 칸</span><span style="--c:#3B302B">다 탄 칸</span>
     <span style="--c:rgba(255,106,43,.35)">총괄이 모르는 불</span><span style="--c:#F2C14E">예측 도달 칸</span>
-    <span style="--c:#72D6E8">드론</span><span style="--c:#E2313F">소방차</span><span style="--c:#E9B44C">UGV</span>
+    <span style="--c:#B9A8FF">위성 실제 피해지</span><span style="--c:#72D6E8">드론</span><span style="--c:#E2313F">소방차</span><span style="--c:#E9B44C">UGV</span>
   </div>
 </section>
 
@@ -136,6 +147,8 @@ try {
   return;
 }
 msg.remove();
+let BURN = window.__BURN__ || null;
+if (!BURN) { try { const r = await fetch('burn_scar.json'); if (r.ok) BURN = await r.json(); } catch (e) {} }
 
 // ── 데이터 ───────────────────────────────────────────────────────────────
 const dec = (s, T) => { const b = atob(s), u = new Uint8Array(b.length); for (let i=0;i<b.length;i++) u[i]=b.charCodeAt(i); return new T(u.buffer); };
@@ -217,6 +230,23 @@ const fcGeo = new THREE.BoxGeometry(CELL*0.9, 4, CELL*0.9);
 const fcMesh = new THREE.InstancedMesh(fcGeo, new THREE.MeshBasicMaterial({color:0xF2C14E, transparent:true, opacity:.55, depthWrite:false}), 4000);
 fcMesh.count = 0; scene.add(fcMesh);
 const M = new THREE.Matrix4(), ZERO = new THREE.Matrix4().makeScale(0,0,0);
+// 위성 실제 피해지 (Sentinel-2 dNBR) — 있으면
+let scarIdx = [], scarSet = new Set(), scarMesh = null, firmsMesh = null;
+if (BURN){
+  const mk = dec(BURN.mask_u8, Uint8Array);
+  for (let i=0;i<mk.length;i++) if (mk[i]===1){ scarIdx.push(i); scarSet.add(i); }
+  scarMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(CELL*0.98, 3, CELL*0.98),
+    new THREE.MeshBasicMaterial({color:0xB9A8FF, transparent:true, opacity:.42, depthWrite:false}), Math.max(1, scarIdx.length));
+  scarIdx.forEach((i,n) => { const gx=i%COLS, gy=Math.floor(i/COLS); M.makeTranslation(X(gx), Y(gx,gy,24), Z(gy)); scarMesh.setMatrixAt(n, M); });
+  scene.add(scarMesh);
+  const hot = BURN.firms || [];
+  firmsMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(25, 25, 500, 8), new THREE.MeshBasicMaterial({color:0xFF2E2E}), Math.max(1, hot.length));
+  firmsMesh.count = 0; scene.add(firmsMesh);
+}
+// LIVE 화재 칸 (환경 서버가 보낸 그대로)
+const liveMesh = new THREE.InstancedMesh(tileGeo, new THREE.MeshLambertMaterial({color:0xffffff}), 8000);
+liveMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(8000*3), 3);
+liveMesh.count = 0; scene.add(liveMesh);
 const C_BURN = new THREE.Color('#FF6A2B'), C_HOT = new THREE.Color('#FFD08A'), C_CHAR = new THREE.Color('#3B302B');
 
 // 표식: 발화점, 원통119, 보호 시설
@@ -267,16 +297,32 @@ scene.add(windArrow);
 const windLabel = Object.assign(document.createElement('div'), {className:'label'}); labels.appendChild(windLabel);
 
 // ── UI ──────────────────────────────────────────────────────────────────
-const state = {t: 0, playing: false, scen: 'A', view: 'known', fc: true};
+const state = {t: 0, playing: false, scen: 'A', view: 'known', fc: true, mode: 'replay', scar: true, live: null};
 const $ = s => document.querySelector(s);
 const NAMES = {A:'A 실제 기록 근사', B:'B 드론 · 현장 이착륙', Bb:'B′ 드론 · 원통 기지 출발'};
 $('#assume').innerHTML = D.assumptions.map(a => `<li>${a}</li>`).join('') +
   `<li>보정: ${D.calibration.anchor} → CA 한 스텝 ${D.tick_s}초 (12개 seed 평균 ${D.calibration.chosen.mean_ha_19h} ha, 최소~최대 ${D.calibration.chosen.min}~${D.calibration.chosen.max}칸)</li>` +
-  `<li>시뮬 24시간 면적 ${D.summary.truth_ha_24h} ha (진압 없음) · 실제 최종 ${D.summary.final_reported_ha} ha (사흘, 진압 포함)</li>`;
+  `<li>시뮬 ${D.summary.end_kst} 까지 면적 ${D.summary.truth_ha_end} ha (진압 없음) · 실제 최종 ${D.summary.final_reported_ha} ha (사흘, 진압 포함)</li>` + (BURN ? `<li>위성 피해지: ${BURN.pre_scene} → ${BURN.post_scene}, dNBR ≥ ${BURN.threshold}, ${BURN.area_ha} ha (아리랑3호 판독 ${BURN.arirang_ha} ha)</li>` : '');
 document.querySelectorAll('[data-scen]').forEach(b => b.onclick = () => { state.scen = b.dataset.scen;
   document.querySelectorAll('[data-scen]').forEach(x => x.setAttribute('aria-pressed', x===b)); draw(true); });
 document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view;
   document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', x===b)); draw(true); });
+if (BURN){ const b = $('[data-scar]'); b.hidden = false;
+  b.onclick = () => { state.scar = !state.scar; b.setAttribute('aria-pressed', state.scar); draw(true); }; }
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = async () => {
+  if (b.dataset.mode === 'live'){
+    try { const r = await fetch('/api/twin'); if (!r.ok) throw 0; state.live = await r.json(); }
+    catch (e) { $('#modehint').textContent = 'LIVE 는 관제판 서버(web/app.py)에서 열었을 때만 된다 — bash run_twin.sh 후 http://localhost:8080/inje3d'; return; }
+  }
+  state.mode = b.dataset.mode; state.playing = false; play.textContent = '▶';
+  document.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', x===b));
+  $('#scenseg').style.display = $('#viewseg').style.display = $('#viewhint').style.display = state.mode === 'live' ? 'none' : '';
+  scrub.disabled = state.mode === 'live'; play.disabled = state.mode === 'live';
+  $('#modehint').textContent = state.mode === 'live'
+    ? '환경 서버(CA)·UAV Agent·UGV 서버·총괄이 지금 보고하는 값을 1초마다 그대로 그린다. 시계는 twin_clock 이 진행한다.'
+    : '기록된 시각과 미리 계산한 결과를 되감아 본다.';
+  draw(true);
+});
 $('[data-fc]').onclick = e => { state.fc = !state.fc; e.target.setAttribute('aria-pressed', state.fc); draw(true); };
 const scrub = $('#scrub'), play = $('#play');
 scrub.oninput = () => { state.t = scrub.value/1000*T_END; draw(true); };
@@ -294,6 +340,24 @@ for (const e of D.events){ if (e.t < 0 || e.t > T_END) continue;
 const fmt = t => { const d = new Date(T0.getTime() + t*1000); const p = n => String(n).padStart(2,'0');
   const k = new Date(d.getTime() + 9*3600*1000); return {date:`${p(k.getUTCMonth()+1)}.${p(k.getUTCDate())}`, hm:`${p(k.getUTCHours())}:${p(k.getUTCMinutes())}`}; };
 
+function scarIoU(burnedSet){
+  if (!BURN || !scarIdx.length) return null;
+  let inter = 0; for (const i of burnedSet) if (scarSet.has(i)) inter++;
+  const uni = burnedSet.size + scarIdx.length - inter; return uni ? inter/uni : null;
+}
+function scarHTML(burnedSet){
+  if (!BURN) return `<p style="font-size:12px;color:var(--ink-2);margin:8px 0 0">위성 실제 피해지 없음 — python tools/burn_scar_s2.py 를 실행하면 겹쳐 보인다</p>`;
+  const iou = scarIoU(burnedSet), cellHa = CELL*CELL/1e4;
+  return `<div class="m" style="margin-top:6px"><div class="h">위성 피해지 (${BURN.post_scene ? BURN.post_scene.slice(11,19) : ''})</div><div class="v" style="grid-column:2/4">${BURN.area_ha} ha</div><div class="bar"></div>
+    <div class="h">CA 소실 ↔ 위성 IoU</div><div class="v" style="grid-column:2/4">${iou==null?'–':Math.round(iou*100)+'%'}</div><div class="bar"><i style="width:${(iou||0)*100}%;background:#B9A8FF"></i></div></div>`;
+}
+function resourcesHTML(t){
+  const r = (D.resources||[]).filter(x => x.t <= t + 60).at(-1);
+  if (!r) return '';
+  const parts = [r.helicopters!=null && `헬기 ${r.helicopters}대`, r.equipment!=null && `장비 ${r.equipment}대`,
+    r.personnel!=null && `인력 ${r.personnel}명`, r.evacuated && `대피 ${r.evacuated}`].filter(Boolean).join(' · ');
+  return `<b>실제 투입 (보도 ${r.kst.slice(11)} 기준)</b><br>${parts}<br>${r.note} — ${r.src}`;
+}
 function metricsHTML(row){
   const a = row.A, b = row[state.scen === 'A' ? 'B' : state.scen], bn = state.scen === 'A' ? 'B' : state.scen;
   const mx = Math.max(1, row.truth_ha);
@@ -309,15 +373,54 @@ function metricsHTML(row){
   </div>`;
 }
 
+const liveObjs = {};
+function liveObj(id, kind){
+  if (!liveObjs[id]){
+    const o = kind === 'uav' ? drone() : truck(kind === 'FIRE_ENGINE' ? 0xE2313F : 0xE9B44C, kind === 'FIRE_ENGINE' ? 120 : 90);
+    const el = Object.assign(document.createElement('div'), {className:'label'}); labels.appendChild(el);
+    liveObjs[id] = {o, el}; marks.push({obj:o, el, dy:200});
+  }
+  return liveObjs[id];
+}
+function drawLive(){
+  const L = state.live; if (!L) return;
+  const t = L.env ? L.env.simulation_time_s : 0; state.t = Math.min(t, T_END);
+  scrub.value = Math.round(state.t/T_END*1000);
+  [solid, ghost, glow, fcMesh].forEach(m => { for (let n=0;n<m.count;n++) m.setMatrixAt(n, ZERO); m.instanceMatrix.needsUpdate = true; });
+  [uav, uav2, engine, ugv].forEach(o => o.visible = false); uavLabel.style.display = 'none';
+  const fire = L.fire || [], burned = new Set();
+  liveMesh.count = Math.min(fire.length, 8000);
+  fire.slice(0, 8000).forEach(([gx,gy,st], n) => {
+    burned.add(gy*COLS+gx); M.makeTranslation(X(gx), Y(gx,gy,5), Z(gy)); liveMesh.setMatrixAt(n, M);
+    liveMesh.setColorAt(n, st === 1 ? C_BURN : C_CHAR); });
+  liveMesh.instanceMatrix.needsUpdate = true; liveMesh.instanceColor.needsUpdate = true;
+  for (const u of L.uav || []){ if (u.gx == null) continue; const {o, el} = liveObj(u.id, 'uav');
+    o.position.set(X(u.gx), (u.alt_m_amsl != null ? u.alt_m_amsl*EX : Y(u.gx,u.gy,90)), Z(u.gy)); o.visible = true;
+    o.userData.cone.visible = !!u.task;
+    el.textContent = `${u.id} · ${u.mode||'?'} · ${u.battery!=null?Math.round(u.battery)+'%':''}${u.task?' · 임무 중':''}`; }
+  for (const g of L.ugv || []){ const {o, el} = liveObj(g.id, g.type); o.position.set(X(g.gx), Y(g.gx,g.gy,20), Z(g.gy)); o.visible = true;
+    el.textContent = `${g.id} · ${g.state}`; }
+  return {t, burned};
+}
 function draw(force){
+  liveMesh.visible = state.mode === 'live';
+  let liveInfo = null;
+  if (state.mode === 'live') liveInfo = drawLive();
+  else { liveMesh.count = 0; Object.values(liveObjs).forEach(x => { x.o.visible = false; x.el.style.display = 'none'; }); }
   const t = state.t, k = Math.min(D.steps, Math.floor(t / TICK)), frac = (t - k*TICK)/TICK;
+  if (scarMesh) scarMesh.visible = state.scar;
+  if (firmsMesh){ const hot = (BURN.firms||[]).filter(h => h.t <= t); firmsMesh.count = hot.length;
+    hot.forEach((h,n) => { M.makeTranslation(X(h.gx), Y(h.gx,h.gy,250), Z(h.gy)); firmsMesh.setMatrixAt(n, M); });
+    firmsMesh.instanceMatrix.needsUpdate = true; firmsMesh.visible = state.scar; }
+  $('#resources').innerHTML = resourcesHTML(t);
   const row = D.timeline[k], known = KNOWN[state.scen === 'A' ? 'A' : state.scen];
-  // 화재 칸
-  let gi = 0;
-  for (let n=0;n<fireIdx.length;n++){
+  // 화재 칸 (재현)
+  const caBurned = new Set();
+  for (let n=0;n<fireIdx.length && state.mode === 'replay';n++){
     const i = fireIdx[n], gx = i % COLS, gy = Math.floor(i / COLS);
     const ignT = IGN[i]*TICK, outT = OUT[i] >= 0 ? OUT[i]*TICK : Infinity;
     const on = t >= ignT, burning = on && t < outT;
+    if (on) caBurned.add(i);
     const isKnown = known[i] >= 0 && known[i] <= k;
     const showSolid = on && (state.view === 'truth' || isKnown);
     const showGhost = on && state.view === 'known' && !isKnown;
@@ -332,7 +435,7 @@ function draw(force){
   }
   [solid, ghost, glow].forEach(m => m.instanceMatrix.needsUpdate = true); solid.instanceColor.needsUpdate = true;
   // 예측
-  const list = state.fc ? (row[state.scen].forecast || []) : [];
+  const list = (state.fc && state.mode === 'replay') ? (row[state.scen].forecast || []) : [];
   fcMesh.count = Math.min(list.length, 4000);
   for (let n=0;n<fcMesh.count;n++){ const i = list[n], gx = i%COLS, gy = Math.floor(i/COLS);
     M.makeTranslation(X(gx), Y(gx,gy,3), Z(gy)); fcMesh.setMatrixAt(n, M); }
@@ -350,14 +453,14 @@ function draw(force){
   for (const i of fireIdx){ if (IGN[i] <= k && (OUT[i] < 0 || OUT[i] > k)){ cx += i%COLS; cy += Math.floor(i/COLS); cn++; } }
   if (!cn){ cx = spring.gx; cy = spring.gy; } else { cx/=cn; cy/=cn; }
 
-  // 헬기: 낮에만 (일몰 뒤 진화 중단)
-  helicopter.visible = !night;
+  // 헬기: 낮에만 (일몰 뒤 진화 중단). LIVE 에서는 헬기 서버가 없으므로 그리지 않는다
+  helicopter.visible = !night && state.mode === 'replay';
   const ang = t/300;
   helicopter.position.set(X(cx + 9*Math.cos(ang)), Y(cx,cy,420), Z(cy + 9*Math.sin(ang)));
   helicopter.rotation.y = -ang;
 
   // 드론 (B·B′ 에서만)
-  const droneOn = state.scen !== 'A';
+  const droneOn = state.scen !== 'A' && state.mode === 'replay';
   uav.visible = uav2.visible = droneOn; uavLabel.style.display = droneOn ? '' : 'none';
   if (droneOn){
     const tour = row.drone.tour;
@@ -378,7 +481,8 @@ function draw(force){
   }
   // 차량 (실제 도로망 경로, 14:45 출동 가정)
   for (const [obj, v] of [[engine, D.vehicles[0]], [ugv, D.vehicles[1]]]){
-    if (!v){ obj.visible = false; continue; }
+    if (!v || state.mode === 'live'){ obj.visible = false; continue; }
+    obj.visible = true;
     const tt = v.t; let j = tt.findIndex(x => x > t);
     let p, q, w;
     if (j < 0){ p = q = v.path.at(-1); w = 0; } else if (j === 0){ p = q = v.path[0]; w = 0; }
@@ -388,17 +492,31 @@ function draw(force){
     if (q !== p) obj.rotation.y = -Math.atan2(q[1]-p[1], q[0]-p[0]);
   }
   // 바람 (불어오는 방향 → 불어가는 방향으로 바꿔 그림)
-  const to = (row.wind_from_deg + 180) % 360 * Math.PI/180;
+  const wFrom = state.mode === 'live' && state.live && state.live.env ? state.live.env.wind_dir_deg : row.wind_from_deg;
+  const wMs = state.mode === 'live' && state.live && state.live.env ? state.live.env.wind_ms : row.wind_ms;
+  const to = (wFrom + 180) % 360 * Math.PI/180;
   windArrow.position.set(X(cx-14), Y(cx-14, cy+10, 700), Z(cy+10));
   windArrow.setDirection(new THREE.Vector3(Math.sin(to), 0, -Math.cos(to)));
-  windArrow.setLength(300 + row.wind_ms*140, 220, 140);
-  windLabel.textContent = `인제 관측소 ${row.wind_ms} m/s · ${row.wind_from_deg}°에서`;
+  windArrow.setLength(300 + wMs*140, 220, 140);
+  windLabel.textContent = `인제 관측소 ${wMs} m/s · ${wFrom}°에서`;
 
   // 시계·지표·문구
   const f = fmt(t); $('#t-kst').textContent = f.hm;
-  $('#t-sub').textContent = `2019.${f.date} · ${NAMES[state.scen]}`;
-  $('#t-sky').textContent = night ? (state.scen==='A' ? '밤 — 공중 관측 없음' : '밤 — 열화상 드론 순회') : '낮 — 헬기 육안 관측';
-  $('#metrics').innerHTML = metricsHTML(row);
+  if (state.mode === 'live'){
+    const L = state.live || {};
+    $('#t-sub').textContent = `2019.${f.date} · LIVE · ${L.env ? L.env.run_id : '환경 서버 없음'}`;
+    $('#t-sky').textContent = night ? '밤' : '낮';
+    $('#metrics').innerHTML = `<div class="m"><div class="h">CA 소실 면적 (환경 서버)</div><div class="v" style="grid-column:2/4">${((liveInfo?liveInfo.burned.size:0)*CELL*CELL/1e4).toFixed(1)} ha</div><div class="bar"></div></div>` + scarHTML(liveInfo ? liveInfo.burned : new Set());
+    const src = Object.entries(L.sources||{}).filter(([k]) => !k.endsWith(':health'))
+      .map(([k,v]) => `<span class="${v==='OK'?'ok':'down'}">${k} ${v==='OK'?'●':'○'}</span>`).join(' ');
+    const tasks = (L.tasks||[]).map(x => `${x.kind||''} ${x.cell||''} <b>${x.status||''}</b>${x.hold?' ('+x.hold+')':''}`).join('<br>');
+    $('#live').innerHTML = `<b>연결</b> ${src}${tasks ? '<br><b>총괄 임무</b><br>'+tasks : ''}`;
+  } else {
+    $('#t-sub').textContent = `2019.${f.date} · ${NAMES[state.scen]}`;
+    $('#t-sky').textContent = night ? (state.scen==='A' ? '밤 — 공중 관측 없음' : '밤 — 열화상 드론 순회') : '낮 — 헬기 육안 관측';
+    $('#metrics').innerHTML = metricsHTML(row) + scarHTML(caBurned);
+    $('#live').innerHTML = '';
+  }
   const evs = D.events.filter(e => e.t <= t + 60);
   const last = evs.at(-1);
   $('#evtext').innerHTML = last ? `<b>${last.kst.slice(5).replace('T',' ')}</b> ${last.text} <span style="color:var(--ink-2)">— ${last.src}</span>` : '';
@@ -419,6 +537,10 @@ function placeLabels(){
   put(windLabel, windArrow, 120);
 }
 
+setInterval(async () => {
+  if (state.mode !== 'live') return;
+  try { const r = await fetch('/api/twin'); if (r.ok){ state.live = await r.json(); draw(true); } } catch (e) {}
+}, 1000);
 let last = performance.now();
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 function loop(now){

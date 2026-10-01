@@ -24,6 +24,13 @@ HOME_BASES = {
     "B": (37.9645, 128.3062, 279.0),   # 기린119 — 팀 DEM 지면고도
 }
 
+# 전진 이착륙 (mock 전용). UAV_HOME="lat,lon,지면해발" 을 주면 소속 기지 대신 그 지점에서 뜨고 내린다.
+# 소방차에 싣고 현장 근처로 가서 띄우는 운용을 흉내 낸다 (2019 인제 트윈 시나리오 B). real 은 PX4 home 을 쓴다.
+import os as _os
+if _os.getenv("UAV_HOME"):
+    _lat, _lon, _alt = (float(v) for v in _os.environ["UAV_HOME"].split(","))
+    HOME_BASES = {k: (_lat, _lon, _alt) for k in HOME_BASES}
+
 # 실행
 ARRIVAL_TOLERANCE_M = 10.0  # 목표 수평거리 이내면 도착으로 본다
 MONITOR_INTERVAL_S = 1.0    # 비행 중 배터리 복귀 여유 확인 주기 (실제 초)

@@ -155,6 +155,8 @@ class ContractEnvironment:
         self._custom_reports = reports
 
         self.grid = EnvironmentGrid(config_path=str(self.config_path), seed=seed)
+        self._cells = self.grid.cells
+        # grid.cells 는 호출마다 72k 목록을 새로 만든다 → 한 번만 (칸 객체는 같다)
         self.engine = WildfireCAEngine(grid=self.grid, config_path=str(self.config_path), seed=seed)
         self._config_wind = dict(self.engine._config.get("wind", {}))   # 기상청 자료가 없을 때만 쓰는 설정값
 
@@ -174,7 +176,7 @@ class ContractEnvironment:
     # ------------------------------------------------------------------ 정적 지도 (ENV-02)
     def _build_static(self):
         from rasterio.warp import transform as warp
-        cells = self.grid.cells
+        cells = self._cells
         n, res = len(cells), float(self.grid.cell_resolution)
         t = self.grid.transform
         cols = np.array([c.x for c in cells]); rows = np.array([c.y for c in cells])
@@ -251,7 +253,7 @@ class ContractEnvironment:
                 sensor_type TEXT, PRIMARY KEY(run_id, observation_id, cell_id))""")
 
     def _fire_codes(self) -> np.ndarray:
-        return np.array([_FIRE_CODE[c.fire_state] for c in self.grid.cells], dtype=np.uint8)
+        return np.array([_FIRE_CODE[c.fire_state] for c in self._cells], dtype=np.uint8)
 
     def _save(self):
         codes = self._fire_codes()
@@ -269,9 +271,9 @@ class ContractEnvironment:
         os.replace(tmp, self._state_file)        # 원자적 교체 — 쓰다 멈춰도 이전 상태가 남는다
 
     def _set_fire(self, burning: Iterable[int], burned: Iterable[int]):
-        for c in self.grid.cells:
+        for c in self._cells:
             c.fire_state = FireState.UNBURNED
-        cells = self.grid.cells
+        cells = self._cells
         for i in burned:
             cells[int(i)].fire_state = FireState.BURNED
         for i in burning:
@@ -350,7 +352,7 @@ class ContractEnvironment:
 
     # ------------------------------------------------------------------ READ (ENV-01)
     def _cell_view(self, i: int, state: str) -> dict:
-        c = self.grid.cells[i]
+        c = self._cells[i]
         return {**self._map_cells[i], "fire_state": state, "risk_score": round(float(c.risk_score), 4)}
 
     def snapshot(self) -> dict:

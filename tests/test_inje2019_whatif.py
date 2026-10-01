@@ -81,3 +81,20 @@ def test_calibration_anchor_and_summary(D):
     assert 5.0 <= s["truth_ha_19h"] <= 20.0                  # 19:00 추정 10 ha 근처
     assert s["night_unknown_burning_ha_mean"]["B"] <= s["night_unknown_burning_ha_mean"]["A"]
     assert s["drone_grounded_night_steps"] == 0               # 그날 밤 인제 관측 풍속 < 10 m/s
+
+
+def test_live_env_server_reproduces_replay(D, tmp_path):
+    """디지털 트윈 일관성: 환경 계약 서버를 같은 설정(twin_env)으로 띄우면 재현과 같은 칸이 같은 스텝에 탄다."""
+    pytest.importorskip("rasterio")
+    from src.contract_env import ContractEnvironment
+    te = D["twin_env"]
+    col, row = map(int, te["ENV_IGNITION"].split(","))
+    env = ContractEnvironment(tmp_path, ignitions=[(col, row)], tick_s=float(te["ENV_TICK_S"]),
+                              seed=int(te["ENV_SEED"]), scenario_start_kst=te["ENV_SCENARIO_START_KST"], resume=False)
+    ign = arr(D, "ign_step_i16")
+    cols = D["grid"]["cols"]
+    for k in range(1, 13):                                   # 7시간 분량
+        snap = env.advance(1)
+        live = {int(c["cell_id"].split("_")[1]) * cols + int(c["cell_id"].split("_")[0]) for c in snap["fire_cells"]}
+        replay = set(np.nonzero((ign >= 0) & (ign <= k))[0].tolist())
+        assert live == replay, f"step {k}: live {len(live)} vs replay {len(replay)}"
