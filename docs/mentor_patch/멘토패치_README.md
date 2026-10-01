@@ -1,4 +1,20 @@
-# 환경 계약 계층 (ENV-01~06) — 멘토 패치 설명
+# ADAIR 멘토 패치 설명
+
+| 묶음 | 요청 ID | 브랜치 커밋 |
+|---|---|---|
+| 1. 환경 계약 계층 | ENV-01~06 | `feat(env)` |
+| 2. 실행 키·실행 기록 영속 | UAV-01 · UGV-02(영속) · UGV-04 · J3 | `feat(exec)` |
+
+각 묶음은 기존 판단 로직을 갈아엎지 않고 계약 칸만 채운다. 시험은 저장소 루트에서:
+
+```bash
+python -m pytest orchestrator/tests environment/tests tests/test_exec_idempotency.py -q
+# 356 passed, 8 skipped (기존 329 + 묶음1 20 + 묶음2 7)
+```
+
+---
+
+# 1. 환경 계약 계층 (ENV-01~06)
 
 총괄 요청서(`docs/common/ADAIR_총괄_팀별_요청서.md`)의 환경팀 P0 요청을 **김은주님 CA 코드를 고치지 않고** 감싸서 구현했다.
 `grid.py`·`fire_model.py`·`api.py`·`risk.py`는 한 줄도 바뀌지 않았다. 환경팀이 검토 후 자기 코드로 흡수하거나 그대로 써도 된다.
@@ -59,3 +75,59 @@ T(팀 서버 연동) 판정은 환경팀이 이 코드를 확인하고 공동 �
   `alternatives` 로 남겼다. 팀이 하나를 확정해야 한다.
 - **INT-05(시계 소유자)** 는 합의 사항이다. 서버는 `/advance` 를 누가 부르든 받는다. 웹(`/api/env`)은 아직 자기 CA 를 따로 돌린다.
 - `map_cells` 는 약 10 MB 로 처음 한 번만 받고 캐시한다 (`map_version` 이 같으면 재요청 없음).
+
+---
+
+# 2. 실행 키·실행 기록 영속 (UAV-01 · UGV-02 · UGV-04 · J3)
+
+## 왜
+
+UAV Agent·UGV 서버는 실행 기록을 메모리(`_tasks`)에만 들고 있었다. 서버가 한 번 재시작하면
+
+- 총괄이 `/task/{attempt_id}` 를 조회 → **404** → 총괄은 `UNKNOWN`(점유 유지·수동 해소 대기)로 멈춘다.
+- 응답을 못 받은 출동 요청을 누가 재전송하면 **두 번째 물리 출동**이 나간다 (UGV 는 끝난 task_id 를 덮어썼다).
+
+원본 main 에 같은 시험을 돌려 확인했다: 재시작 뒤 조회 `404`, 총괄 실행시도 `UNKNOWN`.
+
+## 무엇을 바꿨나
+
+| 파일 | 변경 |
+|---|---|
+| `interfaces/exec_store.py` (신규) | UAV·UGV 공용 실행 기록. JSON 원자 저장, 실행 키 검사(NEW/DUPLICATE/CONFLICT), 재시작 정리 |
+| `uav/uav-agent/main.py`, `models.py` | 실행 키 규칙·영속·재시작 정리. `TaskStatus.uav_id`(UAV-01 ④), `ExecuteResponse.duplicate`, `agent_restart` |
+| `ugv/server.py`, `api_models.py` | 같은 규칙. 수행 중 같은 키 재요청은 처음 응답 그대로(`target_node` 포함) |
+| `integration/uav_launcher.py` | 통합 실행마다 새 상태 폴더 (`logs/uav_state/<시각>`) |
+| `connectors/uav_connector.py`, `ugv_connector.py` | 구 커넥터 실행 키 = `프로세스표식:task_id:decision_id` (TASK_001 이 실행마다 반복되므로) |
+
+## 규칙 (UAV·UGV 동일)
+
+| 요청 | 응답 |
+|---|---|
+| 새 키 | 200 `duplicate=false`, 기록을 **출동 전에** 저장 |
+| 같은 키·같은 내용 (수행 중이든 끝났든, 재시작 뒤든) | 200 `duplicate=true` — 새로 출동하지 않음 |
+| 같은 키·다른 내용 | 409 `EXECUTION_ID_CONFLICT` — 기존 실행 유지 |
+| 출동 전 거절 (400 고도 없음, 409 도로 불가 등) | 키를 쓰지 않는다 → 고쳐서 같은 키로 재전송 가능 |
+
+실행 키 = 요청의 `task_id`. 총괄은 이미 이 칸에 실행시도 ID 를 넣고 있어 **총괄 코드는 바꿀 필요가 없다**.
+UAV 는 `execution_attempt_id` 칸도 받지만 `task_id` 와 같아야 한다 (키는 하나).
+
+## 재시작으로 끊긴 실행의 정리
+
+| 끊긴 시점 | UAV mock | UAV real | UGV |
+|---|---|---|---|
+| 관측(도착) 전 | `FAILED`, `AGENT_RESTARTED_BEFORE_OBSERVATION`, 관측 비움, phase `DONE` | 같지만 phase `AGENT_RESTARTED` | `FAILED`, phase `FAILED` |
+| 관측 뒤 복귀 중 | `COMPLETED` 유지, **관측 그대로**, phase `DONE` | 관측 그대로, phase `AGENT_RESTARTED` | (도착 = 완료라 해당 없음) |
+
+- mock 은 재시작하면 MockDrone 이 기지에 서 있으므로 물리 상태를 안다 → `DONE`. real 은 기체가 아직 떠 있을 수 있어
+  **모른다고 보고한다** (`physical_basis=PHYSICAL_STATE_UNKNOWN_AFTER_RESTART`). 총괄은 이때 점유를 유지하고 사람이 해소한다.
+- 총괄 쪽 결과 (J3 시험): 관측 전 끊김 → 기체 READY 확인 후 반납, 목적은 `PENDING`(인계 대기), 자동 재전송 0회.
+
+## 한계
+
+- **물리 명령 '최대 1회'는 기록 저장과 출동 시작 사이의 아주 짧은 틈까지는 보장하지 못한다.** 기록을 먼저 저장하므로
+  그 틈에 죽으면 '출동 안 했는데 끊김으로 정리'되는 쪽으로 틀린다 (중복 출동 쪽이 아님). 의도한 방향이다.
+- UGV px4 드라이버 재시작 뒤 실제 차량 위치는 텔레메트리로 다시 읽는다. 끊긴 주행을 이어서 감시하지는 않는다.
+- UAV-09(중단 API)·UAV-10(관측 완료와 물리 실패 분리 칸)은 이번 범위가 아니다. 재시작 정리에서 관측 보존 규칙만 먼저 맞췄다.
+- 발견 사항 (이번 변경과 무관, main 에서도 같음): `python run_integrated.py` 의 폐루프 4스텝이 모두 `FAILED` 다.
+  점화 칸(19,142)이 A 기지에서 약 15 km 라 UAV 가 `LOW_BATTERY` 로 거절한다. 시연용 점화 위치나 기지 배치를 다시 볼 필요가 있다.
+- INT-04 추가 근거: UGV 서버의 A 거점 위치(38.0928, 128.1796)는 위 세 곳과도 또 다르다.
