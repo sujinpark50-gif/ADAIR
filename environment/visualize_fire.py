@@ -10,10 +10,10 @@ AUTHORITATIVE REFERENCES & EXISTING ARCHITECTURE:
 - `AGENTS.md` & `CLAUDE.md`
 
 Reuses existing environment modules without modification:
-- EnvironmentGrid from src.environment.grid
-- WildfireCAEngine from src.environment.fire_model
-- EnvironmentModelAPI from src.environment.api
-- Cell and FireState from src.environment.cell
+- EnvironmentGrid from src.grid
+- WildfireCAEngine from src.fire_model
+- EnvironmentModelAPI from src.api
+- Cell and FireState from src.cell
 """
 
 from __future__ import annotations
@@ -35,10 +35,10 @@ import rasterio.warp
 plt.rcParams["font.sans-serif"] = ["Malgun Gothic", "NanumGothic", "DejaVu Sans", "sans-serif"]
 plt.rcParams["axes.unicode_minus"] = False
 
-from src.environment.api import EnvironmentModelAPI
-from src.environment.cell import FireState
-from src.environment.fire_model import WildfireCAEngine
-from src.environment.grid import EnvironmentGrid
+from src.api import EnvironmentModelAPI
+from src.cell import FireState
+from src.fire_model import WildfireCAEngine
+from src.grid import EnvironmentGrid
 
 
 def create_visualization(

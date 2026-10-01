@@ -7,6 +7,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 import argparse
 import asyncio
 
+from . import graph_data_demo
 from .fleet import GroundFleet
 
 TARGET = "F1"
@@ -24,7 +25,7 @@ def show(fleet: GroundFleet, label: str) -> None:
 
 
 async def main(use_px4: bool) -> None:
-    fleet = GroundFleet(use_px4=use_px4)
+    fleet = GroundFleet(use_px4=use_px4, graph_data=graph_data_demo)
     if use_px4:
         await fleet.connect_all()
 

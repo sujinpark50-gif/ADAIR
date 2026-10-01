@@ -1,21 +1,28 @@
 # ugv/config.py — 전부 잠정값, 팀 합의 필요
 
+import os
+
 # 자원 배치
+# px4_port 는 PX4 인스턴스 번호 i 에 대해 14540 + i 로 정해진다.
+# 14540(i=0) 은 UAV 가 쓰므로 UGV 는 i=1 부터 — ugv/etc/docker-compose.yml 과 짝이다.
 RESOURCES = [
     {"resource_id": "A-ugv1",   "resource_type": "UGV",
-     "base": "A", "home_node": "A", "px4_port": 14540},
-    {"resource_id": "A-truck1", "resource_type": "FIRE_ENGINE",
+     "base": "A", "home_node": "A", "px4_port": 14541},   # 컨테이너 px4-ugv0 (-i 1)
+    {"resource_id": "A-fire1", "resource_type": "FIRE_ENGINE",
      "base": "A", "home_node": "A", "px4_port": None},
     {"resource_id": "B-ugv1",   "resource_type": "UGV",
-     "base": "B", "home_node": "B", "px4_port": 14541},
+     "base": "B", "home_node": "B", "px4_port": 14542},   # 컨테이너 px4-ugv1 (-i 2)
 ]
 
 # PX4 연결
 PX4_HOST = "0.0.0.0"
-PX4_BASE_PORT = 14540
+PX4_BASE_PORT = 14540   # 인스턴스 0 = UAV. UGV 는 위 RESOURCES 의 px4_port 를 쓴다.
+# UGV_DRIVER=px4 일 때 실제로 PX4 에 연결할 자원. 나머지는 sim.
+# 띄우지 않은 PX4 를 기다리면 서버가 시작되지 않으므로, 띄운 인스턴스만 적는다.
+PX4_RESOURCES = [r for r in os.getenv("UGV_PX4_RESOURCES", "A-ugv1").split(",") if r]
 
 # 주행 파라미터 — 실측 보정 필요
-CRUISE_SPEED_MPS = 3.0
+CRUISE_SPEED_MPS = 2.0
 MISSION_ALT_M = 0.0      # 지상차량. 홈 고도 0 기준 상대 0m
 ARM_SETTLE_S = 2.0
 
@@ -23,7 +30,22 @@ ARM_SETTLE_S = 2.0
 FUEL_RETURN_MARGIN_PCT = 20.0
 ROAD_SNAP_M = 50.0          # 이 거리 안이면 해당 도로 위로 간주
 NODE_ARRIVE_M = 20.0        # 이 거리 안이면 노드 도착으로 간주
-STALE_AFTER_S = 10.0        # 이 시간 넘으면 STALE
+STALE_AFTER_S = 10.0        # 이 시간 넘으면 STALE (주행 중이면 TELEMETRY_LOST 로 task 실패)
+
+# 주행 감시 (server._watch_task) — 잠정값, PX4 rover(2 m/s) 기준
+STALL_TIMEOUT_S = float(os.getenv("UGV_STALL_TIMEOUT_S", "60"))   # 이 시간 동안
+STALL_MOVE_M = 10.0          # 이만큼도 못 움직이고 웨이포인트도 안 넘어가면 STALLED
+OFF_ROUTE_M = 100.0          # 경로(노드를 이은 선)에서 이보다 벗어나면 OFF_ROUTE
+FALL_ALT_M = -5.0            # 상대고도가 이보다 낮으면 추락 (VEHICLE_FAULT)
+FAULT_GRACE_S = 5.0          # 출발 직후 이 시간은 차량 이상 판정 안 함 (arm·모드 전환 대기)
+FAULT_CONFIRM_S = 3.0        # 차량 이상이 이 시간 이상 계속돼야 확정 (순간 신호 무시)
+
+# 화재 접근 규칙 — 환경변수로 바꿀 수 있다 (코드 수정 없이)
+#   기본: 화재에서 가장 가까운 도로 노드 하나만 본다. 거기로 못 가면 거절.
+#   UGV_APPROACH_FALLBACK=1: 가장 가까운 노드로 못 가면 APPROACH_MAX_M 안의 다음 노드로 접근
+TARGET_SNAP_M = float(os.getenv("UGV_TARGET_SNAP_M", "2000"))      # 가장 가까운 노드가 이보다 멀면 TARGET_UNREACHABLE (루트 config.UGV_TARGET_SNAP_M 과 같은 값)
+APPROACH_FALLBACK = os.getenv("UGV_APPROACH_FALLBACK", "0") == "1"
+APPROACH_MAX_M = float(os.getenv("UGV_APPROACH_MAX_M", "500"))     # fallback 접근 노드의 화재 거리 상한
 
 # 시연용 가속. 그래프 거리가 실제 수 km 라 실속도로는 시연이 불가능하다.
 # PX4 연동 시에는 CRUISE_SPEED_MPS 를 쓴다.

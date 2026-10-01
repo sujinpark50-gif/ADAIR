@@ -1,37 +1,54 @@
 # -*- coding: utf-8 -*-
 """웹 관제판: 강원 지형 + 산불 CA + 드론 실시간 + 화재 출동."""
-import os, uuid
+import os, uuid, time
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import config
 config.FIRE_CONNECTION_MODE = "real"
-from connectors import fire_connector
+config.UAV_CONNECTION_MODE = "real"          # ▶ 변경: auto_tick이 uav_connector로 실제 서버에 붙게 함
+# UGV 목록·위치는 박유홍님 실제 도로망 기반 브리지(integrated)에서 가져온다 (이전: 커넥터 mock 좌표)
+config.UGV_CONNECTION_MODE = "integrated"
+config.UAV_ENDPOINTS = {
+    os.environ.get("UAV_ID", "A-uav1"): os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
+}                                             # ▶ 변경
+from connectors import fire_connector, uav_connector, orchestrator_connector  # ▶ 변경: uav_connector, orchestrator_connector 추가
+from interfaces.schema import ResourcePool   # ▶ 변경
+from logger import EventLogger               # ▶ 변경
+from main import process_task                # ▶ 변경
+import ids                                   # ▶ 변경
 import gz_bridge as gb
 import math
 from ugv.road_graph import RoadGraph
-from ugv.graph_data_demo import NODES, ROADS
+# 경로 그리기도 실제 도로망(roads_clipped.gpkg, 노드 534)을 쓴다 (이전: 데모 6노드 그래프)
+from ugv.graph_gpkg import NODES, ROADS
 from connectors import ugv_connector
+from ugv.geo import distance_m
 _RG = RoadGraph(NODES, ROADS)
 _NODE_LL = {n["node_id"]:(n["lat"],n["lon"]) for n in NODES}
 def _nearest_node(lat, lon):
-    best=None; bd=1e18
+    """(노드 id, 거리 m). 미터 거리로 비교 — 위경도 제곱합은 경도 방향을 과대평가한다."""
+    best=None; bd=float("inf")
     for nid,(la,lo) in _NODE_LL.items():
-        d=(la-lat)**2+(lo-lon)**2
+        d=distance_m((lat,lon),(la,lo))
         if d<bd: bd=d; best=nid
-    return best
+    return best, bd
 
 UAV_AGENT = os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
 UAV_ID    = os.environ.get("UAV_ID", "A-uav1")
 WIND_MS   = float(os.environ.get("WEB_WIND_MS", "3.0"))
-PREVIEW   = os.path.join(os.path.dirname(__file__), "..", "gazebo", "kangwon_terrain_preview.png")
+PREVIEW   = os.path.join(os.path.dirname(__file__), "static", "kangwon_terrain_preview.png")   # 강원 DEM 음영기복 (CA 격자 범위와 동일)
 COLS, ROWS = 308, 236
 
 from fastapi.staticfiles import StaticFiles
 app = FastAPI(title="ADAIR 강원 관제판")
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__),"static")), name="static")
 _tick = 0
+# 환경 시계는 서버가 소유한다. /api/env 는 이 간격이 지났을 때만 CA 를 한 스텝 진행하고,
+# 그 외에는 현재 상태만 읽는다 → 브라우저 탭 수·폴링 주기와 무관하게 확산 속도가 일정하다.
+WEB_ENV_STEP_SEC = float(os.environ.get("WEB_ENV_STEP_SEC", "1.5"))
+_last_advance = 0.0
 
 class FlyReq(BaseModel):
     col: int; row: int
@@ -43,9 +60,15 @@ def preview():
 
 @app.get("/api/env")
 def env():
-    """환경 CA 한 틱 진행 → 불타는 셀·위험셀 반환(격자 x,y)."""
-    global _tick
-    es = fire_connector.get_environment_state(float(_tick)); _tick += 1
+    """환경 상태 반환(격자 x,y). CA 진행은 서버 시계(WEB_ENV_STEP_SEC)로만 한다."""
+    global _tick, _last_advance
+    now = time.monotonic()
+    advance = (now - _last_advance) >= WEB_ENV_STEP_SEC
+    if advance:
+        _tick += 1
+    es = fire_connector.get_environment_state(float(_tick), advance=advance)
+    if advance:
+        _last_advance = time.monotonic()   # 계산이 끝난 시점 기준 (첫 호출의 엔진 로딩 시간 제외)
     fire = [{"x": c["x"], "y": c["y"]} for c in es.fire_cells]
     risk = [{"x": c["x"], "y": c["y"]} for c in es.risk_zone[:150]]
     return {"tick": _tick, "fire": fire, "risk": risk,
@@ -67,7 +90,7 @@ def cell(lat: float, lon: float):
 
 @app.get("/api/ugv")
 def ugv(col: int = 60, row: int = 70):
-    # 자원 목록(mock): UGV/소방차 위치·capability
+    # 자원 목록: UGV/소방차 위치·capability (integrated — 실제 거점 노드)
     try:
         res = ugv_connector.get_ugv_status("A")
     except Exception:
@@ -79,10 +102,16 @@ def ugv(col: int = 60, row: int = 70):
                       "cap": r.capability or {}})
     # 화재셀 → 위경도 → 최근접 도로노드(goal)
     flat, flon = gb.grid_cell_to_latlon(col, row)
-    goal = _nearest_node(flat, flon)
+    goal, goal_dist = _nearest_node(flat, flon)
+    snap_limit = getattr(config, "UGV_TARGET_SNAP_M", 2000.0)
     routes=[]
     for u in units:
-        start = _nearest_node(u["lat"], u["lon"])
+        if goal_dist > snap_limit:
+            # 화재 근처에 도로 노드가 없음 → 임의 노드로 경로를 그리지 않는다
+            routes.append({"id": u["id"], "reachable": False, "eta_sec": None, "path": [],
+                           "err": "GOAL_TOO_FAR"})
+            continue
+        start, _ = _nearest_node(u["lat"], u["lon"])
         try:
             rr = _RG.find_route(start, goal)
             path = [{"lat": _NODE_LL[nid][0], "lon": _NODE_LL[nid][1]} for nid in getattr(rr,"path",[]) or []]
@@ -93,7 +122,7 @@ def ugv(col: int = 60, row: int = 70):
     # 차단 도로 수
     blocked = sum(1 for rd in ROADS if rd.get("blocked"))
     return {"fire_cell":{"col":col,"row":row,"lat":round(flat,6),"lon":round(flon,6)},
-            "goal_node": goal, "units": units, "routes": routes, "blocked_roads": blocked}
+            "goal_node": goal, "goal_distance_m": round(goal_dist, 1), "units": units, "routes": routes, "blocked_roads": blocked}
 
 @app.post("/api/extinguish")
 def extinguish(cell: dict):
@@ -109,43 +138,53 @@ def extinguish(cell: dict):
         return {"ok": False, "error": str(e)}
 
 # ===== 자동 폐루프 =====
-_AUTO = {"on": False, "target": None, "assigned": False, "t": 0}
+# ▶ 변경: 이제 판단·배정·Safety 검사는 orchestrator_connector + process_task 가 전담한다.
+#         이 dict는 "화면에 어떤 셀을 목표로 보여줄지"만 기억하는 용도다.
+_AUTO = {"on": False, "target": None, "t": 0}
+_AUTO_LOGGER = EventLogger(run_id=ids.new_run_id(), scenario_id="WEB-AUTO", file_name="web_auto.jsonl")  # ▶ 변경
 
 @app.post("/api/auto/toggle")
 def auto_toggle():
     _AUTO["on"] = not _AUTO["on"]
     if _AUTO["on"]:
-        _AUTO["target"] = None; _AUTO["assigned"] = False
+        _AUTO["target"] = None
     return {"on": _AUTO["on"]}
 
-@app.post("/api/auto/tick")
-async def auto_tick():
+@app.post("/api/auto/tick")  # ▶ 변경: 함수 전체 재작성
+# async 가 아닌 일반 함수로 둔다: 안의 process_task 가 UAV 서버를 동기 HTTP 로 부르므로(수 초),
+# async 로 두면 그동안 서버 전체가 멈춰 "자동 중지"·지도 갱신 요청까지 대기하게 된다.
+def auto_tick():
     if not _AUTO["on"]:
         return {"on": False, "events": []}
     ev = []
-    if _AUTO["target"] is None:
-        es = fire_connector.get_environment_state(float(_AUTO["t"])); _AUTO["t"] += 1
+    try:
+        # 환경은 진행시키지 않는다(시계는 /api/env 가 소유) — 기존 규칙 유지
+        es = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False)
+        _AUTO["t"] += 1
         if not es.fire_cells:
-            return {"on": True, "events": ["화재 없음 - 대기"]}
-        best = max(es.fire_cells, key=lambda c: c.get("risk_score", 0.0))
-        _AUTO["target"] = {"col": best["x"], "row": best["y"]}; _AUTO["assigned"] = False
-        ev.append("감지: 셀(%d,%d)" % (best["x"], best["y"]))
-    tgt = _AUTO["target"]
-    if not _AUTO["assigned"]:
-        try:
-            lat, lon = gb.grid_cell_to_latlon(tgt["col"], tgt["row"])
-            target = {"lat": round(lat,6), "lon": round(lon,6), "alt_m_amsl": round(gb.terrain_elev(tgt["col"],tgt["row"]),1)}
-            base = {"task_id":"AUTO-"+uuid.uuid4().hex[:6], "decision_id":"AD-"+uuid.uuid4().hex[:6], "target": target, "observation_type":"THERMAL"}
-            async with httpx.AsyncClient(timeout=20) as cx:
-                r = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/evaluate", json={**base,"wind_ms":WIND_MS})).json()
-                if r.get("verdict") == "ACCEPT":
-                    await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)
-                    _AUTO["assigned"] = True; ev.append("드론 출동 ACCEPT")
-                else:
-                    ev.append("드론 " + str(r.get("verdict")))
-        except Exception as e:
-            ev.append("출동 오류: " + str(e))
-    return {"on": True, "events": ev, "target": tgt}
+            return {"on": True, "events": ["화재 없음 - 대기"], "target": _AUTO["target"]}
+
+        if _AUTO["target"] is None:
+            best = max(es.fire_cells, key=lambda c: c.get("risk_score", 0.0))
+            _AUTO["target"] = {"col": best["x"], "row": best["y"]}
+            ev.append("감지: 셀(%d,%d)" % (best["x"], best["y"]))
+
+        # 화재 좌표 확정, 후보 선택, 재평가, Safety 검증은 기존 검증된 폐루프가 전담한다.
+        task = orchestrator_connector.create_task(float(_AUTO["t"]), es)
+        if not getattr(task, "target_resolved", True):
+            ev.append("타깃 확정 실패: " + str(getattr(task, "unresolved_reason", "")))
+            _AUTO["target"] = None
+            return {"on": True, "events": ev, "target": None}
+
+        pool = ResourcePool(base_a=uav_connector.get_uav_status("A"), base_b=[])
+        task, es = process_task(task, es, pool, _AUTO_LOGGER, float(_AUTO["t"]))
+        ev.append(f"Task {task.task_id}: {task.state}")
+
+        if task.state in ("COMPLETED", "FAILED", "CANCELLED"):
+            _AUTO["target"] = None  # 다음 tick에서 새 화재를 다시 고름
+    except Exception as e:
+        ev.append("출동 오류: " + str(e))
+    return {"on": True, "events": ev, "target": _AUTO["target"]}
 
 @app.post("/api/auto/done")
 def auto_done():
@@ -156,17 +195,26 @@ def auto_done():
             fire_connector._engine().apply_observation({"reporter_id":"AUTO","world_x":x,"world_y":y,"fire_state":"UNBURNED"})
         except Exception:
             pass
-    _AUTO["target"] = None; _AUTO["assigned"] = False
+    _AUTO["target"] = None
     return {"ok": True}
 
 @app.post("/api/fly")
 async def fly(req: FlyReq):
-    lat, lon = gb.grid_cell_to_latlon(req.col, req.row)
-    target = {"lat": round(lat,6), "lon": round(lon,6), "alt_m_amsl": round(gb.terrain_elev(req.col,req.row),1)}
+    try:
+        lat, lon = gb.grid_cell_to_latlon(req.col, req.row)
+        target = {"lat": round(lat,6), "lon": round(lon,6), "alt_m_amsl": round(gb.terrain_elev(req.col,req.row),1)}
+    except Exception as e:
+        # 고도를 확정하지 못하면 출동하지 않는다 (fail-closed)
+        return {"ok": False, "verdict": None, "reason": "TARGET_UNRESOLVED", "detail": str(e)}
     tid = "WEB-"+uuid.uuid4().hex[:8]; did = "DEC-"+uuid.uuid4().hex[:8]
     base = {"task_id": tid, "decision_id": did, "target": target, "observation_type": "THERMAL"}
     async with httpx.AsyncClient(timeout=30) as cx:
-        ev = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/evaluate", json={**base,"wind_ms":WIND_MS})).json()
+        # 풍속은 환경모델 값을 싣는다 (김동현님 R01_R05 6-2). 조회 실패 시에만 WEB_WIND_MS 사용
+        try:
+            wind = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False).wind_speed
+        except Exception:
+            wind = WIND_MS
+        ev = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/evaluate", json={**base,"wind_ms":wind})).json()
         if ev.get("verdict") != "ACCEPT":
             return {"ok": False, "verdict": ev.get("verdict"), "reason": ev.get("reason"), "target": target}
         ex = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)).json()

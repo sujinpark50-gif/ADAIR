@@ -14,6 +14,10 @@ Contract 10번(로그 기준)과 Integration Test Cases 2번(공통 기록 항�
 "테스트 성공 여부는 화면이 아니라 상태·메시지·로그로 확인할 수 있어야 한다"
 (Integration Test Cases 1번)는 원칙에 따라, 최소 필드만으로도
 IT-01/IT-02 성공 조건을 로그만 보고 판정할 수 있게 만든다.
+
+시간 필드 규칙 (문서 §1 기준):
+- simulation_time_s : 시뮬레이션 경과초(float) — 내부 판단용
+- timestamp         : 실제 기록 시각(ISO 8601, 시간대 포함) — 로그·추적용
 """
 
 import json
@@ -29,6 +33,11 @@ def _to_jsonable(value):
     if is_dataclass(value):
         return asdict(value)
     return value
+
+
+def _now_iso() -> str:
+    """현재 시각을 ISO 8601 문자열로 반환 (예: 2026-09-24T14:03:21.123+09:00)"""
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
 class EventLogger:
@@ -57,7 +66,7 @@ class EventLogger:
     def log_event(
         self,
         event_type: str,
-        timestamp: float,
+        sim_time_s: float,
         result: str = "",
         reason: str = None,
         decision_id: str = None,
@@ -69,6 +78,9 @@ class EventLogger:
         Integration Test Cases 2번 "공통 기록 항목" 최소 필드:
         scenario_id, run_id, decision_id, task_id, resource_id, timestamp
         + event_type, result, reason(해당 시)
+
+        sim_time_s : 시뮬레이션 경과초 → "simulation_time_s"로 기록
+        timestamp  : 기록 시점의 실제 시각(ISO 8601)을 자동으로 기록
         """
         record = {
             "scenario_id": self.scenario_id,
@@ -76,8 +88,8 @@ class EventLogger:
             "decision_id": decision_id,
             "task_id": task_id,
             "resource_id": resource_id,
-            "timestamp": timestamp,
-            "logged_at": datetime.now().isoformat(),
+            "simulation_time_s": sim_time_s,  # 시뮬레이션 경과초 — 내부 판단용
+            "timestamp": _now_iso(),          # ISO 8601 — 로그·추적용 (문서 §1 기준)
             "event_type": event_type,
             "result": result,
             "reason": reason,

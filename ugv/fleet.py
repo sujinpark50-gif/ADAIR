@@ -2,14 +2,17 @@ from . import config
 from .agent import GroundResourceAgent
 from .drivers.base import MotionDriver
 from .drivers.sim import SimDriver
-from .graph_data_demo import NODES, ROADS
+from . import graph_data_demo
 from .resource import GroundResource
 from .road_graph import RoadGraph
 
 
 class GroundFleet:
-    def __init__(self, use_px4: bool = False):
-        self.graph = RoadGraph(NODES, ROADS)
+    def __init__(self, use_px4: bool = False, graph_data=graph_data_demo):
+        # graph_data: NODES·ROADS 를 가진 모듈. 기본은 6노드 시연 도로망(graph_data_demo) —
+        # 총괄 orchestrator_v012 가 GroundFleet() 로 만들고 F1·E1 을 이름으로 쓰므로 기본값을 유지한다.
+        # 실제 도로망은 graph_gpkg 를 넘긴다 (server.py)
+        self.graph = RoadGraph(graph_data.NODES, graph_data.ROADS)
         self.agents: dict[str, GroundResourceAgent] = {}
 
         for cfg in config.RESOURCES:
@@ -29,7 +32,7 @@ class GroundFleet:
             )
 
     def _make_driver(self, cfg: dict, node, use_px4: bool) -> MotionDriver:
-        if use_px4 and cfg.get("px4_port"):
+        if use_px4 and cfg.get("px4_port") and cfg["resource_id"] in config.PX4_RESOURCES:
             from .drivers.px4 import PX4Driver   # mavsdk 없으면 임포트 실패하므로 지연
             addr = f"udpin://{config.PX4_HOST}:{cfg['px4_port']}"
             return PX4Driver(

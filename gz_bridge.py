@@ -53,15 +53,22 @@ _DEM = None
 _DEM_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
                           "environment", "data", "processed", "dem_clipped.tif")
 def terrain_elev(col, row):
+    """격자 셀 중심의 지면 고도(AMSL, m).
+
+    fail-closed: DEM 을 읽지 못하거나 셀이 격자 밖이면 예외를 던진다.
+    (이전 동작: 조용히 DATUM_ALT=172.1m 반환 / 격자 밖 좌표를 가장자리로 클램프 →
+     틀린 고도로 비행 명령이 나갈 수 있어 제거)
+    """
     global _DEM
-    try:
-        if _DEM is None:
-            import rasterio; _DEM = rasterio.open(_DEM_PATH).read(1)
-        rows, cols = _DEM.shape
-        r = min(max(int(row), 0), rows - 1); c = min(max(int(col), 0), cols - 1)
-        return float(_DEM[r, c])
-    except Exception:
-        return DATUM_ALT
+    if _DEM is None:
+        import rasterio
+        with rasterio.open(_DEM_PATH) as ds:
+            _DEM = ds.read(1)
+    rows, cols = _DEM.shape
+    r, c = int(row), int(col)
+    if not (0 <= r < rows and 0 <= c < cols):
+        raise IndexError(f"셀({col},{row}) 이 DEM 격자({cols}x{rows}) 밖")
+    return float(_DEM[r, c])
 
 def fire_cell_to_target(cell, clearance_m=50.0):
     col, row = int(cell["x"]), int(cell["y"])

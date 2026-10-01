@@ -31,5 +31,15 @@ class MotionDriver(ABC):
         """
 
     @abstractmethod
+    async def stop(self) -> None:
+        """주행을 멈추고 그 자리에 선다. 진행 중인 goto 는 취소된다."""
+
+    def fault(self) -> str | None:
+        """주행 중 차량 이상. 이상이 있으면 'CODE: 설명', 없으면 None.
+        CODE: VEHICLE_FAULT(추락·disarm·모드 이탈) / TELEMETRY_LOST(텔레메트리 끊김).
+        기본 구현(시뮬레이션)은 이상이 없다."""
+        return None
+
+    @abstractmethod
     def progress(self) -> tuple[int, int]:
         """(통과한 웨이포인트 수, 전체 웨이포인트 수)."""

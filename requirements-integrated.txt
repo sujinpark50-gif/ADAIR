@@ -1,0 +1,16 @@
+# ADAIR 통합 실행(run_integrated.py)에 필요한 패키지
+# 설치:  python -m pip install -r requirements-integrated.txt
+
+fastapi
+uvicorn[standard]
+requests
+httpx          # 웹 관제판(web/app.py) → uav-agent 호출
+pyyaml
+numpy
+
+# 김은주님의 '실제' 산불 CA 모델(environment/)·DEM 좌표 변환에 필요합니다.
+# run_integrated.py 는 없어도 내장 산불 모델로 돌지만, 웹 관제판(web/app.py)과 DEM 실측 테스트에는 필수입니다.
+rasterio
+
+# 테스트: python -m pytest -q orchestrator_v012/tests
+pytest

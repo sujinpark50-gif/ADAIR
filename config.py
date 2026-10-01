@@ -49,20 +49,20 @@ UGV_CONNECTION_MODE = "mock"
 ORCHESTRATOR_CONNECTION_MODE = "mock"
 
 UAV_SERVER_URL = "TBD"   # 구버전 — 아래 UAV_ENDPOINTS로 대체 예정, 하위호환용으로만 유지
-UGV_SERVER_URL = "TBD"
+UGV_SERVER_URL = "http://localhost:8100"   # 박유홍님 UGV 서버(ugv/server.py) 기본 포트. UGV_CONNECTION_MODE="real" 일 때만 사용
 ORCHESTRATOR_SERVER_URL = "TBD"
 
-# UAV는 "1대 = 프로세스 1개 = 포트 1개" 구조 (px4/uav-agent/README.md "UAV 여러 대 운용" 참고)
+# UAV는 "1대 = 프로세스 1개 = 포트 1개" 구조 (uav/uav-agent/README.md "UAV 여러 대 운용" 참고)
 # 한 URL로 통일할 수 없고, 드론별로 주소를 따로 관리해야 함
-# TODO: 김동현님이 실제 서버에 배포하면 아래 TBD를 실제 host:port로 교체
+# 기본은 로컬 mock. 클라우드(김동현님 배포) 사용 시 A-uav1 주소를 안내받은 host:port로 교체
 UAV_ENDPOINTS = {
-    "A-uav1": "TBD",   # 예: "http://<host>:8000"
-    "A-uav2": "TBD",   # 예: "http://<host>:8001"
+    "A-uav1": "http://127.0.0.1:8000",   # 로컬 mock (클라우드 서버는 김동현님께 기동 요청 시 주소 교체)
+    "A-uav2": "http://127.0.0.1:8001",   # 로컬 mock
     "B-uav1": "TBD",
     "B-uav2": "TBD",
 }
 
-# UAV 판단에 필요한 풍속의 출처 — PX4/Gazebo가 풍속을 제공하지 않아(SHARE.md 4-3 확인됨),
+# UAV 판단에 필요한 풍속의 출처 — PX4/Gazebo가 풍속을 제공하지 않아(uav/NOTE.md, docs/uav/R01_R05.md 1-4 확인됨),
 # 환경모델(EnvironmentState.wind_speed) 값을 요청에 실어서 보내야 함
 WIND_SOURCE = "environment_state"
 
@@ -75,6 +75,10 @@ WEB_DEPLOYMENT_TARGET = "TBD"   # 최종 웹 배포 방식
 SIMULATION_TIMESTEP_SEC = 1.0
 DEMO_TOTAL_STEPS = 10
 MAX_REEVALUATION_RETRIES = 2   # Safety 세부 임계값 확정 전까지 임시값 (Contract 12번 TBD 항목)
+
+# 화재 목표 좌표 → 도로 노드 스냅 허용 거리(m). 이보다 멀면 임의 노드로 대체하지 않고
+# UGV 가 TARGET_UNREACHABLE 로 거절한다. 임시 시뮬레이션 가정 (팀 합의 필요)
+UGV_TARGET_SNAP_M = 2000.0
 
 # ---------------------------------------------------------------------------
 # 4. 메시지 규격 (Contract 4, 12번)

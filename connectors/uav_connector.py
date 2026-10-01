@@ -3,9 +3,9 @@
 connectors/uav_connector.py
 ==============================
 UAV Connector. Mock 모드에 더해, 김동현님이 올리신 UAV Local Agent
-(px4/uav-agent, FastAPI 서버)와 실제로 통신하는 real 모드를 구현했다.
+(uav/uav-agent, FastAPI 서버)와 실제로 통신하는 real 모드를 구현했다.
 
-실제 서버 엔드포인트 (px4/uav-agent/README.md 기준):
+실제 서버 엔드포인트 (uav/API_DEFINE.md 기준):
   GET  /uav/{uav_id}/state              — 상태 조회
   POST /uav/{uav_id}/evaluate           — 수행가능성 판단 (ACCEPT/REJECT/COUNTER)
   POST /uav/{uav_id}/execute            — 실행 시작 (Safety ALLOW 이후에만 호출)
@@ -56,7 +56,7 @@ def send_uav_command(
     return _send_uav_command_real(task_id, decision_id, assignment, wind_ms)
 
 
-def get_uav_observation(resource_id: str, timestamp: float, task_id: str = None,
+def get_uav_observation(resource_id: str, sim_time_s: float, task_id: str = None,
                          decision_id: str = None, assignment=None) -> Observation:
     """
     real 모드에서는 이 호출 시점(Safety ALLOW 이후)에 /execute를 트리거하고
@@ -64,17 +64,20 @@ def get_uav_observation(resource_id: str, timestamp: float, task_id: str = None,
     assignment: 실행 목표(target_lat/lon/alt_m)가 필요해서 추가된 인자
     """
     if config.UAV_CONNECTION_MODE == "mock":
+        # 드론은 배정된 화재 타깃 위치에서 관측한다 → 그 좌표를 담아 환경 되먹임이 격자 안에 들어가게 함
+        obs_lat = getattr(assignment, "target_lat", config.BASE_A_LAT) if assignment is not None else config.BASE_A_LAT
+        obs_lon = getattr(assignment, "target_lon", config.BASE_A_LON) if assignment is not None else config.BASE_A_LON
         return Observation(
             resource_id=resource_id,
-            location_lat=config.BASE_A_LAT,
-            location_lon=config.BASE_A_LON,
-            timestamp=timestamp,
+            location_lat=obs_lat,
+            location_lon=obs_lon,
+            simulation_time_s=sim_time_s,
             observation_type="FIRE_BOUNDARY",
-            value={"note": "mock observation"},
+            value={"fire_state": "BURNING", "note": "mock observation @ target"},
             task_id=task_id,
             decision_id=decision_id,
         )
-    return _get_uav_observation_real(resource_id, timestamp, task_id, decision_id, assignment)
+    return _get_uav_observation_real(resource_id, sim_time_s, task_id, decision_id, assignment)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +121,7 @@ def _send_uav_command_mock(assignment, force_response, force_reason) -> LocalRes
 
 
 # ---------------------------------------------------------------------------
-# Real 구현 — px4/uav-agent REST API 연동
+# Real 구현 — uav/uav-agent REST API 연동
 # ---------------------------------------------------------------------------
 
 def _endpoint_for(resource_id: str) -> str:
@@ -151,7 +154,10 @@ def _get_uav_status_real(base: str) -> list:
                 base=base,
                 location_lat=data["position"]["lat"],
                 location_lon=data["position"]["lon"],
-                state="OFFLINE" if data["health"]["failsafe"] else "READY",
+                # /state 가 응답했으면 READY. health.failsafe·link_quality 는 real 모드에서
+                # 고정값이라 가용성 근거로 쓰지 않는다 (docs/uav/R01_R05.md 1-4, 6-3).
+                # 원값은 capability 에 그대로 남기고, 실제 가용 여부는 /evaluate 판정으로 확인한다.
+                state="READY",
                 capability={
                     "battery_pct": data["battery"]["percent"],
                     "px4_failsafe": data["health"]["failsafe"],
@@ -187,10 +193,12 @@ def _send_uav_command_real(task_id: str, decision_id: str, assignment, wind_ms: 
         reason=data.get("reason"),
         counter_alternative=data.get("counter_offer"),
         counter_constraint=data.get("constraints"),
+        evidence={"eta_sec": data.get("eta_sec"), "constraints": data.get("constraints"), "detail": data.get("detail"),
+                  "counter_offer": data.get("counter_offer")},
     )
 
 
-def _get_uav_observation_real(resource_id, timestamp, task_id, decision_id, assignment,
+def _get_uav_observation_real(resource_id, sim_time_s, task_id, decision_id, assignment,
                                 poll_interval_sec=1.0, timeout_sec=30.0) -> Observation:
     """POST /execute 로 실행 시작 → GET /task 폴링 → 완료 시 관측 결과 반환"""
     url = _endpoint_for(resource_id)
@@ -216,11 +224,14 @@ def _get_uav_observation_real(resource_id, timestamp, task_id, decision_id, assi
 
         if task_data["status"] == "COMPLETED":
             obs = task_data.get("observation") or {}
+            pos = obs.get("position") or {}
+            # 관측 위치가 없으면 목표 좌표로 채우지 않는다(없는 관측을 만들지 않음).
+            # 위치가 None 인 관측은 fire_connector.update_environment 가 반영하지 않는다.
             return Observation(
                 resource_id=resource_id,
-                location_lat=obs.get("position", {}).get("lat", assignment.target_lat),
-                location_lon=obs.get("position", {}).get("lon", assignment.target_lon),
-                timestamp=timestamp,
+                location_lat=pos.get("lat"),
+                location_lon=pos.get("lon"),
+                simulation_time_s=sim_time_s,
                 observation_type=obs.get("sensor_type", "THERMAL"),
                 value=obs.get("values", {}),
                 task_id=task_id,

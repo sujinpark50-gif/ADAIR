@@ -6,6 +6,10 @@ interfaces/schema.py
 공통 데이터 형식입니다. 이 파일이 곧 Contract 2번 "통합 담당"의 산출물
 (Schema/Enum, 공통 ID, 좌표·단위·시간 형식)에 해당합니다.
 
+시간 필드 규칙 (문서 §1):
+- simulation_time_s : 시뮬레이션 경과초(float) — 이 파일의 모든 데이터 객체가 사용
+- timestamp         : 실제 시각(ISO 8601) — logger.py 가 로그 한 줄마다 자동 기록
+
 문서 대조:
 - 4번(공통 메시지 식별 정보) → MessageHeader
 - 5번(공통 데이터 의미) → EnvironmentState, ResourceStatus
@@ -14,7 +18,7 @@ interfaces/schema.py
 """
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, get_args
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +32,7 @@ class MessageHeader:
     sender: str              # 어느 모듈이 보냈는지 (예: "fire_connector", "uav_connector")
     message_type: str        # 예: "ENVIRONMENT_STATE", "LOCAL_RESPONSE"
     schema_version: str
-    timestamp: float
+    simulation_time_s: float     # 시뮬레이션 경과초 (문서 §1). ISO 8601 timestamp 는 로그에만 기록
     run_id: str
     # 상황별 추가 (필요한 메시지에만)
     task_id: Optional[str] = None
@@ -51,11 +55,18 @@ class Task:
     Orchestrator가 후보 자원을 평가해 할당한다.
     """
     task_id: str
-    created_at: float
+    created_at: float          # Task 생성 시점의 시뮬레이션 경과초(s)
     state: TaskState = "READY"
     description: str = ""     # 예: "화재 셀(50,50) 관측"
     target_lat: float = 0.0
     target_lon: float = 0.0
+    # 목표 지점의 지면 고도(AMSL, m). 여유고도는 여기서 더하지 않는다 —
+    # UAV Local Agent 가 MIN_CLEARANCE_M 를 한 번만 더한다(이중 가산 방지).
+    target_alt_m: float = 0.0
+    # 타깃 좌표를 실제로 확정했는지. False 이면 자원 배정 없이 Task 를 종료한다(fail-closed).
+    target_resolved: bool = True
+    target_source: str = ""              # "DEM" / "MOCK_PLACEHOLDER" / ""
+    unresolved_reason: Optional[str] = None   # "NO_FIRE_TARGET" / "TARGET_UNRESOLVED"
 
 
 # ---------------------------------------------------------------------------
@@ -75,13 +86,14 @@ ResourceType = Literal["UAV", "UGV", "FIRE_ENGINE"]
 @dataclass
 class EnvironmentState:
     """환경모델이 매 스텝마다 제공하는 화재 상태 정보"""
-    timestamp: float
+    simulation_time_s: float   # 시뮬레이션 경과초 (문서 §1)
     fire_cells: List[dict]
     risk_zone: List[dict]
     wind_speed: float          # m/s
     wind_direction: float      # degree
     spread_direction: str
     env_updated: bool = False
+    sim_step: Optional[int] = None   # 환경 CA 스텝 번호 (real 모드). 같은 값이면 같은 상태
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +105,7 @@ class EnvironmentState:
 @dataclass
 class ResourceStatus:
     """UAV·UGV·소방차 공통 Resource 표현"""
-    resource_id: str                 # 예: "A-uav1", "A-ugv1", "A-truck1"
+    resource_id: str                 # 예: "A-uav1", "A-ugv1", "A-fire1"
     resource_type: ResourceType
     base: str                        # 소속 거점 ("A" 또는 "B")
     location_lat: float
@@ -124,7 +136,7 @@ RejectReason = Literal[
     "COMMUNICATION_FAILURE",
     "TIMEOUT",
     "REQUIRED_CAPABILITY_UNAVAILABLE",
-    # UAV 브랜치(김동현) 연동 과정에서 추가 합의된 사유 (px4/uav-agent/README.md 참고)
+    # UAV 브랜치(김동현) 연동 과정에서 추가 합의된 사유 (uav/API_DEFINE.md 참고)
     "FAILSAFE_ACTIVE",   # PX4 failsafe 작동 중
     "BUSY",              # 다른 Task 수행 중
     "WIND_UNKNOWN",       # 풍속 정보 없음 — 요청에 wind_ms 미포함
@@ -141,6 +153,20 @@ class LocalResponse:
     reason: Optional[RejectReason] = None      # REJECT일 때만
     counter_alternative: Optional[dict] = None  # COUNTER일 때 대안 (초기 범위 제외, 자리만 확보)
     counter_constraint: Optional[dict] = None   # COUNTER일 때 제한조건 (〃)
+    # 판정 근거 (박수진님 문서 H "판정 근거 — 공통 타입에서 정보 생략" 항목)
+    # Local Agent 가 판단에 쓴 근거를 버리지 않고 총괄·로그로 전달한다. ETA 도 여기(eta_sec 키)에 담는다.
+    # 정식 eta_sec 필드 추가(R01)는 총괄 설계(orchestrator_v012 의 UavEvaluation 확장)와 맞물려 합의 대기.
+    evidence: Optional[dict] = None             # UAV: eta_sec/constraints/detail, UGV: eta_sec/target_node/경로
+
+
+def is_registered_reason(reason) -> bool:
+    """공통 사유 목록(RejectReason)에 등록된 코드인지.
+
+    박수진님 문서 H "reason — 모델 선언과 실제 발생 코드 구분":
+    Local Agent 가 목록에 없는 코드를 보내도 막지 않고(원문 보존) 로그에 표시만 한다.
+    등록 여부 결정 전의 새 코드(예: UGV 의 STALLED, OFF_ROUTE)를 놓치지 않기 위한 장치.
+    """
+    return reason is None or reason in get_args(RejectReason)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +194,7 @@ class Observation:
     resource_id: str
     location_lat: float
     location_lon: float
-    timestamp: float
+    simulation_time_s: float     # 관측 시점의 시뮬레이션 경과초 (문서 §1)
     observation_type: str        # 관측 종류 (예: "FIRE_BOUNDARY", "WIND")
     value: dict                  # 관측 값
     task_id: Optional[str] = None
@@ -187,8 +213,8 @@ class Assignment:
     target_lat: float
     target_lon: float
     task_type: str = "OBSERVE"
-    # UAV는 goto(위도,경도,고도) 형태로 명령해야 해서 고도가 필수임 (px4/uav-agent 요청 반영)
-    # TBD: 실제 지형 고도(DEM)는 김은주님 환경모델 완성 후 반영, 그 전까지는 0.0(해수면)
+    # UAV는 goto(위도,경도,고도) 형태로 명령해야 해서 고도가 필수임 (uav/uav-agent 요청 반영)
+    # 의미: 목표 지점 지면 고도(AMSL, m). 여유고도는 UAV Local Agent 가 더한다.
     target_alt_m: float = 0.0
 
 
@@ -201,7 +227,7 @@ class Decision:
     """
     decision_id: str
     task_id: str
-    timestamp: float
+    simulation_time_s: float   # 판단 시점의 시뮬레이션 경과초 (문서 §1)
     assignments: List[Assignment]
     safety_verdict: Optional[SafetyVerdict] = None
 
