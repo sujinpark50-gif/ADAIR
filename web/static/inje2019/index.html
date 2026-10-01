@@ -266,12 +266,20 @@ function setFlames(cells){                       // cells: [[gx,gy]...] 지금 �
   flames.count = flameList.length;
 }
 const FL_A = new THREE.Color('#FF2A10'), FL_B = new THREE.Color('#FFB020'), FL_NEW = new THREE.Color('#FFF2B0');
+// 바람 (기상청 인제 211 관측 — 재현은 그 시각 값, LIVE 는 환경 서버가 CA 에 실제로 넣은 값)
+const WIND = {from: 160, ms: 5};
+const _q = new THREE.Quaternion(), _axis = new THREE.Vector3(), _up = new THREE.Vector3(0,1,0), _p = new THREE.Vector3(), _s = new THREE.Vector3();
+function windTo(){ const a = (WIND.from + 180) % 360 * Math.PI/180; return [Math.sin(a), -Math.cos(a)]; }   // 장면 x(동), z(남)
 function animateFlames(now){
+  const [wx, wz] = windTo(), lean = Math.min(0.75, WIND.ms * 0.09);          // 풍속 1 m/s 당 약 5° (최대 43°)
+  _axis.set(wz, 0, -wx).normalize();                                         // 바람 방향에 수직인 축으로 기울임
+  _q.setFromAxisAngle(_axis, lean);
   for (let n=0;n<flameList.length;n++){
     const [gx,gy,born] = flameList[n], age = (now-born)/1000;
     const fresh = Math.max(0, 1 - age/3);                       // 붙은 지 3초 동안 크고 밝게
     const h = (90 + 70*Math.sin(now/180 + n*1.7) * 0.5 + 60) * (1 + fresh*1.5);
-    M.makeScale(1, h, 1); M.setPosition(X(gx), Y(gx,gy,8) + h/2, Z(gy)); flames.setMatrixAt(n, M);
+    _p.set(0, h/2, 0).applyQuaternion(_q).add(new THREE.Vector3(X(gx), Y(gx,gy,8), Z(gy)));
+    M.compose(_p, _q, _s.set(1, h, 1)); flames.setMatrixAt(n, M);
     const c = FL_A.clone().lerp(FL_B, 0.5+0.5*Math.sin(now/240 + n)); if (fresh) c.lerp(FL_NEW, fresh);
     flames.setColorAt(n, c);
   }
@@ -284,7 +292,34 @@ const plumeCore = new THREE.Mesh(new THREE.CylinderGeometry(25, 55, 1, 16, 1, tr
   new THREE.MeshBasicMaterial({color:0xFF5A1F, transparent:true, opacity:.6, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide}));
 const plumeSmoke = new THREE.Mesh(new THREE.CylinderGeometry(220, 60, 1, 16, 1, true),
   new THREE.MeshBasicMaterial({color:0x5E5650, transparent:true, opacity:.28, depthWrite:false, side:THREE.DoubleSide}));
-plume.add(plumeCore, plumeSmoke); scene.add(plume);
+plume.add(plumeCore, plumeSmoke); scene.add(plume); plumeSmoke.visible = false;
+const SMOKE_N = 1400;
+const smokePos = new Float32Array(SMOKE_N*3), smokeAge = new Float32Array(SMOKE_N).fill(1e9), smokeLife = new Float32Array(SMOKE_N);
+const smokeGeo = new THREE.BufferGeometry(); smokeGeo.setAttribute('position', new THREE.BufferAttribute(smokePos, 3));
+const smokeTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  const r = g.createRadialGradient(32,32,2,32,32,32); r.addColorStop(0,'rgba(255,255,255,.9)'); r.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle = r; g.fillRect(0,0,64,64); return new THREE.CanvasTexture(c); })();
+const smoke = new THREE.Points(smokeGeo, new THREE.PointsMaterial({size: 260, map: smokeTex, color: 0x6B635C, transparent: true,
+  opacity: .42, depthWrite: false, sizeAttenuation: true}));
+smoke.frustumCulled = false; scene.add(smoke);
+let smokeNext = 0;
+function animateSmoke(dt){
+  const [wx, wz] = windTo(), drift = WIND.ms * 45;              // 화면 표시용 배율: 풍속 1 m/s → 초당 45 m 흘러감
+  const emit = flameList.length ? Math.min(220, 30 + flameList.length*4) * dt : 0;
+  for (let e=0; e<emit; e++){
+    const f = flameList[(Math.random()*flameList.length)|0], i = smokeNext; smokeNext = (smokeNext+1) % SMOKE_N;
+    smokePos[i*3] = X(f[0]) + (Math.random()-.5)*CELL; smokePos[i*3+1] = Y(f[0],f[1],60); smokePos[i*3+2] = Z(f[1]) + (Math.random()-.5)*CELL;
+    smokeAge[i] = 0; smokeLife[i] = 8 + Math.random()*6;
+  }
+  for (let i=0;i<SMOKE_N;i++){
+    if (smokeAge[i] > smokeLife[i]){ smokePos[i*3+1] = -1e6; continue; }
+    smokeAge[i] += dt; const k = smokeAge[i];
+    smokePos[i*3] += (wx*drift + (Math.random()-.5)*30) * dt;
+    smokePos[i*3+2] += (wz*drift + (Math.random()-.5)*30) * dt;
+    smokePos[i*3+1] += (55 - k*2.5) * dt;                         // 솟다가 바람에 눕는다
+  }
+  smokeGeo.attributes.position.needsUpdate = true;
+}
 const fireLabel = Object.assign(document.createElement('div'), {className:'label'}); fireLabel.style.background = 'rgba(160,40,10,.85)';
 document.getElementById('labels').appendChild(fireLabel);
 let fireBox = null;
@@ -357,6 +392,7 @@ const state = {t: 0, playing: false, scen: 'A', view: 'known', fc: true, mode: '
 const $ = s => document.querySelector(s);
 const NAMES = {A:'A 실제 기록 근사', B:'B 드론 · 현장 이착륙', Bb:'B′ 드론 · 원통 기지 출발'};
 $('#assume').innerHTML = D.assumptions.map(a => `<li>${a}</li>`).join('') +
+  `<li>바람: CA 는 매 스텝 기상청 인제 관측 풍향·풍속을 확산 확률에 넣는다 (바람 받는 쪽 최대 약 1.8배, 반대쪽 약 0.55배 — 팀 CA 식). 그날은 남남동풍(160~180°)이 불을 북북서로 밀었지만 그쪽은 소양호·하천(연료 없음)이라, 불은 숲이 있는 동·남동쪽으로 번진다 — 위성 피해지도 동쪽으로 뻗어 있다. 불꽃의 기울기·연기 흐름은 그 시각 바람을 화면에 보이는 표시다 (연기 속도는 보기용 배율).</li>` +
   `<li>보정: ${D.calibration.anchor} → CA 한 스텝 ${D.tick_s}초 (12개 seed 평균 ${D.calibration.chosen.mean_ha_19h} ha, 최소~최대 ${D.calibration.chosen.min}~${D.calibration.chosen.max}칸)</li>` +
   `<li>시뮬 ${D.summary.end_kst} 까지 면적 ${D.summary.truth_ha_end} ha (진압 없음) · 실제 최종 ${D.summary.final_reported_ha} ha (사흘, 진압 포함)</li>` + (BURN ? `<li>위성 피해지: ${BURN.pre_scene} → ${BURN.post_scene}, dNBR ≥ ${BURN.threshold}, ${BURN.area_ha} ha (아리랑3호 판독 ${BURN.arirang_ha} ha)</li>` : '');
 document.querySelectorAll('[data-scen]').forEach(b => b.onclick = () => { state.scen = b.dataset.scen;
@@ -564,11 +600,12 @@ function draw(force){
   // 바람 (불어오는 방향 → 불어가는 방향으로 바꿔 그림)
   const wFrom = state.mode === 'live' && state.live && state.live.env ? state.live.env.wind_dir_deg : row.wind_from_deg;
   const wMs = state.mode === 'live' && state.live && state.live.env ? state.live.env.wind_ms : row.wind_ms;
+  WIND.from = wFrom; WIND.ms = wMs;
   const to = (wFrom + 180) % 360 * Math.PI/180;
   windArrow.position.set(X(cx-14), Y(cx-14, cy+10, 700), Z(cy+10));
   windArrow.setDirection(new THREE.Vector3(Math.sin(to), 0, -Math.cos(to)));
   windArrow.setLength(300 + wMs*140, 220, 140);
-  windLabel.textContent = `인제 관측소 ${wMs} m/s · ${wFrom}°에서`;
+  windLabel.textContent = `바람 ${wMs} m/s · ${wFrom}°에서 불어옴 (기상청 인제) — 불꽃·연기·확산이 이 방향으로`;
 
   // 시계·지표·문구
   const f = fmt(t); $('#t-kst').textContent = f.hm;
@@ -619,7 +656,7 @@ function loop(now){
   if (state.playing){ state.t += dt * Number($('#speed').value); if (state.t >= T_END){ state.t = T_END; state.playing = false; play.textContent='▶'; } draw(); }
   else if (!reduce){ helicopter.userData.rot.rotation.y += dt*20; }
   helicopter.userData.rot.rotation.y += dt*20;
-  if (!reduce || state.playing) animateFlames(now);
+  if (!reduce || state.playing){ animateFlames(now); animateSmoke(dt); }
   controls.update(); renderer.render(scene, camera); placeLabels();
   requestAnimationFrame(loop);
 }
