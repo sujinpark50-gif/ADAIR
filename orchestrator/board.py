@@ -36,6 +36,7 @@ th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:v
 <div class="mode" id="mode"></div>
 <div class="act"><button onclick="post('/dispatch_pending')">대기 임무 배정 실행</button><button onclick="post('/poll')">진행 갱신</button></div></header>
 <main>
+<p class="note">자동 배정은 생성된 임무의 우선순위를 판단하고 자원을 배정하는 모드입니다. 시뮬레이션 시작은 통합관제에서 제어합니다.</p>
 <p class="note" id="rule"></p>
 <h2 style="font-size:16px">선택 묶음 (비슷하거나 엇갈리는 후보)</h2>
 <div id="groups"></div>
@@ -49,7 +50,7 @@ th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:v
 <div class="wrap"><table><thead><tr><th>순서</th><th>임무</th><th>인명피해</th><th>위험도</th><th>가까운 보호대상</th><th>상태</th><th>배정 자원</th><th>정찰 결과</th><th>수동</th></tr></thead><tbody id="order"></tbody></table></div>
 </main>
 <script>
-const MODE_LABEL={AUTO_HIGHER_RISK:"자동 (AI 추천으로 출발)",HUMAN_CHOICE:"수동 (사람이 선택)"};
+const MODE_LABEL={AUTO_HIGHER_RISK:"자동 배정 (AI 추천으로 출발)",HUMAN_CHOICE:"수동 선택 (사람이 선택)"};
 const KIND_LABEL={SIMILAR:"위험도 비슷",CONFLICT:"기준 엇갈림"};
 const STATUS_LABEL={AWAITING_CHOICE:["선택 대기","wait"],PARTIAL_AWAITING_CHOICE:["일부 선택 대기","wait"],AUTO_DECIDED:["자동 출발 (규칙: 위험도 높은 곳 먼저)","auto"],LLM_DECIDED:["자동 출발 (AI 추천, 검증 통과)","auto"],ALL_DISPATCHED:["자원 충분 · 모두 출동","ok"]};
 const PURPOSE={PENDING:"대기",HOLD:"보류",EVALUATING:"판단 중",APPROVED:"출동 승인",IN_EXECUTION:"출동 중",COMPLETED:"완료",FAILED:"실패",CANCELLED:"취소"};
