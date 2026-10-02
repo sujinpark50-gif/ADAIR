@@ -100,7 +100,8 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, sim_time_s
     while True:
         if not decision.assignments:
             task.state = "FAILED"
-            logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="FAILED", reason="NO_CANDIDATE")
+            logger.log_event("TASK_COMPLETE", sim_time_s, decision_id=decision.decision_id, task_id=task.task_id,
+                             result="FAILED", reason="NO_CANDIDATE")
             return task, env_state
 
         assignment = decision.assignments[0]
@@ -128,7 +129,8 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, sim_time_s
             reevaluation_count += 1
             if reevaluation_count > config.MAX_REEVALUATION_RETRIES:
                 task.state = "FAILED"
-                logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="FAILED", reason="MAX_REEVALUATION_EXCEEDED")
+                logger.log_event("TASK_COMPLETE", sim_time_s, decision_id=decision.decision_id, task_id=task.task_id,
+                                 result="FAILED", reason="MAX_REEVALUATION_EXCEEDED")
                 return task, env_state
             env_state, resource_pool = _refresh_for_reevaluation(sim_time_s, env_state, resource_pool)
             decision = orchestrator_connector.reevaluate(sim_time_s, task, env_state, resource_pool, exclude_ids)
@@ -164,10 +166,13 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, sim_time_s
             )
 
             env_state = fire_connector.update_environment(env_state, [observation])
-            logger.log_event("ENVIRONMENT_UPDATE", sim_time_s, task_id=task.task_id, result="UPDATED")
+            # 어떤 판단·자원의 결과인지 이 줄만 보고도 알 수 있게 decision_id·resource_id 를 함께 남긴다
+            logger.log_event("ENVIRONMENT_UPDATE", sim_time_s, decision_id=decision.decision_id,
+                             task_id=task.task_id, resource_id=assignment.resource_id, result="UPDATED")
 
             task.state = "COMPLETED"
-            logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="COMPLETED")
+            logger.log_event("TASK_COMPLETE", sim_time_s, decision_id=decision.decision_id,
+                             task_id=task.task_id, resource_id=assignment.resource_id, result="COMPLETED")
             return task, env_state
 
         # Safety REJECT 또는 MODIFY(초기 범위 제외 — REJECT와 동일 처리) → 총괄 재평가
@@ -175,7 +180,8 @@ def process_task(task, env_state, resource_pool, logger: EventLogger, sim_time_s
         reevaluation_count += 1
         if reevaluation_count > config.MAX_REEVALUATION_RETRIES:
             task.state = "FAILED"
-            logger.log_event("TASK_COMPLETE", sim_time_s, task_id=task.task_id, result="FAILED", reason="SAFETY_REJECT_MAX_RETRY")
+            logger.log_event("TASK_COMPLETE", sim_time_s, decision_id=decision.decision_id, task_id=task.task_id,
+                             result="FAILED", reason="SAFETY_REJECT_MAX_RETRY")
             return task, env_state
         env_state, resource_pool = _refresh_for_reevaluation(sim_time_s, env_state, resource_pool)
         decision = orchestrator_connector.reevaluate(sim_time_s, task, env_state, resource_pool, exclude_ids)

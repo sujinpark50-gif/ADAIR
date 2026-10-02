@@ -189,7 +189,10 @@ def extinguish(cell: dict):
 
     INT-02: 시연 전용. config.WEB_DEMO_EXTINGUISH 가 꺼져 있으면(기본) 환경을 바꾸지 않는다.
     """
+    rid = cell.get("resource_id")
     if not config.WEB_DEMO_EXTINGUISH:
+        _web_log("ARRIVAL", "ARRIVED", resource_id=rid, reason="DEMO_EXTINGUISH_OFF",
+                 detail={"source": "WEB_MANUAL", "cell": [cell.get("col"), cell.get("row")], "extinguish_applied": False})
         return {"ok": False, "disabled": True, "reason": "DEMO_EXTINGUISH_OFF"}
     try:
         col=int(cell["col"]); row=int(cell["row"])
@@ -197,6 +200,8 @@ def extinguish(cell: dict):
         x,y=gb.latlon_to_epsg(lat,lon)
         api=fire_connector._engine()   # 강원 CA 엔진
         r=api.apply_observation({"reporter_id":"RESPONSE","world_x":x,"world_y":y,"fire_state":"UNBURNED"})
+        _web_log("ARRIVAL", "ARRIVED", resource_id=rid, reason="DEMO_EXTINGUISH",
+                 detail={"source": "WEB_MANUAL", "cell": [col, row], "extinguish_applied": bool(r.get("success"))})
         return {"ok": bool(r.get("success")), "cell": [col,row]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -206,6 +211,15 @@ def extinguish(cell: dict):
 #         이 dict는 "화면에 어떤 셀을 목표로 보여줄지"만 기억하는 용도다.
 _AUTO = {"on": False, "target": None, "t": 0}
 _AUTO_LOGGER = EventLogger(run_id=ids.new_run_id(), scenario_id="WEB-AUTO", file_name="web_auto.jsonl")  # ▶ 변경
+
+
+def _web_log(event_type, result, **kw):
+    """관제판의 수동 출동·도착도 자동 루프와 같은 로그 파일(web_auto.jsonl)에 남긴다.
+    출처는 detail.source 로 구분한다 (WEB_MANUAL / WEB_AUTO / WEB_VIA_ORCH). 기록 실패가 화면 동작을 막지 않게 한다."""
+    try:
+        _AUTO_LOGGER.log_event(event_type, float(_AUTO["t"]), result=result, **kw)
+    except Exception as e:
+        print(f"[web log] 기록 실패: {e}")
 
 @app.post("/api/auto/toggle")
 def auto_toggle():
@@ -253,12 +267,17 @@ def auto_tick():
 @app.post("/api/auto/done")
 def auto_done():
     t = _AUTO.get("target")
+    applied = False
     if t and config.WEB_DEMO_EXTINGUISH:   # INT-02: 시연 전용 스위치가 켜졌을 때만 진화 반영
         try:
             lat,lon = gb.grid_cell_to_latlon(t["col"], t["row"]); x,y = gb.latlon_to_epsg(lat,lon)
             fire_connector._engine().apply_observation({"reporter_id":"AUTO","world_x":x,"world_y":y,"fire_state":"UNBURNED"})
+            applied = True
         except Exception:
             pass
+    if t:
+        _web_log("ARRIVAL", "ARRIVED", reason="DEMO_EXTINGUISH" if config.WEB_DEMO_EXTINGUISH else "DEMO_EXTINGUISH_OFF",
+                 detail={"source": "WEB_AUTO", "cell": [t.get("col"), t.get("row")], "extinguish_applied": applied})
     _AUTO["target"] = None
     return {"ok": True}
 
@@ -280,10 +299,21 @@ async def fly(req: FlyReq):
             wind = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False).wind_speed
         except Exception:
             wind = WIND_MS
+        _web_log("TASK_CREATED", "READY", task_id=tid,
+                 detail={"source": "WEB_MANUAL", "cell": [req.col, req.row], "target": target})
         ev = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/evaluate", json={**base,"wind_ms":wind})).json()
+        _web_log("LOCAL_RESPONSE", ev.get("verdict") or "UNKNOWN", reason=ev.get("reason"), decision_id=did,
+                 task_id=tid, resource_id=UAV_ID,
+                 detail={"source": "WEB_MANUAL", "evidence": {"eta_sec": ev.get("eta_sec"),
+                         "constraints": ev.get("constraints"), "counter_offer": ev.get("counter_offer")}})
         if ev.get("verdict") != "ACCEPT":
+            _web_log("TASK_COMPLETE", "FAILED", reason=ev.get("reason") or ev.get("verdict"), decision_id=did,
+                     task_id=tid, resource_id=UAV_ID, detail={"source": "WEB_MANUAL"})
             return {"ok": False, "verdict": ev.get("verdict"), "reason": ev.get("reason"), "target": target}
         ex = (await cx.post(f"{UAV_AGENT}/uav/{UAV_ID}/execute", json=base)).json()
+        # 수동(직접) 경로는 총괄 Safety 를 거치지 않는다 — INT-01 스위치를 켜면 총괄 경유로 바뀐다
+        _web_log("EXECUTION", "STARTED", reason="MANUAL_DIRECT_NO_SAFETY", decision_id=did,
+                 task_id=tid, resource_id=UAV_ID, detail={"source": "WEB_MANUAL"})
     return {"ok": True, "task_id": ex.get("task_id", tid), "target": target, "eta_sec": ev.get("eta_sec")}
 
 async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
@@ -301,10 +331,18 @@ async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
             r = await cx.post(f"{config.ORCH_URL.rstrip('/')}/tasks", json=body)
         j = r.json()
     except Exception as e:
+        _web_log("ORCH_TASK_SUBMITTED", "FAILED", reason="ORCH_UNREACHABLE",
+                 detail={"source": "WEB_VIA_ORCH", "request_id": body["request_id"], "cell": [req.col, req.row]})
         return {"ok": False, "via": "orch", "reason": "ORCH_UNREACHABLE", "detail": str(e), "target": target}
     if r.status_code not in (200, 202):
+        _web_log("ORCH_TASK_SUBMITTED", "FAILED", reason=f"ORCH_HTTP_{r.status_code}",
+                 detail={"source": "WEB_VIA_ORCH", "request_id": body["request_id"], "cell": [req.col, req.row]})
         return {"ok": False, "via": "orch", "reason": f"ORCH_HTTP_{r.status_code}", "detail": j, "target": target}
     t = j.get("task") or {}
+    # 접수(202)는 출동 성공이 아니다. 이후 진행은 총괄 장부가 기록하므로 여기서는 접수 사실만 남긴다
+    _web_log("ORCH_TASK_SUBMITTED", "ACCEPTED", task_id=t.get("task_id"), reason=t.get("hold_reason"),
+             detail={"source": "WEB_VIA_ORCH", "request_id": body["request_id"], "cell": [req.col, req.row],
+                     "purpose_status": t.get("purpose_status"), "created": j.get("created")})
     return {"ok": True, "via": "orch", "request_id": body["request_id"], "task_id": t.get("task_id"),
             "created": j.get("created"), "purpose_status": t.get("purpose_status"),
             "hold_reason": t.get("hold_reason"), "target": target}
@@ -473,7 +511,7 @@ async function tickUgv(){try{const col=+$('col').value,row=+$('row').value;
   (u.routes||[]).forEach(rt=>{ if(rt.reachable && (_driveT[rt.id]||0)>=0.999 && !_extd[rt.id]){
      _extd[rt.id]=true;
      fetch('/api/extinguish',{method:'POST',headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({col:+$('col').value,row:+$('row').value})})
+       body:JSON.stringify({col:+$('col').value,row:+$('row').value,resource_id:rt.id})})
        .then(r=>r.json()).then(d=>{ $('log').textContent = rt.id + (d && d.disabled
          ? ' 화재 지점 도착 (진화 효과 미반영 — 환경 모델 진화 기능 대기)'
          : ' 화재 도착 → 진화 반영 (시연 전용)'); }).catch(()=>{});if(window.__autoActive&&window.__autoActive()){window.__autoDone();_extd={};}

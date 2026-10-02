@@ -8,7 +8,12 @@ INT-03 확인 (총괄 팀별 요청서): 관제판 우측 "총괄 판단" 요약
 
 실행: python -m tests.int03_orch_panel_check   (총괄·UAV 서버 불필요 — 응답을 흉내 냄)
 """
+import tempfile
+
 import config
+
+# 관제판을 불러오면 로그 파일을 새로 만들므로, 실제 logs/web_auto.jsonl 을 지우지 않게 임시 폴더를 쓴다
+config.LOG_DIR = tempfile.mkdtemp(prefix="adair_test_")
 config.ORCH_URL = "http://127.0.0.1:59999"   # 아무도 없는 주소
 
 import httpx

@@ -9,7 +9,12 @@ INT-01 확인 (총괄 팀별 요청서): 관제판 "출동" 버튼을 총괄 경
 
 실행: python -m tests.int01_orch_dispatch_check   (총괄·UAV 서버 불필요 — 응답을 흉내 냄)
 """
+import tempfile
+
 import config
+
+# 관제판을 불러오면 로그 파일을 새로 만들므로, 실제 logs/web_auto.jsonl 을 지우지 않게 임시 폴더를 쓴다
+config.LOG_DIR = tempfile.mkdtemp(prefix="adair_test_")
 import httpx
 from fastapi.testclient import TestClient
 
