@@ -84,3 +84,13 @@ curl -s localhost:8100/health | python3 -m json.tool  # resources 가 모두 px4
 4. 미션 항목별 속도(혼잡 구간 감속)를 rover 가 따르는지
 5. 주행 중 미션 교체(재탐색) 시 rover 가 멈칫하지 않고 이어 가는지
 6. 지형 경사에서 r1_rover 가 2 m/s 를 내는지, 도로 위에서 뒤집히지 않는지
+
+## 시험할 때 자주 헷갈리는 것
+
+- **task_id 는 매번 새로.** 실행 기록이 `ugv/.state/ugv_tasks.json` 에 남는다 (UGV-04, 서버를 다시 켜도 유지).
+  같은 task_id·같은 내용을 다시 보내면 새로 출발하지 않고 예전 결과를 `"duplicate": true` 로 돌려준다.
+  깨끗하게 시작하려면 서버를 끄고 `rm ugv/.state/ugv_tasks.json`, 또는 `UGV_STATE_DIR=/tmp/ugv-state` 로 띄운다.
+- **px4-start.sh 를 두 번 실행해도** 이미 떠 있는 인스턴스는 건너뛴다. 다시 띄우려면 `px4-stop.sh` 먼저.
+- **차가 지면 위에 떠 보이는 것**: Gazebo 지형의 화면 표시(ogre2)와 물리 충돌면(dartsim)이 같은 heightmap 을
+  다르게 보간해서 생기는 표시 차이다. 차의 z 가 스폰 높이 근처에서 유지되고 주행하면 물리상으로는 땅 위에 있는 것이다.
+  확인: `GZ_PARTITION=ugv GZ_IP=127.0.0.1 gz topic -e -t /stats -n 1` 의 real_time_factor, 서버 `/ugv/{id}/state` 위치 변화.

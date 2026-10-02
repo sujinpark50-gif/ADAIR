@@ -99,6 +99,12 @@ PY
 [ -s "$LOG_DIR/resources.txt" ] || { echo "자원 없음: ${ONLY:-전체}"; exit 1; }
 
 while read -r RID INST MODEL X Y Z YAW; do
+    # 이미 떠 있는 인스턴스는 다시 띄우지 않는다. 같은 -i 를 두 번 띄우면 잠금·포트(1454i)를 두고 싸우고
+    # 차량 이름(<모델>_<i>)이 겹쳐 스폰이 실패해, 달리던 차의 텔레메트리까지 끊긴다.
+    if pgrep -f "bin/px4 -i $INST " > /dev/null; then
+        echo "$RID  인스턴스 $INST 이미 실행 중 — 건너뜀 (다시 띄우려면 ./ugv/tools/px4-stop.sh 먼저)"
+        continue
+    fi
     for m in "$MODEL" lawnmower r1_rover; do          # 지정 모델이 이 PX4 버전에 없으면 대체
         AF=$(airframe_of "$m" || true)
         if [ -n "$AF" ] && [ -f "$PX4_GZ_MODELS/$m/model.sdf" ]; then MODEL="$m"; break; fi
