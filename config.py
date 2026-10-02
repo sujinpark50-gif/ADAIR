@@ -26,6 +26,28 @@ BASE_B_NAME = "기린119안전센터"
 BASE_B_LAT = 37.9430
 BASE_B_LON = 128.2760
 
+# INT-04 거점 좌표 단일 출처: environment/config/fire_stations.json (멘토 패치 0001)
+# 이 파일이 있으면 위 값 대신 파일 값을 쓴다. 팀이 좌표를 확정하면 그 파일만 고친다.
+FIRE_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "environment", "config", "fire_stations.json")
+
+
+def _load_stations(path=FIRE_STATIONS_PATH):
+    import json
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {s["base_id"]: s for s in json.load(f).get("stations", [])}
+    except Exception:
+        return {}
+
+
+_STATIONS = _load_stations()
+if "A" in _STATIONS:
+    BASE_A_NAME, BASE_A_LAT, BASE_A_LON = _STATIONS["A"]["name"], float(_STATIONS["A"]["lat"]), float(_STATIONS["A"]["lon"])
+if "B" in _STATIONS:
+    BASE_B_NAME, BASE_B_LAT, BASE_B_LON = _STATIONS["B"]["name"], float(_STATIONS["B"]["lat"]), float(_STATIONS["B"]["lon"])
+STATIONS_SOURCE = "fire_stations.json" if _STATIONS else "config.py 기본값"
+
 COORDINATE_ORIGIN_LAT = (BASE_A_LAT + BASE_B_LAT) / 2
 COORDINATE_ORIGIN_LON = (BASE_A_LON + BASE_B_LON) / 2
 
@@ -81,6 +103,13 @@ ORCH_URL = os.environ.get("ORCH_URL", "http://127.0.0.1:8200")
 # 켜짐(WEB_DISPATCH_VIA_ORCH=1): 총괄 POST /tasks 로만 보낸다. 출동 여부·Safety·실행은 총괄이 결정하고
 #   관제판은 UAV 를 직접 부르지 않는다. 총괄 시나리오(기상·환경) 준비 후 켠다.
 WEB_DISPATCH_VIA_ORCH = os.environ.get("WEB_DISPATCH_VIA_ORCH", "0") == "1"
+
+# 관제판 산불 시계 (INT-05)
+# 비어 있음(기본): 기존처럼 관제판이 산불 모델을 직접 진행시킨다 (단독 시연용).
+# 환경 계약 서버 주소(예: http://127.0.0.1:8300): 관제판은 /snapshot 을 읽기만 하고 진행하지 않는다.
+#   시계는 트윈 시계(tools/twin_clock.py) 하나만 /advance 를 부른다. 이 모드에서는 관제판 자체 자동 루프를 끈다
+#   (자동 판단·배정은 총괄 담당).
+WEB_ENV_URL = os.environ.get("WEB_ENV_URL", "").rstrip("/")
 
 # ---------------------------------------------------------------------------
 # 3. 시뮬레이션 실행 설정

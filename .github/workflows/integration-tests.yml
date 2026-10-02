@@ -45,6 +45,9 @@ jobs:
       - name: 관제 로그 기록
         run: python -m tests.log_coverage_check
 
+      - name: INT-04·05 거점 좌표 단일 출처·관제판 시계 (환경 서버 읽기)
+        run: python -m tests.int04_05_check
+
       - name: Orchestrator v0.1.2 (박수진)
         run: python -m pytest -q orchestrator_v012/tests
 

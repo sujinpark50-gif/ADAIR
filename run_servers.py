@@ -12,6 +12,9 @@ ADAIR 서버 일괄 실행·중지·상태 확인 (통합 담당)
     python run_servers.py start --via-orch      # 관제판 출동을 총괄 경유로 (INT-01 스위치)
     python run_servers.py start --demo-extinguish   # 도착 시 진화 반영 (INT-02 시연 전용)
     python run_servers.py start --uav-url http://<EC2 IP>:8000   # 원격(real) UAV 에 연결, 로컬 UAV 는 띄우지 않음
+    python run_servers.py start --twin          # 2019 인제 디지털 트윈 (멘토 패치, tools/run_twin.sh 와 같은 구성)
+                                                #   환경 계약 서버(8300) + UAV 2대 + UGV + 총괄(팀 환경) + 관제판 + 트윈 시계 + 야간 순찰
+                                                #   관제판은 환경 서버를 읽기만 하고 출동은 총괄 경유. 3D 화면: /inje3d
     python run_servers.py status                # 켜진 서버와 응답 여부
     python run_servers.py stop                  # 이 스크립트로 켠 서버 모두 끄기
     python run_servers.py stop orch             # 하나만 끄기
@@ -37,34 +40,78 @@ PY = sys.executable
 IS_WIN = os.name == "nt"
 
 
+def twin_env(opts: dict) -> dict:
+    """트윈 모드 공통 설정 (tools/run_twin.sh 와 같은 값). 시나리오 파일의 twin_env 를 그대로 쓴다."""
+    if not opts.get("twin"):
+        return {}
+    d = json.loads((ROOT / "web" / "static" / "inje2019" / "scenario.json").read_text(encoding="utf-8"))
+    env = {k: str(v) for k, v in d["twin_env"].items()}
+    run = Path(opts.get("twin_dir") or RUN_DIR)
+    env.update({"ENV_STATE_DIR": str(run / "env"), "ENV_RESUME": "0"})
+    return env
+
+
+def twin_uav_home(opts: dict) -> str:
+    """mock 드론을 발화점 700 m 밖 차량 집결지에서 띄운다 (run_twin.sh 의 forward 이륙과 같음)."""
+    if not opts.get("twin") or opts.get("uav_url"):
+        return ""
+    import math
+    sys.path.insert(0, str(ROOT))
+    import gz_bridge as gb
+    d = json.loads((ROOT / "web" / "static" / "inje2019" / "scenario.json").read_text(encoding="utf-8"))
+    path, sp = d["vehicles"][0]["path"], d["spring"]
+    p = next((q for q in path if math.hypot(q[0] - sp["gx"], q[1] - sp["gy"]) * 90 <= 700), path[-1])
+    lat, lon = gb.grid_cell_to_latlon(p[0], p[1])
+    return f"{lat:.6f},{lon:.6f},{gb.terrain_elev(round(p[0]), round(p[1])):.1f}"
+
+
 def server_defs(opts: dict) -> dict:
     """서버별 실행 방법. opts 는 start 할 때 받은 설정 (restart 때 그대로 재사용)."""
     uav_url = opts.get("uav_url") or "http://127.0.0.1:8000"
+    tw = twin_env(opts)
+    run = Path(opts["twin_dir"]) if opts.get("twin") and opts.get("twin_dir") else RUN_DIR
     web_env = {"UAV_AGENT_URL": uav_url, "UAV_ID": "A-uav1"}
-    if opts.get("via_orch"):
+    if opts.get("via_orch") or opts.get("twin"):
         web_env["WEB_DISPATCH_VIA_ORCH"] = "1"
     if opts.get("demo_extinguish"):
         web_env["WEB_DEMO_EXTINGUISH"] = "1"
+    if opts.get("twin"):
+        web_env["WEB_ENV_URL"] = "http://127.0.0.1:8300"
+    uav_extra = {**tw, "UAV_STATE_DIR": str(run / "uav"), "UAV_HOME": twin_uav_home(opts)} if tw else {}
+    orch_env = {**tw, "ORCH_ENV_MODE": "team_http", "ORCH_DB_PATH": str(run / "orchestrator.sqlite3")} if tw else {}
+    speed = str(opts.get("twin_speed") or 100)
     uv = [PY, "-m", "uvicorn"]
     return {
+        "env":  {"cwd": ROOT, "port": 8300, "health": "/health",
+                 "cmd": uv + ["environment.server:app", "--host", "127.0.0.1", "--port", "8300", "--log-level", "warning"],
+                 "env": tw, "desc": "환경 계약 서버 (멘토 패치)"},
         "uav1": {"cwd": ROOT / "uav" / "uav-agent", "port": 8000, "health": "/health",
                  "cmd": uv + ["main:app", "--host", "127.0.0.1", "--port", "8000"],
-                 "env": {"UAV_ID": "A-uav1", "UAV_MODE": "mock"}, "desc": "UAV A-uav1 (mock)"},
+                 "env": {"UAV_ID": "A-uav1", "UAV_MODE": "mock", **uav_extra}, "desc": "UAV A-uav1 (mock)"},
         "uav2": {"cwd": ROOT / "uav" / "uav-agent", "port": 8001, "health": "/health",
                  "cmd": uv + ["main:app", "--host", "127.0.0.1", "--port", "8001"],
-                 "env": {"UAV_ID": "A-uav2", "UAV_MODE": "mock"}, "desc": "UAV A-uav2 (mock)"},
+                 "env": {"UAV_ID": "A-uav2", "UAV_MODE": "mock", **uav_extra}, "desc": "UAV A-uav2 (mock)"},
         "ugv":  {"cwd": ROOT, "port": 8100, "health": "/health",
                  "cmd": uv + ["ugv.server:app", "--host", "127.0.0.1", "--port", "8100"],
-                 "env": {"UGV_DRIVER": "sim"}, "desc": "UGV 서버 (sim)"},
+                 "env": {"UGV_DRIVER": "sim", **({"UGV_STATE_DIR": str(run / "ugv")} if tw else {})},
+                 "desc": "UGV 서버 (sim)"},
         "orch": {"cwd": ROOT, "port": 8200, "health": "/health",
-                 "cmd": [PY, "-m", "orchestrator.api"], "env": {}, "desc": "총괄 오케스트레이터"},
+                 "cmd": [PY, "-m", "orchestrator.api"], "env": orch_env,
+                 "desc": "총괄 오케스트레이터" + (" (팀 환경)" if tw else "")},
         "web":  {"cwd": ROOT, "port": 8080, "health": "/",
                  "cmd": uv + ["web.app:app", "--host", "127.0.0.1", "--port", "8080"],
                  "env": web_env, "desc": "웹 관제판"},
+        "clock": {"cwd": ROOT, "port": None, "health": None,
+                  "cmd": [PY, "tools/twin_clock.py", "--speed", speed], "env": tw,
+                  "desc": f"트윈 시계 ({speed}배속, /advance 유일 호출)"},
+        "operator": {"cwd": ROOT, "port": None, "health": None,
+                     "cmd": [PY, "tools/twin_operator.py"], "env": tw, "desc": "야간 순찰 요청"},
     }
 
 
-ORDER = ["uav1", "uav2", "ugv", "orch", "web"]   # 켜는 순서 (관제판은 마지막)
+ORDER = ["env", "uav1", "uav2", "ugv", "orch", "web", "clock", "operator"]   # 켜는 순서
+TWIN_SET = ORDER                                   # --twin 일 때 전부
+BASIC = ["env", "uav1", "uav2", "ugv", "orch", "web"]   # 포트가 있는 서버
 
 
 # ---------------------------------------------------------------- 상태 파일
@@ -138,6 +185,9 @@ def launch(name: str, d: dict) -> int:
 
 
 def wait_ready(d: dict, pid: int, limit: float = 40.0) -> bool:
+    if d["port"] is None:                       # 포트 없는 프로세스(시계·순찰)는 살아 있는지만 본다
+        time.sleep(3)
+        return alive(pid)
     t0 = time.time()
     while time.time() - t0 < limit:
         if responds(d["port"], d["health"]):
@@ -155,7 +205,7 @@ def start_one(name: str, defs: dict, st: dict) -> None:
     if old and alive(old):
         print(f"  {name:5} 이미 실행 중 (PID {old}) — 건너뜀")
         return
-    if responds(d["port"], d["health"], timeout=0.8):
+    if d["port"] and responds(d["port"], d["health"], timeout=0.8):
         print(f"  {name:5} ⚠ 포트 {d['port']}을 다른 프로그램이 이미 쓰는 중 — 건너뜀 "
               f"(직접 켜 둔 터미널이 있으면 그 창에서 Ctrl+C)")
         return
@@ -163,27 +213,36 @@ def start_one(name: str, defs: dict, st: dict) -> None:
     st["servers"][name] = {"pid": pid, "port": d["port"]}
     save_state(st)
     ok = wait_ready(d, pid)
-    mark = "✅ 응답" if ok else "❌ 응답 없음"
-    print(f"  {name:5} {mark}  :{d['port']}  {d['desc']}  (PID {pid})"
+    mark = ("✅ 응답" if d["port"] else "✅ 실행") if ok else "❌ 응답 없음"
+    port = f":{d['port']}" if d["port"] else "  -  "
+    print(f"  {name:8} {mark}  {port}  {d['desc']}  (PID {pid})"
           + ("" if ok else f"  → logs/servers/{name}.log 확인"))
 
 
 def cmd_start(a) -> None:
     st = load_state()
-    opts = {"uav_url": a.uav_url, "via_orch": a.via_orch, "demo_extinguish": a.demo_extinguish}
+    opts = {"uav_url": a.uav_url, "via_orch": a.via_orch, "demo_extinguish": a.demo_extinguish,
+            "twin": a.twin, "twin_speed": a.twin_speed}
+    if a.twin:
+        opts["twin_dir"] = str(ROOT / "logs" / "twin" / time.strftime("%Y%m%d_%H%M%S"))
     # 전체 시작(이름 생략)은 이번에 준 설정으로 새로 정하고,
     # 일부만 켤 때(start orch 등)는 옵션을 주지 않으면 지난 설정을 그대로 쓴다.
-    if not a.names or any(v for v in opts.values()):
+    if not a.names or any([a.uav_url, a.via_orch, a.demo_extinguish, a.twin]):
         st["opts"] = opts
     defs = server_defs(st["opts"])
-    names = a.names or (["uav1", "uav2", "ugv", "orch", "web"] if a.all
-                        else ["uav1", "orch", "web"] + (["ugv"] if a.ugv else []))
+    if st["opts"].get("twin") and not a.names:
+        names = TWIN_SET
+    else:
+        names = a.names or (["uav1", "uav2", "ugv", "orch", "web"] if a.all
+                            else ["uav1", "orch", "web"] + (["ugv"] if a.ugv else []))
     if a.uav_url:                                   # 원격 UAV 를 쓰면 로컬 UAV 는 띄우지 않는다
         names = [n for n in names if n not in ("uav1", "uav2")]
     print("서버 시작:")
     for n in [x for x in ORDER if x in names]:
         start_one(n, defs, st)
     print("\n관제판: http://127.0.0.1:8080   총괄 판단 화면: http://127.0.0.1:8200/board")
+    if st["opts"].get("twin"):
+        print("3D 트윈: http://127.0.0.1:8080/inje3d  → '실시간 연결 LIVE'   기록: " + st["opts"]["twin_dir"])
     print("끄기: python run_servers.py stop")
 
 
@@ -218,15 +277,18 @@ def cmd_restart(a) -> None:
 def cmd_status(a) -> None:
     st = load_state()
     defs = server_defs(st.get("opts") or {})
-    print(f"{'이름':5} {'포트':>5}  {'응답':6} {'PID':>7}  설명")
+    print(f"{'이름':8} {'포트':>5}  {'응답':6} {'PID':>7}  설명")
     for n in ORDER:
         d = defs[n]
         pid = st["servers"].get(n, {}).get("pid")
-        on = responds(d["port"], d["health"], timeout=0.8)
+        if d["port"]:
+            on = responds(d["port"], d["health"], timeout=0.8)
+        else:
+            on = bool(pid and alive(pid))
         who = (str(pid) if pid and alive(pid) else ("직접 실행" if on else "-"))
-        print(f"{n:5} {d['port']:>5}  {'✅' if on else '·':6} {who:>7}  {d['desc']}")
+        print(f"{n:8} {str(d['port'] or '-'):>5}  {'✅' if on else '·':6} {who:>7}  {d['desc']}")
     o = st.get("opts") or {}
-    print(f"\n설정: UAV={o.get('uav_url') or '로컬 mock'} · 출동 총괄 경유={'켜짐' if o.get('via_orch') else '꺼짐'}"
+    print(f"\n설정: {'트윈 · ' if o.get('twin') else ''}UAV={o.get('uav_url') or '로컬 mock'} · 출동 총괄 경유={'켜짐' if (o.get('via_orch') or o.get('twin')) else '꺼짐'}"
           f" · 진화 시연={'켜짐' if o.get('demo_extinguish') else '꺼짐'}")
 
 
@@ -245,6 +307,8 @@ def main() -> None:
     s.add_argument("--uav-url", help="원격 UAV 서버 주소 (예: EC2 real). 지정하면 로컬 UAV 를 띄우지 않음")
     s.add_argument("--via-orch", action="store_true", help="관제판 출동을 총괄 경유로 (INT-01)")
     s.add_argument("--demo-extinguish", action="store_true", help="도착 시 진화 반영 (INT-02 시연 전용)")
+    s.add_argument("--twin", action="store_true", help="2019 인제 디지털 트윈 (멘토 패치) 구성으로 전부 켜기")
+    s.add_argument("--twin-speed", type=int, default=100, help="트윈 시계 배속 (기본 100, real 드론이면 1)")
     s.set_defaults(fn=cmd_start)
     for name, fn, h in (("stop", cmd_stop, "서버 끄기 (이름 생략 시 전부)"),
                         ("restart", cmd_restart, "서버 다시 켜기")):
