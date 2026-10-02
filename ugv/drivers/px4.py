@@ -181,7 +181,12 @@ class PX4Driver(MotionDriver):
         speeds = list(speeds) if speeds else [self.speed_mps] * len(waypoints)
         nxt = speeds[1:] + speeds[-1:]
         self._first_speed = speeds[0]
-        plan = MissionPlan([self._waypoint(lat, lon, v) for (lat, lon), v in zip(waypoints, nxt)])
+        # 중간 웨이포인트는 통과형(is_fly_through=True): 멈추지 않고 지나가며 다음 점으로 꺾는다.
+        # 멈춤형이면 점마다 정지 → 제자리 회전을 하는데, 경사진 지형에서 회전을 못 끝내 멈춘 채로
+        # 남는 일이 있었다 (2026-10-02 WSL 시험, 61° 꺾임·경사 7.5° 지점에서 STALLED). 마지막 점만 멈춤형.
+        last = len(waypoints) - 1
+        plan = MissionPlan([self._waypoint(lat, lon, v, fly_through=(i < last))
+                            for i, ((lat, lon), v) in enumerate(zip(waypoints, nxt))])
         try:
             await self._drone.mission.upload_mission(plan)
             log.info("미션 업로드 성공 (%d 개)", len(waypoints))
@@ -230,12 +235,13 @@ class PX4Driver(MotionDriver):
             kept.append(waypoints[-1])
         return kept
 
-    def _waypoint(self, lat: float, lon: float, speed_mps: float | None = None) -> MissionItem:
+    def _waypoint(self, lat: float, lon: float, speed_mps: float | None = None,
+                  fly_through: bool = False) -> MissionItem:
         nan = float("nan")
         return MissionItem(
             lat, lon, self.alt_m,
             speed_mps or self.speed_mps,
-            False,                 # is_fly_through
+            fly_through,           # is_fly_through — True 면 이 점에서 멈추지 않는다
             nan, nan,
             MissionItem.CameraAction.NONE,
             nan, nan,
