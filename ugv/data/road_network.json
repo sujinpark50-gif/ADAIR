@@ -27,33 +27,35 @@
   }
  },
  "world": {
-  "sdf": "uav/gazebo/kangwon.sdf",
-  "name": "kangwon",
+  "sdf": "ugv/gazebo/kangwon_ugv.sdf",
+  "name": "kangwon_ugv",
   "datum": [
    38.0112,
    128.122643,
    172.1
-  ]
+  ],
+  "road_width_m": 6.0,
+  "max_grade": 0.08
  },
  "spawn": {
   "A-ugv1": {
    "x": 4025.5,
    "y": 5637.9,
-   "z": 22.9,
+   "z": 23.02,
    "yaw": -2.384,
    "node": "A"
   },
   "A-fire1": {
-   "x": 4031.3,
-   "y": 5643.4,
-   "z": 22.9,
+   "x": 4019.7,
+   "y": 5632.4,
+   "z": 23.16,
    "yaw": -2.384,
    "node": "A"
   },
   "B-ugv1": {
    "x": 17117.7,
-   "y": -5243.7,
-   "z": 90.9,
+   "y": -5243.8,
+   "z": 95.46,
    "yaw": -0.753,
    "node": "B"
   }

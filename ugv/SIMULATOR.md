@@ -94,3 +94,23 @@ curl -s localhost:8100/health | python3 -m json.tool  # resources 가 모두 px4
 - **차가 지면 위에 떠 보이는 것**: Gazebo 지형의 화면 표시(ogre2)와 물리 충돌면(dartsim)이 같은 heightmap 을
   다르게 보간해서 생기는 표시 차이다. 차의 z 가 스폰 높이 근처에서 유지되고 주행하면 물리상으로는 땅 위에 있는 것이다.
   확인: `GZ_PARTITION=ugv GZ_IP=127.0.0.1 gz topic -e -t /stats -n 1` 의 real_time_factor, 서버 `/ugv/{id}/state` 위치 변화.
+
+## UGV 전용 월드 — 강원 지형 + 도로 면 (`ugv/gazebo/kangwon_ugv.sdf`)
+
+UAV 월드의 지형은 90 m DEM 을 56 m heightmap 으로 보간한 것이라 도로를 모른다. 원본 DEM 에서는 같은 칸(경사 0)인 곳에
+보간 때문에 62 m 에 8 m 오르는 가짜 오르막이 생겨 r1_rover 가 같은 지점에서 두 번 멈췄다 (2026-10-02).
+그래서 도로 데이터로 주행 면을 만든다. `px4-start.sh` 는 `road_network.json` 의 `world` 를 읽어 이 월드를 띄운다.
+
+| 항목 | 값 |
+|---|---|
+| 도로 면 | 모든 도로를 폭 6 m 띠로, 교차로는 반지름 5 m 패드. 시각·충돌 공용 `models/kangwon_ugv/roads.obj` |
+| 도로 높이 | 원본 DEM → 도로 따라 150 m 이동평균 → 교차로 높이 일치 → 경사 상한 8% (최대 8.4%) |
+| 지형 | 도로 면보다 0.6 m 이상 높던 곳을 깎은 heightmap 사본 (터널 구간은 100 m 넘게 깎인 곳도 있다) |
+| 스폰 | 도로 면 위 + 0.4 m. 같은 거점 두 번째 차량은 도로를 따라 8 m 앞 |
+
+다시 만들기 (도로망을 다시 만들었으면 반드시 뒤이어 실행 — `build_road_network` 가 spawn·world 를 지형 기준으로 되돌린다):
+```bash
+python3 -m ugv.tools.build_road_network     # 도로망이 바뀐 경우만
+python3 -m ugv.tools.build_road_world       # numpy scipy pillow rasterio pyproj 필요
+```
+UAV 월드로 돌아가려면 `road_network.json` 의 `world` 를 지우거나 `build_road_network` 만 다시 실행한다.

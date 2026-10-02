@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UGV 3대: Gazebo 월드 1개(kangwon, UAV 와 같은 강원 지형) + PX4 SITL 인스턴스 3개.
+# UGV 3대: Gazebo 월드 1개(kangwon_ugv = UAV 와 같은 강원 지형 + 도로 면) + PX4 SITL 인스턴스 3개.
 # Gazebo/PX4 를 돌리는 기계(현재 Windows WSL)에서 저장소 루트 기준으로 실행한다.
 #
 #   UGV_HOST=192.168.0.23 ./ugv/tools/px4-start.sh           # 3대 모두 (UGV_HOST = UGV 서버가 도는 Mac 의 IP)
@@ -34,8 +34,10 @@ set -eo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
 BUILD="$PX4_DIR/build/px4_sitl_default"
-WORLD_SDF="$REPO/uav/gazebo/kangwon.sdf"
-WORLD_NAME="kangwon"
+# 월드는 ugv/data/road_network.json 의 world 를 따른다 (기본: ugv/tools/build_road_world.py 가 만든
+# ugv/gazebo/kangwon_ugv.sdf — 강원 지형 + 도로 면). 값이 없으면 UAV 월드(uav/gazebo/kangwon.sdf).
+read -r WORLD_REL WORLD_NAME < <(python3 -c "import json;w=json.load(open('$REPO/ugv/data/road_network.json',encoding='utf-8')).get('world',{});print(w.get('sdf','uav/gazebo/kangwon.sdf'),w.get('name','kangwon'))")
+WORLD_SDF="$REPO/$WORLD_REL"
 SPEED="${SPEED:-1}"
 UGV_HOST="${UGV_HOST:-}"
 LOG_DIR="${LOG_DIR:-/tmp/ugv-px4}"
@@ -51,7 +53,7 @@ GZ_ENV=$(find "$BUILD" -maxdepth 2 -name gz_env.sh | head -1)
 [ -n "$GZ_ENV" ] || { echo "gz_env.sh 없음 ($BUILD) — PX4 gz 빌드 확인"; exit 1; }
 # shellcheck disable=SC1090
 source "$GZ_ENV"
-export GZ_SIM_RESOURCE_PATH="$REPO/uav/gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"   # model://kangwon
+export GZ_SIM_RESOURCE_PATH="$REPO/ugv/gazebo/models:$REPO/uav/gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"   # model://kangwon_ugv, model://kangwon
 export GZ_PARTITION=ugv
 export GZ_IP=127.0.0.1
 export PX4_GZ_STANDALONE=1
