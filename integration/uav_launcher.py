@@ -60,8 +60,11 @@ def start() -> list[str]:
         return []
 
     started = []
+    # 실행 기록(UAV-01)은 파일에 남는다. 이 통합 실행은 TASK_001 부터 다시 세므로 실행마다 새 폴더를 준다
+    # (같은 키·다른 내용 = 409 충돌 규칙에 이전 실행 기록이 걸리지 않게).
+    state_dir = _REPO_ROOT / "logs" / "uav_state" / time.strftime("%Y%m%d-%H%M%S")
     for uav_id, port in _UAV_PLAN:
-        env = dict(os.environ, UAV_ID=uav_id, UAV_MODE="mock")
+        env = dict(os.environ, UAV_ID=uav_id, UAV_MODE="mock", UAV_STATE_DIR=str(state_dir))
         log = open(_REPO_ROOT / "logs" / f"uav_{uav_id}.log", "w")
         p = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1",

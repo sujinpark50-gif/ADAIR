@@ -56,6 +56,11 @@ DB_PATH = os.getenv("ORCH_DB_PATH", str(ROOT / "logs" / "orchestrator" / "state.
 # 가짜 환경은 켤 때마다 0초부터 다시 시작하므로 이전 실행의 신고·관측·임무를 이어받으면 안 된다 (B05).
 FIXTURE_RUN_ID = os.getenv("ORCH_RUN_ID") or None
 
+# 진짜 세계(환경) 연결 방식. fixture(기본, 시험용 가짜) / team_inproc / team_http (2026-10 멘토 패치, ENV-01~06)
+ENV_MODE = os.getenv("ORCH_ENV_MODE", "fixture")
+ENV_URL = os.getenv("ORCH_ENV_URL", "http://127.0.0.1:8300")
+ENV_STATE_DIR = os.getenv("ORCH_ENV_STATE_DIR", str(Path(__file__).resolve().parents[1] / "environment" / ".state"))
+
 # ---------------------------------------------------------------------------
 # 외부 자원 주소 — 통합 config 를 그대로 따른다 (단일 출처)
 # ---------------------------------------------------------------------------

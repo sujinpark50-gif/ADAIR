@@ -14,3 +14,4 @@ rasterio
 
 # 테스트: python -m pytest -q orchestrator_v012/tests
 pytest
+scipy          # 멘토 패치 위성 피해지 분석(tools/burn_scar_s2.py) 시험

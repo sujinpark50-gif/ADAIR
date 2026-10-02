@@ -1,0 +1,55 @@
+# 통합 자동 시험 (통합 담당)
+# 통합 브랜치·main 에 push 하거나 PR 을 열면 GitHub 가 아래 시험을 자동으로 돌린다.
+# 결과는 PR 화면의 Checks 탭과 저장소 Actions 탭에서 볼 수 있다.
+# 서버를 띄우지 않는 시험만 돌린다 (UAV·UGV·총괄 응답은 각 시험 안에서 흉내 낸다).
+name: 통합 시험
+
+on:
+  push:
+    branches: [main, fix/integration-restore]
+  pull_request:
+    branches: [main, fix/integration-restore]
+  workflow_dispatch:          # Actions 탭에서 손으로 다시 돌릴 수 있게
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-integrated.txt
+
+      - name: 라이브러리 설치
+        run: python -m pip install -r requirements-integrated.txt
+
+      - name: IT-01·02 (폐루프)
+        run: python -m tests.it_cases
+
+      - name: 통합 패치 검증 (DEM·산불 모델·UGV 도로망)
+        run: python -m tests.it_patch_checks
+
+      - name: INT-01 출동 총괄 경유
+        run: python -m tests.int01_orch_dispatch_check
+
+      - name: INT-02 도착 즉시 진화 제거
+        run: python -m tests.int02_extinguish_check
+
+      - name: INT-03 총괄 판단 패널
+        run: python -m tests.int03_orch_panel_check
+
+      - name: 관제 로그 기록
+        run: python -m tests.log_coverage_check
+
+      - name: Orchestrator v0.1.2 (박수진)
+        run: python -m pytest -q orchestrator_v012/tests
+
+      - name: 총괄 오케스트레이터 (박수진) + 환경 계약 어댑터 (멘토 패치)
+        run: python -m pytest -q orchestrator
+
+      - name: 멘토 패치 — 환경 계약·실행 키·2019 재현·위성 피해지
+        run: python -m pytest -q environment/tests tests/test_exec_idempotency.py tests/test_inje2019_whatif.py tests/test_burn_scar.py

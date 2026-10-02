@@ -38,6 +38,7 @@ from .scenario import Scenario
 from .sim_clock import SimClock
 from .reporter import Reporter
 from .api_models import BlockRequest, EnvClockRequest
+from interfaces.exec_store import ExecStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -52,7 +53,24 @@ clock: SimClock | None = None
 scenario: Scenario | None = None
 reporter: Reporter | None = None
 _task_of: dict[str, str | None] = {}                # resource_id → 수행 중 task_id
-_tasks: dict[str, dict] = {}                        # task_id → TaskStatus 내용 (프로세스 재시작 시 사라짐)
+
+# 실행 기록 (UGV-02·04): 실행 키 = task_id. 파일에 저장해 재시작 뒤에도 같은 키로 조회·재요청이 같은 결과.
+# 재시작으로 끊긴 주행은 FAILED + phase=FAILED 로 닫는다 → 총괄은 FAULTED(점유 유지)로 두고,
+# 차가 READY 로 확인될 때 반납한다. 관측(도착) 전 끊김이므로 목적은 다른 자원으로 인계된다.
+_STATE_DIR = os.getenv("UGV_STATE_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), ".state"))
+STORE = ExecStore(os.path.join(_STATE_DIR, "ugv_tasks.json"))
+_tasks: dict[str, dict] = STORE.tasks                # task_id → TaskStatus 내용
+_save = STORE.save
+
+
+def _close_after_restart(t: dict) -> None:
+    t.update({"status": "FAILED", "error": f"AGENT_RESTARTED: 서버 재시작으로 주행 감시가 끊김 (driver={DRIVER})",
+              "progress": {**(t.get("progress") or {}), "phase": "FAILED"}})
+
+
+RESTART_CLOSED = STORE.reconcile_after_restart(
+    lambda t: t["status"] in ("STARTED", "IN_PROGRESS"), _close_after_restart,
+    basis="SIM_DRIVER_RESET" if DRIVER == "sim" else "PHYSICAL_STATE_FROM_TELEMETRY_AFTER_RESTART")
 _watchers: dict[str, asyncio.Task] = {}             # task_id → 도착 감시 태스크
 
 
@@ -325,8 +343,13 @@ async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str
             agent.refresh()
             agent.check_arrival()
             cur, total = agent.driver.progress()
+            prev = t.get("progress") or {}
+            changed = t["status"] != "IN_PROGRESS" or (prev.get("phase"), prev.get("waypoint"), prev.get("total")) \
+                != ("ENROUTE", cur, total)
             t["status"] = "IN_PROGRESS"
             t["progress"] = {"phase": "ENROUTE", "waypoint": cur, "total": total, **_remaining(agent, cur)}
+            if changed:                         # 파일 저장은 웨이포인트가 바뀔 때만 (남은 거리·시각은 매번 바뀐다)
+                _save()
             if agent.resource.state == "READY" and agent.resource.current_node == target_node:
                 break
             road = t["progress"].get("current_road_id")
@@ -382,6 +405,7 @@ async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str
         log.exception("task %s 실패", task_id)
         _report("UGV_TASK_FAILED", agent, task_id, reason="INTERNAL_ERROR", error=str(e))
     finally:
+        _save()
         _task_of[rid] = None
         _watchers.pop(task_id, None)
 
@@ -394,39 +418,49 @@ async def execute(resource_id: str, req: ExecuteRequest):
     다시 고른다 — evaluate 이후 도로가 막혔으면 여기서 409 로 거절된다.
     """
     agent = _agent(resource_id)
+    # 실행 키 확인이 먼저다: 같은 키 재요청은 수행 중이어도 기존 실행을 돌려준다 (UGV-04)
+    body = {"resource_id": resource_id, **req.model_dump()}
+    verdict, meta = STORE.check(req.task_id, body)
+    if verdict == "CONFLICT":
+        raise HTTPException(409, {"reason": "EXECUTION_ID_CONFLICT", "task_id": req.task_id,
+                                  "detail": "같은 실행 키로 다른 내용의 실행이 이미 있다 (기존 실행 유지)"})
+    if verdict == "DUPLICATE":
+        return ExecuteResponse(**{**meta["response"], "duplicate": True,
+                                  "current_status": _tasks.get(req.task_id, {}).get("status")})
     if _task_of.get(resource_id):
         raise HTTPException(409, f"{resource_id} 는 task {_task_of[resource_id]} 수행 중")
-    if req.task_id in _tasks and _tasks[req.task_id]["status"] in ("STARTED", "IN_PROGRESS"):
-        raise HTTPException(409, f"task {req.task_id} 이미 진행 중")
 
     d = _decide(agent, req.target, req.target_node)
     if d["verdict"] != "ACCEPT":
-        raise HTTPException(409, f"실행 불가: {d['reason']} — {d['detail']}")
+        raise HTTPException(409, f"실행 불가: {d['reason']} — {d['detail']}")   # 실행 안 함 → 키를 쓰지 않는다
     node_id = d["target_node"].node_id
+    url = f"/ugv/{resource_id}/task/{req.task_id}"
     if len(d["path"]) == 1:     # 이미 목적지 노드에 서 있다 — 움직이지 않고 바로 완료
         r = agent.resource
-        _tasks[req.task_id] = {"task_id": req.task_id, "resource_id": resource_id, "status": "COMPLETED",
-                               "target_node": node_id,
-                               "progress": {"phase": "ARRIVED", "waypoint": 0, "total": 0},
-                               "observation": {"observation_type": "ROAD_STATUS", "arrived_node": node_id,
-                                               "position": {"lat": r.lat, "lon": r.lon}, "fuel_pct": r.fuel_pct}}
+        resp = ExecuteResponse(task_id=req.task_id, resource_id=resource_id, status="STARTED", tracking_url=url,
+                               target_node=d["target_node"], eta_sec=0)
+        STORE.register(req.task_id, body, {
+            "task_id": req.task_id, "resource_id": resource_id, "status": "COMPLETED", "target_node": node_id,
+            "progress": {"phase": "ARRIVED", "waypoint": 0, "total": 0},
+            "observation": {"observation_type": "ROAD_STATUS", "arrived_node": node_id,
+                            "position": {"lat": r.lat, "lon": r.lon}, "fuel_pct": r.fuel_pct}},
+            resp.model_dump())
         _report("UGV_ARRIVED", agent, req.task_id, target_node=node_id, already_there=True,
                 observation=_tasks[req.task_id]["observation"])
-        return ExecuteResponse(task_id=req.task_id, resource_id=resource_id, status="STARTED",
-                               tracking_url=f"/ugv/{resource_id}/task/{req.task_id}",
-                               target_node=d["target_node"], eta_sec=0)
+        return resp
     if not await agent.execute(node_id):
         raise HTTPException(500, "드라이버가 주행을 시작하지 못했다")
 
-    _tasks[req.task_id] = {"task_id": req.task_id, "resource_id": resource_id, "status": "STARTED",
-                           "target_node": node_id, "progress": None, "observation": None}
+    resp = ExecuteResponse(task_id=req.task_id, resource_id=resource_id, status="STARTED", tracking_url=url,
+                           target_node=d["target_node"], eta_sec=d["eta_sec"])
+    STORE.register(req.task_id, body, {"task_id": req.task_id, "resource_id": resource_id, "status": "STARTED",
+                                       "target_node": node_id, "progress": None, "observation": None},
+                   resp.model_dump())
     _task_of[resource_id] = req.task_id
     _watchers[req.task_id] = asyncio.create_task(_watch_task(req.task_id, agent, node_id))
     _report("UGV_TASK_STARTED", agent, req.task_id, decision_id=req.decision_id, target_node=node_id,
             eta_sec=d["eta_sec"], path=d["path"])
-    return ExecuteResponse(task_id=req.task_id, resource_id=resource_id, status="STARTED",
-                           tracking_url=f"/ugv/{resource_id}/task/{req.task_id}",
-                           target_node=d["target_node"], eta_sec=d["eta_sec"])
+    return resp
 
 
 @app.post("/ugv/{resource_id}/stop")
@@ -442,6 +476,7 @@ async def stop(resource_id: str):
     if task_id and task_id in _tasks:
         _tasks[task_id]["status"] = "CANCELLED"
         _tasks[task_id]["error"] = "stopped by request"
+        _save()
         _report("UGV_TASK_CANCELLED", agent, task_id, reason="STOP_REQUESTED")
     _task_of[resource_id] = None
     if was != agent.resource.state or task_id:
