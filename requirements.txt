@@ -9,6 +9,7 @@
 mavsdk-grpc          # PX4 드라이버 (UGV_DRIVER=px4 일 때만)
 fastapi              # UGV 서버 (ugv/server.py)
 uvicorn              # UGV 서버 실행
+httpx                # UGV 서버 → 총괄 보고 (UGV_REPORT_URL 을 켤 때만)
 requests             # 커넥터 real 모드 (connectors/ugv_connector.py)
 # 도로망 변환 스크립트(ugv/tools/build_road_network.py)는 geopandas·rasterio 가 필요하지만
 # gpkg 가 바뀔 때만 1회 실행하므로 여기 넣지 않는다:  pip install geopandas rasterio

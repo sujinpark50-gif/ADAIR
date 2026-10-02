@@ -20,8 +20,6 @@ import itertools
 import logging
 import time
 
-import httpx
-
 log = logging.getLogger(__name__)
 
 RETRIES = 3
@@ -48,7 +46,8 @@ class Reporter:
 
     async def start(self) -> None:
         self._q = asyncio.Queue(QUEUE_MAX)
-        self._task = asyncio.create_task(self._run())
+        if self.enabled:            # 꺼져 있으면 전송 작업자를 띄우지 않는다 (httpx 불필요)
+            self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
         if self._task:
@@ -74,12 +73,14 @@ class Reporter:
         return ev
 
     async def _run(self) -> None:
+        import httpx    # 보고를 켤 때만 필요하다 (기본 꺼짐) — 없어도 서버는 뜬다
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
             while True:
                 ev = await self._q.get()
                 await self._send(client, ev)
 
-    async def _send(self, client: httpx.AsyncClient, ev: dict) -> None:
+    async def _send(self, client, ev: dict) -> None:
+        import httpx
         for attempt in range(RETRIES):
             try:
                 r = await client.post(f"{self.base_url}/events", json=ev)
