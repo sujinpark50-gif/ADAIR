@@ -58,9 +58,45 @@ def preview():
     if os.path.exists(PREVIEW): return FileResponse(PREVIEW, media_type="image/png")
     raise HTTPException(404, "no preview")
 
+_COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+
+def _env_server_snapshot():
+    """INT-05: 환경 계약 서버(/snapshot)를 읽기만 한다. 진행(/advance)은 트윈 시계만 부른다."""
+    s = httpx.get(f"{config.WEB_ENV_URL}/snapshot", timeout=3).json()
+
+    def xy(c):
+        x, y = str(c["cell_id"]).split("_")
+        return {"x": int(x), "y": int(y)}
+
+    risk = sorted(s.get("risk_cells") or [], key=lambda c: -float(c.get("risk_score") or 0))[:150]
+    to_deg = (float(s.get("wind_dir_deg") or 0) + 180) % 360          # 바람이 불어 가는 쪽 = 번지는 쪽
+    return {"tick": s.get("step_count"), "fire": [xy(c) for c in s.get("fire_cells") or []],
+            "risk": [xy(c) for c in risk], "wind_speed": s.get("wind_ms"),
+            "spread": _COMPASS[int((to_deg + 22.5) // 45) % 8],
+            "simulation_time_s": s.get("simulation_time_s"), "state_version": s.get("state_version"),
+            "source": "ENV_SERVER"}
+
+
+def _current_sim_time() -> float:
+    """기록에 남길 시뮬레이션 시각 (공통데이터규약 §1)."""
+    if config.WEB_ENV_URL:
+        try:
+            return float(httpx.get(f"{config.WEB_ENV_URL}/snapshot", timeout=2).json()["simulation_time_s"])
+        except Exception:
+            return 0.0
+    return float(_tick)
+
+
 @app.get("/api/env")
 def env():
-    """환경 상태 반환(격자 x,y). CA 진행은 서버 시계(WEB_ENV_STEP_SEC)로만 한다."""
+    """환경 상태 반환(격자 x,y). 환경 서버 모드면 읽기만, 아니면 서버 시계(WEB_ENV_STEP_SEC)로 CA 진행."""
+    if config.WEB_ENV_URL:
+        try:
+            return _env_server_snapshot()
+        except Exception as e:
+            return {"tick": None, "fire": [], "risk": [], "wind_speed": None, "spread": "-",
+                    "source": "ENV_SERVER", "error": f"환경 서버 응답 없음: {e}"}
     global _tick, _last_advance
     now = time.monotonic()
     advance = (now - _last_advance) >= WEB_ENV_STEP_SEC
@@ -131,6 +167,7 @@ def modes():
         pass
     return {"demo_extinguish": bool(config.WEB_DEMO_EXTINGUISH),
             "dispatch_via_orch": bool(config.WEB_DISPATCH_VIA_ORCH),
+            "env_url": config.WEB_ENV_URL or None, "stations_source": config.STATIONS_SOURCE,
             "uav_agent": UAV_AGENT, "uav_id": UAV_ID, "uav_mode": uav_mode}
 
 @app.get("/api/state")
@@ -190,7 +227,7 @@ def extinguish(cell: dict):
     INT-02: 시연 전용. config.WEB_DEMO_EXTINGUISH 가 꺼져 있으면(기본) 환경을 바꾸지 않는다.
     """
     rid = cell.get("resource_id")
-    if not config.WEB_DEMO_EXTINGUISH:
+    if not config.WEB_DEMO_EXTINGUISH or config.WEB_ENV_URL:
         _web_log("ARRIVAL", "ARRIVED", resource_id=rid, reason="DEMO_EXTINGUISH_OFF",
                  detail={"source": "WEB_MANUAL", "cell": [cell.get("col"), cell.get("row")], "extinguish_applied": False})
         return {"ok": False, "disabled": True, "reason": "DEMO_EXTINGUISH_OFF"}
@@ -217,12 +254,15 @@ def _web_log(event_type, result, **kw):
     """관제판의 수동 출동·도착도 자동 루프와 같은 로그 파일(web_auto.jsonl)에 남긴다.
     출처는 detail.source 로 구분한다 (WEB_MANUAL / WEB_AUTO / WEB_VIA_ORCH). 기록 실패가 화면 동작을 막지 않게 한다."""
     try:
-        _AUTO_LOGGER.log_event(event_type, float(_AUTO["t"]), result=result, **kw)
+        _AUTO_LOGGER.log_event(event_type, _current_sim_time(), result=result, **kw)
     except Exception as e:
         print(f"[web log] 기록 실패: {e}")
 
 @app.post("/api/auto/toggle")
 def auto_toggle():
+    if config.WEB_ENV_URL:   # INT-05: 시계 하나 — 관제판 자체 자동 루프는 환경을 따로 진행시키므로 끈다
+        return {"on": False, "disabled": True,
+                "reason": "환경 서버 모드: 자동 판단·배정은 총괄이 담당합니다 (관제판 자체 자동 루프 꺼짐)"}
     _AUTO["on"] = not _AUTO["on"]
     if _AUTO["on"]:
         _AUTO["target"] = None
@@ -296,7 +336,10 @@ async def fly(req: FlyReq):
     async with httpx.AsyncClient(timeout=30) as cx:
         # 풍속은 환경모델 값을 싣는다 (김동현님 R01_R05 6-2). 조회 실패 시에만 WEB_WIND_MS 사용
         try:
-            wind = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False).wind_speed
+            if config.WEB_ENV_URL:
+                wind = httpx.get(f"{config.WEB_ENV_URL}/snapshot", timeout=3).json()["wind_ms"]
+            else:
+                wind = fire_connector.get_environment_state(float(_AUTO["t"]), advance=False).wind_speed
         except Exception:
             wind = WIND_MS
         _web_log("TASK_CREATED", "READY", task_id=tid,
@@ -457,7 +500,7 @@ small{color:#6f8a96}
  </div>
  <div class=panel>
    <h3>출동</h3>
-   <div class=modes><span id=mExt class=badge>진화 시연: 확인 중</span><span id=mUav class=badge>드론 서버: 확인 중</span><span id=mDisp class=badge>출동 경로: 확인 중</span></div>
+   <div class=modes><span id=mExt class=badge>진화 시연: 확인 중</span><span id=mUav class=badge>드론 서버: 확인 중</span><span id=mDisp class=badge>출동 경로: 확인 중</span><span id=mClock class=badge>산불 시계: 확인 중</span></div>
    <div class=row>col <input id=col type=number value=60> row <input id=row type=number value=70>
      <button id=fly>🔥 출동</button><button id=clr>궤적 지우기</button><button id=auto style="background:#0C8E7E">자동 시작</button></div>
    <h3>산불(CA)</h3>
@@ -541,7 +584,7 @@ function draw(){const g=ov.getContext('2d');g.clearRect(0,0,ov.width,ov.height);
    g.fillStyle='#00d1b2';g.beginPath();g.arc(x,y,7,0,7);g.fill();
    g.strokeStyle='rgba(0,209,178,.5)';g.lineWidth=4;g.beginPath();g.arc(x,y,12,0,7);g.stroke();}}
 async function tickEnv(){try{const e=await(await fetch('/api/env')).json();fire=e.fire;risk=e.risk;
- $('nfire').textContent=fire.length;$('wind').textContent=e.wind_speed+' m/s '+e.spread;draw();}catch(e){}}
+ $('nfire').textContent=fire.length;$('wind').textContent=(e.wind_speed==null?'-':e.wind_speed+' m/s '+e.spread)+(e.source==='ENV_SERVER'&&e.simulation_time_s!=null?' · 시뮬 '+Math.round(e.simulation_time_s/60)+'분':'');draw();}catch(e){}}
 let lastLL=null;
 async function tickState(){try{const s=await(await fetch('/api/state')).json();const p=s.position||{};
  $('lat').textContent=p.lat;$('lon').textContent=p.lon;$('alt').textContent=(p.alt_m_amsl)+' m';
@@ -605,6 +648,8 @@ async function tickModes(){try{const m=await(await fetch('/api/modes')).json();
  u.className='badge'+(m.uav_mode==='real'?' real':(m.uav_mode?'':' bad')); u.title=m.uav_agent;
  const d=$('mDisp'); d.textContent=m.dispatch_via_orch?'출동 경로: 총괄 경유':'출동 경로: 드론 직접';
  d.className='badge'+(m.dispatch_via_orch?' real':''); d.title='WEB_DISPATCH_VIA_ORCH (INT-01, 서버 시작 시 결정)';
+ const k=$('mClock'); k.textContent=m.env_url?'산불 시계: 환경 서버 (읽기만)':'산불 시계: 관제판 자체';
+ k.className='badge'+(m.env_url?' real':''); k.title=(m.env_url||'WEB_ENV_URL 미설정')+' · 거점 좌표: '+m.stations_source;
 }catch(err){}}
 setInterval(tickModes,10000);setTimeout(tickModes,300);
 // INT-03 총괄 판단 요약 — 표기는 총괄 /board 와 같은 말을 쓴다. 불명·환경 반영 대기는 실패로 표시하지 않는다.

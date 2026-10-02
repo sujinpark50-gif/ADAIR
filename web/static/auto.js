@@ -13,6 +13,7 @@
     try{
       var r=await (await fetch('/api/auto/toggle',{method:'POST'})).json();
       AUTO=r.on; paint();
+      if(r.disabled){ var lg=document.getElementById('log'); if(lg) lg.textContent=r.reason; }
     }finally{ SWITCHING=false; }
   };
   async function tick(){
