@@ -134,6 +134,11 @@ class GroundResourceAgent:
         lead_s = sum(leg["distance_m"] / leg["speed_mps"] for leg in (lead or []))
         return route_plan.build(legs, start, target_node, route.path, route.eta_s + lead_s)
 
+    def _speeds(self, plan: RoutePlan) -> list[float] | None:
+        """구간별 속도는 차량 최고속도를 아는 경우(실제 도로망, server.py)에만 넘긴다.
+        시연 도로망(GroundFleet() 기본, 총괄 v0.1.2)은 드라이버 기본 속도(DEMO_SPEED_MPS)로 달려야 한다."""
+        return plan.speeds if self.max_speed_mps is not None else None
+
     async def execute(self, target_node: str) -> bool:
         """판단 후 도로 선형을 따라가는 웨이포인트를 드라이버에 넘겨 주행을 시작한다."""
         result = self.evaluate(target_node)
@@ -146,7 +151,7 @@ class GroundResourceAgent:
 
         start = self.graph.node(self.resource.current_node)
         plan = self._plan(self.resource.current_node, target_node, (start.lat, start.lon))
-        started = await self.driver.goto(plan.waypoints, plan.speeds)
+        started = await self.driver.goto(plan.waypoints, self._speeds(plan))
         if started:
             self.plan = plan
             self.reroutes = 0
@@ -179,7 +184,7 @@ class GroundResourceAgent:
         plan = self._plan(leg["to"], self._target_node, here, lead)
         if plan is None:
             return {"result": "NO_ROUTE", "blocked_road_id": blocked, "eta_s": None}
-        if not await self.driver.goto(plan.waypoints, plan.speeds):
+        if not await self.driver.goto(plan.waypoints, self._speeds(plan)):
             return {"result": "NO_ROUTE", "blocked_road_id": blocked, "eta_s": None}
         self.plan = plan
         self.reroutes += 1
