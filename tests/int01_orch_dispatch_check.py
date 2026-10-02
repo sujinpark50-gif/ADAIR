@@ -98,3 +98,4 @@ check("꺼짐(기본): 총괄을 부르지 않고 기존처럼 UAV 직접", not 
       and any(u.endswith("/evaluate") for u, _ in calls))
 
 print("\n모두 통과" if ok else "\n실패 항목 있음")
+raise SystemExit(0 if ok else 1)   # 자동 시험(GitHub Actions)이 실패를 알아채도록

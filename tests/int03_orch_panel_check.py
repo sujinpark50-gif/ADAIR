@@ -78,3 +78,4 @@ html = c.get("/").text
 check("화면에 불명·보류를 실패로 칠하지 않는 표기 포함", "UNKNOWN:['확인 필요','wait']" in html and "HOLD:['보류','wait']" in html)
 
 print("\n모두 통과" if ok else "\n실패 항목 있음")
+raise SystemExit(0 if ok else 1)   # 자동 시험(GitHub Actions)이 실패를 알아채도록

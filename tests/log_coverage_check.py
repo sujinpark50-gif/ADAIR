@@ -117,3 +117,4 @@ check("총괄 경유: 총괄 없음도 기록 (FAILED·ORCH_UNREACHABLE)", len(s
 config.WEB_DISPATCH_VIA_ORCH = False
 
 print("\n모두 통과" if ok else "\n실패 항목 있음")
+raise SystemExit(0 if ok else 1)   # 자동 시험(GitHub Actions)이 실패를 알아채도록

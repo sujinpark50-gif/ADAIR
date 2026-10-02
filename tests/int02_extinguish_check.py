@@ -54,3 +54,4 @@ check("시연 스위치를 켜면 진화 반영", r.get("ok") is True and (x, y)
 config.WEB_DEMO_EXTINGUISH = False
 
 print("\n모두 통과" if ok else "\n실패 항목 있음")
+raise SystemExit(0 if ok else 1)   # 자동 시험(GitHub Actions)이 실패를 알아채도록
