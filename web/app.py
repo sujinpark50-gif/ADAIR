@@ -316,7 +316,6 @@ async def fly(req: FlyReq):
                  task_id=tid, resource_id=UAV_ID, detail={"source": "WEB_MANUAL"})
     return {"ok": True, "task_id": ex.get("task_id", tid), "target": target, "eta_sec": ev.get("eta_sec")}
 
-<<<<<<< HEAD
 async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
     """INT-01: 관제판 출동을 총괄 POST /tasks 로 보낸다 (UAV 직접 호출 없음).
 
@@ -347,7 +346,6 @@ async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
     return {"ok": True, "via": "orch", "request_id": body["request_id"], "task_id": t.get("task_id"),
             "created": j.get("created"), "purpose_status": t.get("purpose_status"),
             "hold_reason": t.get("hold_reason"), "target": target}
-=======
 # ── 디지털 트윈 LIVE (2019 인제) ─────────────────────────────────────────────
 # 실제로 돌고 있는 서버들을 한 화면용으로 모은다. 계산은 하지 않는다 (각 서버가 진실의 출처).
 #   환경 계약 서버(진짜 세계 CA, :8300) · UAV Agent(mock 또는 PX4 real, :8000/:8001) · UGV 서버(:8100) · 총괄(:8200)
@@ -415,7 +413,6 @@ def inje3d():
     """2019 인제 산불 '드론이 있었다면' 3D 재현 (three.js). 데이터: python tools/inje2019_whatif.py"""
     from fastapi.responses import RedirectResponse
     return RedirectResponse("/static/inje2019/index.html")
->>>>>>> mentor/patch
 
 @app.get("/", response_class=HTMLResponse)
 def index(): return HTML
