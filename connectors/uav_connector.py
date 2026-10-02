@@ -198,13 +198,26 @@ def _send_uav_command_real(task_id: str, decision_id: str, assignment, wind_ms: 
     )
 
 
+
+# 실행 키 (UAV-01·UGV-04). UAV/UGV 서버는 실행 기록을 파일에 남기고 '같은 키·다른 내용'을 409 로 거절한다.
+# 이 커넥터의 task_id 는 프로세스마다 TASK_001 부터 다시 세므로, 실행 키에 이 프로세스 표식과 decision_id 를
+# 붙여 실행(결정)마다 고유하게 만든다. 로그·관측의 task_id 는 그대로다.
+import uuid as _uuid
+_RUN_TAG = _uuid.uuid4().hex[:8]
+
+
+def exec_key(task_id, decision_id):
+    return f"{_RUN_TAG}:{task_id}:{decision_id}"
+
+
 def _get_uav_observation_real(resource_id, sim_time_s, task_id, decision_id, assignment,
                                 poll_interval_sec=1.0, timeout_sec=30.0) -> Observation:
     """POST /execute 로 실행 시작 → GET /task 폴링 → 완료 시 관측 결과 반환"""
     url = _endpoint_for(resource_id)
 
+    key = exec_key(task_id, decision_id)
     exec_body = {
-        "task_id": task_id,
+        "task_id": key,
         "decision_id": decision_id,
         "target": {
             "lat": assignment.target_lat,
@@ -218,7 +231,7 @@ def _get_uav_observation_real(resource_id, sim_time_s, task_id, decision_id, ass
 
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        task_resp = requests.get(f"{url}/uav/{resource_id}/task/{task_id}", timeout=5)
+        task_resp = requests.get(f"{url}/uav/{resource_id}/task/{key}", timeout=5)
         task_resp.raise_for_status()
         task_data = task_resp.json()
 

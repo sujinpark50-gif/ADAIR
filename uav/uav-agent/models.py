@@ -95,22 +95,27 @@ class EvaluateResponse(BaseModel):
 
 
 class ExecuteRequest(BaseModel):
-    task_id: str
+    task_id: str                # 실행 키 (총괄은 실행시도 ID 를 넣는다). 같은 키 = 같은 실행
     decision_id: str
     target: Target
     observation_type: str = "THERMAL"
+    execution_attempt_id: Optional[str] = None   # 주면 task_id 와 같아야 한다 (UAV-01 ① 명시용)
 
 
 class ExecuteResponse(BaseModel):
     task_id: str
     status: str
     tracking_url: str
+    uav_id: Optional[str] = None
+    duplicate: bool = False     # 같은 키·같은 내용 재요청이면 True (새로 출동하지 않음)
 
 
 class TaskStatus(BaseModel):
     task_id: str
+    uav_id: Optional[str] = None   # UAV-01 ④
     status: Literal["STARTED", "IN_PROGRESS", "COMPLETED", "FAILED"]
     progress: Optional[dict] = None
     observation: Optional[dict] = None
     reason: Optional[str] = None   # FAILED 사유 코드 (예: RETURN_MARGIN_INSUFFICIENT)
     error: Optional[str] = None
+    agent_restart: Optional[dict] = None   # 재시작으로 끊긴 실행이면 근거 (physical_basis)

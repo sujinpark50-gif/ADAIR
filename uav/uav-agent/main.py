@@ -14,7 +14,9 @@ UAV 1대당 프로세스 1개다. 여러 대를 운용하면 UAV_ID 와 포트�
 """
 import asyncio
 import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 
@@ -40,9 +42,44 @@ app = FastAPI(
 UAV_ID = os.getenv("UAV_ID", "A-uav1")
 
 provider = get_provider(UAV_ID)
+UAV_MODE = os.getenv("UAV_MODE", "mock").lower()
 
-# 진행 중 Task. 프로세스 재시작 시 사라짐 (Mock 단계 한정)
-_tasks: dict[str, dict] = {}
+# ── 실행 기록 (UAV-01): 실행 키 = task_id. 파일에 저장해 재시작 뒤에도 같은 키로 조회·재요청 가능 ──
+# 저장소 루트의 interfaces/exec_store.py 를 쓴다 (UGV 서버와 같은 규칙). 루트는 sys.path 맨 뒤에 붙여
+# 이 폴더의 config.py 가 루트 config.py 에 가려지지 않게 한다.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
+from interfaces.exec_store import ExecStore  # noqa: E402
+
+_STATE_DIR = Path(os.getenv("UAV_STATE_DIR", str(Path(__file__).resolve().parent / ".state")))
+STORE = ExecStore(_STATE_DIR / f"tasks_{UAV_ID}.json")
+_tasks: dict[str, dict] = STORE.tasks
+_save = STORE.save
+
+# 재시작 시 끊긴 실행 정리. 비행 코루틴은 프로세스와 함께 사라졌다.
+#   mock: MockDrone 은 재시작하면 기지에 서 있다 → 물리 상태를 안다 (phase=DONE)
+#   real: 기체가 아직 떠 있을 수 있다 → 모른다고 보고한다 (phase=AGENT_RESTARTED, 총괄은 점유 유지·수동 해소)
+_RESTART_PHASE = "DONE" if UAV_MODE != "real" else "AGENT_RESTARTED"
+
+
+def _was_active(t: dict) -> bool:
+    phase = (t.get("progress") or {}).get("phase")
+    return t["status"] in ("STARTED", "IN_PROGRESS") or phase == "RETURNING"
+
+
+def _close_after_restart(t: dict) -> None:
+    if t["status"] in ("STARTED", "IN_PROGRESS"):
+        # 관측 전에 끊김 → 관측 결과를 비우고 실패로 (총괄은 다른 기체로 인계)
+        t.update({"status": "FAILED", "reason": "AGENT_RESTARTED_BEFORE_OBSERVATION", "observation": None,
+                  "error": "agent restarted before observation"})
+    # 관측 뒤(COMPLETED, 복귀 중)에 끊긴 실행은 관측 ID·내용·시각을 그대로 둔다 (UAV-10 ②)
+    t["progress"] = {"phase": _RESTART_PHASE}
+
+
+RESTART_CLOSED = STORE.reconcile_after_restart(
+    _was_active, _close_after_restart,
+    basis="MOCK_PROVIDER_RESET_TO_HOME" if _RESTART_PHASE == "DONE" else "PHYSICAL_STATE_UNKNOWN_AFTER_RESTART")
 
 
 def _check_id(uav_id: str) -> None:
@@ -81,7 +118,9 @@ async def _state(uav_id: str) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "mode": os.getenv("UAV_MODE", "mock"), "uav_id": UAV_ID}
+    return {"status": "ok", "mode": os.getenv("UAV_MODE", "mock"), "uav_id": UAV_ID,
+            "exec_store": {"path": str(STORE.path), "restarts": STORE.restarts,
+                           "closed_after_restart": RESTART_CLOSED, "tasks": len(_tasks)}}
 
 
 @app.get("/uav/{uav_id}/state", response_model=UavState)
@@ -134,15 +173,16 @@ async def _run_task(uav_id: str, req: ExecuteRequest):
     RETURNING 이고 이 기체는 BUSY 다. 착륙하면 DONE.
     """
     tid = req.task_id
-    t = {"task_id": tid, "status": "IN_PROGRESS",
-         "progress": {"phase": "ENROUTE"}, "observation": None}
-    _tasks[tid] = t
+    t = _tasks[tid]                       # execute 가 등록한 기록을 그대로 고친다 (실행 키 기록 유지)
+    t.update({"status": "IN_PROGRESS", "progress": {"phase": "ENROUTE"}, "observation": None})
+    _save()
     try:
         home = await provider.home()
         alt = evaluator.flight_alt_amsl(req.target)
         await _monitored(uav_id, home, provider.goto(req.target.lat, req.target.lon, alt))
 
         t["progress"] = {"phase": "OBSERVING"}
+        _save()
         await _monitored(uav_id, home, provider.hold(config.OBSERVE_DURATION_S))
 
         pos = (await provider.get_state(uav_id))["position"]
@@ -163,12 +203,15 @@ async def _run_task(uav_id: str, req: ExecuteRequest):
                 "values": {"max_temp_c": 312.5, "hotspot_detected": True},
             },
         })
+        _save()
     except _ReturnMarginLow as e:
         # 임무를 끊고 돌아온다. 총괄은 FAILED + reason 을 보고 다른 기체에 인계한다.
         t.update({"status": "FAILED", "reason": "RETURN_MARGIN_INSUFFICIENT",
                   "error": str(e), "progress": {"phase": "RETURNING"}})
+        _save()
     except Exception as e:  # noqa: BLE001
         t.update({"status": "FAILED", "progress": None, "error": str(e)})
+        _save()
         return
 
     global _returning
@@ -182,36 +225,52 @@ async def _run_task(uav_id: str, req: ExecuteRequest):
         t["progress"] = {"phase": "RETURN_FAILED"}
         t["error"] = f"return failed: {e}"
     finally:
+        _save()
         if _returning is asyncio.current_task():
             _returning = None
 
 
 @app.post("/uav/{uav_id}/execute", response_model=ExecuteResponse)
 async def execute_mission(uav_id: str, req: ExecuteRequest):
-    """Safety ALLOW 이후 호출. 비동기로 시작하고 즉시 반환한다."""
+    """Safety ALLOW 이후 호출. 비동기로 시작하고 즉시 반환한다.
+
+    실행 키 = task_id (UAV-01). 같은 키·같은 내용 재요청은 새로 출동하지 않고 기존 실행을 돌려준다
+    (duplicate=true). 같은 키·다른 내용은 409 — 기존 실행은 그대로 둔다. 재시작 뒤에도 같다.
+    """
     _check_id(uav_id)
+    if req.execution_attempt_id is not None and req.execution_attempt_id != req.task_id:
+        raise HTTPException(422, "execution_attempt_id 를 주려면 task_id 와 같아야 한다 (실행 키는 하나)")
+    body = req.model_dump()
+    verdict, meta = STORE.check(req.task_id, body)
+    if verdict == "CONFLICT":
+        raise HTTPException(409, {"reason": "EXECUTION_ID_CONFLICT", "task_id": req.task_id,
+                                  "detail": "같은 실행 키로 다른 내용의 실행이 이미 있다 (기존 실행 유지)"})
+    if verdict == "DUPLICATE":
+        cur = _tasks.get(req.task_id, {})
+        return {**meta["response"], "status": cur.get("status", meta["response"]["status"]),
+                "duplicate": True, "uav_id": UAV_ID}
     running = _running_task_id()
     if running is not None:
         raise HTTPException(409, f"task {running} already running")
-    if _returning is not None and not _returning.done():
-        _returning.cancel()
-        await asyncio.gather(_returning, return_exceptions=True)
     if evaluator.flight_alt_amsl(req.target) is None:
         raise HTTPException(
             400, "target 에 alt_m_amsl(지면 해발고도)이 필요하다")
+    if _returning is not None and not _returning.done():
+        _returning.cancel()
+        await asyncio.gather(_returning, return_exceptions=True)
 
-    _tasks[req.task_id] = {"task_id": req.task_id, "status": "STARTED",
-                           "progress": None, "observation": None}
+    resp = {"task_id": req.task_id, "status": "STARTED",
+            "tracking_url": f"/uav/{uav_id}/task/{req.task_id}", "uav_id": UAV_ID, "duplicate": False}
+    # 출동 전에 기록부터 저장한다 — 저장 뒤에 멈추면 재시작이 '관측 전 끊김'으로 정리하고, 같은 키 재요청은 재출동하지 않는다
+    STORE.register(req.task_id, body, {"task_id": req.task_id, "uav_id": UAV_ID, "status": "STARTED",
+                                       "progress": None, "observation": None}, resp)
     asyncio.create_task(_run_task(uav_id, req))
-    return {
-        "task_id": req.task_id,
-        "status": "STARTED",
-        "tracking_url": f"/uav/{uav_id}/task/{req.task_id}",
-    }
+    return resp
 
 
 @app.get("/uav/{uav_id}/task/{task_id}", response_model=TaskStatus)
 async def get_task(uav_id: str, task_id: str):
+    _check_id(uav_id)
     if task_id not in _tasks:
         raise HTTPException(404, f"task {task_id} not found")
     return _tasks[task_id]

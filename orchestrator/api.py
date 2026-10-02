@@ -227,8 +227,10 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
         env_source = getattr(orch.env, "source", "UNKNOWN")
         return {"status": "ok", "schema_version": config.SCHEMA_VERSION,
                 "truth_env": {"class": type(orch.env).__name__, "source": env_source,
-                              "shared_team_env": env_source not in ("FIXTURE", "UNKNOWN"),
-                              "note": "시험용 가짜 환경. 팀 공유 환경(ENV-01) 연결 아님" if env_source == "FIXTURE" else None},
+                              "shared_team_env": env_source == "TEAM_API",
+                              "note": "시험용 가짜 환경. 팀 공유 환경(ENV-01) 연결 아님" if env_source == "FIXTURE" else (
+                                  "환경팀 계약 환경 (실제 CA). 같은 프로세스 — 웹과 시계 공유 안 됨"
+                                  if env_source == "TEAM_ENV_IN_PROCESS" else None)},
                 "env": snap.ref(),
                 "run": {"active": orch.ledger.active_run(), "policy": "SINGLE_ACTIVE_RUN", "gate": snap.run_gate,
                         "legacy_rows_quarantined": orch.ledger.migrated_from_legacy},
@@ -430,7 +432,35 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
     return app
 
 
+def _build_team_env():
+    """ORCH_ENV_MODE=team_http  : 환경 계약 서버(environment/server.py, ORCH_ENV_URL 기본 :8300)를 공유
+       ORCH_ENV_MODE=team_inproc: 같은 프로세스에서 ContractEnvironment (ORCH_ENV_STATE_DIR)
+    둘 다 진짜 세계 = 김은주님 CA, 분석 = ENV-04 BeliefSpreadAnalysis (총괄 belief 만 입력)."""
+    from .team_env import HttpTeamEnv, InProcessTeamEnv, TeamAnalysis
+    mode = config.ENV_MODE
+    if mode == "team_http":
+        return HttpTeamEnv(config.ENV_URL, timeout_s=config.HTTP_TIMEOUT_S), TeamAnalysis(base_url=config.ENV_URL)
+    import copy
+    import sys
+    from pathlib import Path
+    env_dir = str(Path(__file__).resolve().parents[1] / "environment")
+    if env_dir not in sys.path:
+        sys.path.insert(0, env_dir)
+    from src.belief_analysis import BeliefSpreadAnalysis
+    from src.contract_env import ContractEnvironment
+    c = ContractEnvironment(config.ENV_STATE_DIR)
+    return InProcessTeamEnv(c), TeamAnalysis(BeliefSpreadAnalysis(c.static, copy.deepcopy(c.engine._config),
+                                                                  tick_s=c.tick_s))
+
+
 def build_default() -> Orchestrator:
+    if config.ENV_MODE in ("team_http", "team_inproc"):
+        env, analysis = _build_team_env()
+        feeds = []
+        if config.KMA_ASOS_CSV.is_file() and config.KMA_ASOS_STATIONS.is_file():
+            feeds.append(KmaAsosReplay(config.KMA_ASOS_CSV, config.KMA_ASOS_STATIONS))
+        return Orchestrator(Ledger(config.DB_PATH), env, UavClient(), UgvClient(), llm=LlmPlanner(),
+                            analysis=analysis, weather_feeds=feeds)
     fixture = os.getenv("ORCH_ENV_FIXTURE")
     injected = {}
     if fixture:

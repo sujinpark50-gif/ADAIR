@@ -316,6 +316,7 @@ async def fly(req: FlyReq):
                  task_id=tid, resource_id=UAV_ID, detail={"source": "WEB_MANUAL"})
     return {"ok": True, "task_id": ex.get("task_id", tid), "target": target, "eta_sec": ev.get("eta_sec")}
 
+<<<<<<< HEAD
 async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
     """INT-01: 관제판 출동을 총괄 POST /tasks 로 보낸다 (UAV 직접 호출 없음).
 
@@ -346,6 +347,75 @@ async def _fly_via_orch(req: FlyReq, target: dict) -> dict:
     return {"ok": True, "via": "orch", "request_id": body["request_id"], "task_id": t.get("task_id"),
             "created": j.get("created"), "purpose_status": t.get("purpose_status"),
             "hold_reason": t.get("hold_reason"), "target": target}
+=======
+# ── 디지털 트윈 LIVE (2019 인제) ─────────────────────────────────────────────
+# 실제로 돌고 있는 서버들을 한 화면용으로 모은다. 계산은 하지 않는다 (각 서버가 진실의 출처).
+#   환경 계약 서버(진짜 세계 CA, :8300) · UAV Agent(mock 또는 PX4 real, :8000/:8001) · UGV 서버(:8100) · 총괄(:8200)
+TWIN_ENV_URL = os.environ.get("TWIN_ENV_URL", "http://127.0.0.1:8300")
+TWIN_ORCH_URL = os.environ.get("TWIN_ORCH_URL", "http://127.0.0.1:8200")
+TWIN_UGV_URL = os.environ.get("TWIN_UGV_URL", config.UGV_SERVER_URL)
+TWIN_UAVS = dict(p.split("=", 1) for p in os.environ.get("TWIN_UAVS", "").split(",") if "=" in p) or {
+    k: v for k, v in {"A-uav1": "http://127.0.0.1:8000", "A-uav2": "http://127.0.0.1:8001"}.items()}
+
+
+def _ll_to_grid(lat, lon):
+    x, y = gb.latlon_to_epsg(lat, lon)
+    return round((x - gb.GRID_LEFT) / gb.GRID_RES - 0.5, 3), round((gb.GRID_TOP - y) / gb.GRID_RES - 0.5, 3)
+
+
+@app.get("/api/twin")
+async def twin_state():
+    out = {"sources": {}, "fetched_wall": time.time()}
+    async with httpx.AsyncClient(timeout=5.0) as cx:
+        async def get(name, url):
+            try:
+                r = await cx.get(url)
+                r.raise_for_status()
+                out["sources"][name] = "OK"
+                return r.json()
+            except Exception as e:  # noqa: BLE001 — 한 서버가 없어도 나머지는 보여 준다
+                out["sources"][name] = f"DOWN: {type(e).__name__}"
+                return None
+        snap = await get("env", f"{TWIN_ENV_URL}/snapshot")
+        if snap:
+            out["env"] = {k: snap.get(k) for k in ("run_id", "state_version", "simulation_time_s", "scenario_start_kst",
+                                                    "wind_ms", "wind_dir_deg", "weather", "tick_s", "step_count")}
+            out["fire"] = [[*map(int, c["cell_id"].split("_")), 1 if c["fire_state"] == "BURNING" else 2]
+                           for c in snap.get("fire_cells", [])]
+        out["uav"] = []
+        for rid, url in TWIN_UAVS.items():
+            st = await get(f"uav:{rid}", f"{url}/uav/{rid}/state")
+            hl = await get(f"uav:{rid}:health", f"{url}/health") if st else None
+            if st:
+                p = st.get("position") or {}
+                gx, gy = _ll_to_grid(p["lat"], p["lon"]) if p.get("lat") is not None else (None, None)
+                out["uav"].append({"id": rid, "gx": gx, "gy": gy, "alt_m_amsl": p.get("alt_m_amsl"),
+                                   "battery": (st.get("battery") or {}).get("percent"), "mode": (hl or {}).get("mode"),
+                                   "flight_mode": st.get("flight_mode"), "task": st.get("current_task_id")})
+        ug = await get("ugv", f"{TWIN_UGV_URL}/ugv")
+        out["ugv"] = []
+        for u in ug or []:
+            p = u.get("position") or {}
+            if p.get("lat") is None:
+                continue
+            gx, gy = _ll_to_grid(p["lat"], p["lon"])
+            out["ugv"].append({"id": u["resource_id"], "type": u.get("resource_type"), "gx": gx, "gy": gy,
+                               "state": u.get("state"), "task": u.get("current_task_id"), "driver": u.get("driver")})
+        tasks = await get("orchestrator", f"{TWIN_ORCH_URL}/tasks")
+        if tasks is not None:
+            rows = tasks if isinstance(tasks, list) else tasks.get("tasks", [])
+            out["tasks"] = [{"id": t.get("task_id"), "kind": t.get("kind"), "status": t.get("purpose_status"),
+                             "cell": (t.get("target") or {}).get("cell_id"), "hold": t.get("hold_reason")}
+                            for t in rows][-12:]
+    return out
+
+
+@app.get("/inje3d")
+def inje3d():
+    """2019 인제 산불 '드론이 있었다면' 3D 재현 (three.js). 데이터: python tools/inje2019_whatif.py"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/static/inje2019/index.html")
+>>>>>>> mentor/patch
 
 @app.get("/", response_class=HTMLResponse)
 def index(): return HTML

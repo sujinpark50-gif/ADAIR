@@ -67,6 +67,8 @@ class ExecuteResponse(BaseModel):
     tracking_url: str
     target_node: TargetNode            # 실제로 향하는 도로 노드
     eta_sec: int                       # 출발 시점 도로망 기준 ETA
+    duplicate: bool = False            # 같은 실행 키·같은 내용 재요청 (새로 출발하지 않음, UGV-04)
+    current_status: str | None = None  # duplicate 일 때 그 실행의 지금 상태
 
 
 class TaskStatus(BaseModel):
@@ -77,6 +79,7 @@ class TaskStatus(BaseModel):
     progress: dict | None              # {"phase": "ENROUTE", "waypoint": i, "total": n}
     observation: dict | None           # 도착 시 ROAD_STATUS 관측. 화재 관측이 아니다
     error: str | None = None
+    agent_restart: dict | None = None  # 서버 재시작으로 끊긴 실행이면 근거
 
 
 class FireCell(BaseModel):

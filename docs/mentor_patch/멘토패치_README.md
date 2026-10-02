@@ -1,0 +1,225 @@
+# ADAIR 멘토 패치 설명
+
+| 묶음 | 요청 ID | 브랜치 커밋 |
+|---|---|---|
+| 1. 환경 계약 계층 | ENV-01~06 | `feat(env)` |
+| 2. 실행 키·실행 기록 영속 | UAV-01 · UGV-02(영속) · UGV-04 · J3 | `feat(exec)` |
+| 3. 2019 인제 '드론이 있었다면' 3D 재현 | 기술문서(2026-09-28) 8·10절 | `feat(inje3d)` |
+| 4. 디지털 트윈 LIVE + 위성 실제 피해지 + 실제 투입 자원 | 기술문서 8절, INT-05 | `feat(twin)` |
+
+각 묶음은 기존 판단 로직을 갈아엎지 않고 계약 칸만 채운다. 시험은 저장소 루트에서:
+
+```bash
+python -m pytest orchestrator/tests environment/tests tests/test_exec_idempotency.py -q
+# 356 passed, 8 skipped (기존 329 + 묶음1 20 + 묶음2 7)
+```
+
+---
+
+# 1. 환경 계약 계층 (ENV-01~06)
+
+총괄 요청서(`docs/common/ADAIR_총괄_팀별_요청서.md`)의 환경팀 P0 요청을 **김은주님 CA 코드를 고치지 않고** 감싸서 구현했다.
+`grid.py`·`fire_model.py`·`api.py`·`risk.py`는 한 줄도 바뀌지 않았다. 환경팀이 검토 후 자기 코드로 흡수하거나 그대로 써도 된다.
+
+## 무엇이 생겼나
+
+| 파일 | 역할 |
+|---|---|
+| `environment/src/contract_env.py` | 계약 환경. READ/ADVANCE/APPLY 분리, run_id·버전·시각, 상태 영속·복구, 기상청 바람 구동, APPLY 중복·충돌 처리, 신고 |
+| `environment/src/belief_analysis.py` | ENV-04 분석. 총괄의 belief 만 입력 → 위험 칸·확산 예측 |
+| `environment/server.py` | 위 둘의 HTTP 서버 (포트 8300, 임시) |
+| `environment/config/fire_stations.json` | 소방서 좌표 단일 출처 **후보** (INT-04) |
+| `orchestrator/team_env.py` | 총괄 쪽 어댑터 (in-process / HTTP / 분석) |
+| `orchestrator/api.py`, `config.py` | `ORCH_ENV_MODE` 추가. **기본값은 그대로 fixture** — 기존 동작·시험 불변 |
+| `environment/tests/test_contract_env.py` | 요청서 '수락 시험' 칸을 옮긴 시험 17개 |
+| `orchestrator/tests/test_team_env.py` | 총괄 ↔ 실제 CA 연동 시험 3개 (HTTP 포함) |
+
+## 실행
+
+```bash
+# 환경 서버 (저장소 루트)
+python -m uvicorn environment.server:app --port 8300
+# 총괄을 그 환경에 붙이기
+ORCH_ENV_MODE=team_http python -m orchestrator.api          # Windows: set ORCH_ENV_MODE=team_http
+# 시험
+python -m pytest environment/tests orchestrator/tests -q     # 349 passed, 8 skipped (기존 329 + 신규 20)
+```
+
+## 요청별 상태 (요청서 표기 L/M/T/C 기준)
+
+| ID | 이전 | 지금 | 근거 |
+|---|---|---|---|
+| ENV-01 | C | **L·M** | READ 반복 시 버전 불변, ADVANCE 만 진행. 재시작 → 같은 run_id·시각·버전, RNG 까지 복구해 이어 돌린 결과가 재시작 안 한 경우와 동일. reset → 새 run_id |
+| ENV-02 | C | **L** | `map_cells` 72,688칸(위치·크기·지면고도·건물유형·`human_exposure`). 주거 칸 41개를 보호대상으로. 소방서 2곳 |
+| ENV-03 | C | **L** (지도 전체 값) | 진짜 세계 바람 = 기상청 인제(211) 시간자료. 14:45 → 5.7 m/s·160°, 15:01 → 6.3 m/s. CA 가 실제로 그 바람으로 돈다 |
+| ENV-04 | C | **L** | `analyze(belief)` — 진짜 세계를 바꿔도 결과 불변(①), 신고 전엔 예측 없음(②), 현장 측정 유무로 예측 달라짐(③) |
+| ENV-05 | C | **L·M** (J1·J2) | 같은 ID·같은 내용 → `duplicate=true`, 재시작 후에도 유지(sqlite). 같은 ID·다른 내용 → `OBSERVATION_ID_CONFLICT`. 다른 run → `RUN_MISMATCH`. NACK 도 멱등 |
+| ENV-06 | C | **L** | `reports_until(t)` 에 `event_id`(내용 해시로 고정)·`run_id` |
+| 총괄 연동 | M (FixtureEnv) | **M → T 준비** | 신고 → 최초 정찰 → 가짜 UAV → 모의 열화상 → 실제 환경 ACK → 목적 완료. 실제 uvicorn 서버로도 `team_http` 연결 확인 |
+
+T(팀 서버 연동) 판정은 환경팀이 이 코드를 확인하고 공동 수락시험을 돌린 뒤에 한다 — 멘토가 만든 것만으로 T 로 적지 않는다.
+
+## 가정값 (모두 `/health` 의 `assumptions` 에 노출)
+
+- **tick_s = 60초** — CA 한 스텝이 시뮬레이션 몇 초인지 환경 모델에 정의가 없다. 환경팀이 정해야 한다.
+- **scenario_start_kst = 2019-04-04 14:45 KST**, 점화 칸 `19_142`, 신고 = 점화 칸·0초 — 요청서도 "시험값, 백서 대조 필요"로 적은 값.
+- **vertical_datum = `DEM_AMSL_UNVERIFIED`** — DEM 수직 기준을 확인하지 못했다.
+- 진짜 세계 snapshot 의 `risk_cells` = 화재 칸 주변 3칸의 UNBURNED 칸. **모의 센서가 '불 없음'을 볼 수 있게 하는 용도**이고, 총괄 판단 화면(`view()`)에는 들어가지 않는다 (시험으로 확인).
+- APPLY 는 **기록만** 한다. 관측으로 진짜 화재 상태를 바꾸지 않는다 (요청서 금지 사항). 기존 `ObservationUpdateHandler` 는 BURNING 을 직접 쓰므로 계약 경로에서 부르지 않았다.
+
+## 솔직한 한계
+
+- **ENV-04 예측은 과소 예측이다.** 같은 CA 확산식을 쓰되 "절반의 경우 번지는 대기 시간"으로 도달 시각을 낸다.
+  30분 시험에서 실제 CA 화재 칸 대비 재현율 0.45 / 정밀도 0.99 (평균 대기식을 쓰면 재현율 0.16). 여러 불 칸이
+  동시에 번지는 효과를 넣지 않았기 때문이다. 보정은 환경팀 몫 — `environment/src/benchmark.py` 와 엮으면 된다.
+- **칸별 바람장(양간지풍)은 없다.** 지도 전체 값 하나 (`weather.scope = GLOBAL_FIELD`).
+- **INT-04 는 끝나지 않았다.** `fire_stations.json` 은 루트 `config.py` 값을 옮긴 후보이고, `uav/NOTE.md` 의 다른 좌표를
+  `alternatives` 로 남겼다. 팀이 하나를 확정해야 한다.
+- **INT-05(시계 소유자)** 는 합의 사항이다. 서버는 `/advance` 를 누가 부르든 받는다. 웹(`/api/env`)은 아직 자기 CA 를 따로 돌린다.
+- `map_cells` 는 약 10 MB 로 처음 한 번만 받고 캐시한다 (`map_version` 이 같으면 재요청 없음).
+
+---
+
+# 2. 실행 키·실행 기록 영속 (UAV-01 · UGV-02 · UGV-04 · J3)
+
+## 왜
+
+UAV Agent·UGV 서버는 실행 기록을 메모리(`_tasks`)에만 들고 있었다. 서버가 한 번 재시작하면
+
+- 총괄이 `/task/{attempt_id}` 를 조회 → **404** → 총괄은 `UNKNOWN`(점유 유지·수동 해소 대기)로 멈춘다.
+- 응답을 못 받은 출동 요청을 누가 재전송하면 **두 번째 물리 출동**이 나간다 (UGV 는 끝난 task_id 를 덮어썼다).
+
+원본 main 에 같은 시험을 돌려 확인했다: 재시작 뒤 조회 `404`, 총괄 실행시도 `UNKNOWN`.
+
+## 무엇을 바꿨나
+
+| 파일 | 변경 |
+|---|---|
+| `interfaces/exec_store.py` (신규) | UAV·UGV 공용 실행 기록. JSON 원자 저장, 실행 키 검사(NEW/DUPLICATE/CONFLICT), 재시작 정리 |
+| `uav/uav-agent/main.py`, `models.py` | 실행 키 규칙·영속·재시작 정리. `TaskStatus.uav_id`(UAV-01 ④), `ExecuteResponse.duplicate`, `agent_restart` |
+| `ugv/server.py`, `api_models.py` | 같은 규칙. 수행 중 같은 키 재요청은 처음 응답 그대로(`target_node` 포함) |
+| `integration/uav_launcher.py` | 통합 실행마다 새 상태 폴더 (`logs/uav_state/<시각>`) |
+| `connectors/uav_connector.py`, `ugv_connector.py` | 구 커넥터 실행 키 = `프로세스표식:task_id:decision_id` (TASK_001 이 실행마다 반복되므로) |
+
+## 규칙 (UAV·UGV 동일)
+
+| 요청 | 응답 |
+|---|---|
+| 새 키 | 200 `duplicate=false`, 기록을 **출동 전에** 저장 |
+| 같은 키·같은 내용 (수행 중이든 끝났든, 재시작 뒤든) | 200 `duplicate=true` — 새로 출동하지 않음 |
+| 같은 키·다른 내용 | 409 `EXECUTION_ID_CONFLICT` — 기존 실행 유지 |
+| 출동 전 거절 (400 고도 없음, 409 도로 불가 등) | 키를 쓰지 않는다 → 고쳐서 같은 키로 재전송 가능 |
+
+실행 키 = 요청의 `task_id`. 총괄은 이미 이 칸에 실행시도 ID 를 넣고 있어 **총괄 코드는 바꿀 필요가 없다**.
+UAV 는 `execution_attempt_id` 칸도 받지만 `task_id` 와 같아야 한다 (키는 하나).
+
+## 재시작으로 끊긴 실행의 정리
+
+| 끊긴 시점 | UAV mock | UAV real | UGV |
+|---|---|---|---|
+| 관측(도착) 전 | `FAILED`, `AGENT_RESTARTED_BEFORE_OBSERVATION`, 관측 비움, phase `DONE` | 같지만 phase `AGENT_RESTARTED` | `FAILED`, phase `FAILED` |
+| 관측 뒤 복귀 중 | `COMPLETED` 유지, **관측 그대로**, phase `DONE` | 관측 그대로, phase `AGENT_RESTARTED` | (도착 = 완료라 해당 없음) |
+
+- mock 은 재시작하면 MockDrone 이 기지에 서 있으므로 물리 상태를 안다 → `DONE`. real 은 기체가 아직 떠 있을 수 있어
+  **모른다고 보고한다** (`physical_basis=PHYSICAL_STATE_UNKNOWN_AFTER_RESTART`). 총괄은 이때 점유를 유지하고 사람이 해소한다.
+- 총괄 쪽 결과 (J3 시험): 관측 전 끊김 → 기체 READY 확인 후 반납, 목적은 `PENDING`(인계 대기), 자동 재전송 0회.
+
+## 한계
+
+- **물리 명령 '최대 1회'는 기록 저장과 출동 시작 사이의 아주 짧은 틈까지는 보장하지 못한다.** 기록을 먼저 저장하므로
+  그 틈에 죽으면 '출동 안 했는데 끊김으로 정리'되는 쪽으로 틀린다 (중복 출동 쪽이 아님). 의도한 방향이다.
+- UGV px4 드라이버 재시작 뒤 실제 차량 위치는 텔레메트리로 다시 읽는다. 끊긴 주행을 이어서 감시하지는 않는다.
+- UAV-09(중단 API)·UAV-10(관측 완료와 물리 실패 분리 칸)은 이번 범위가 아니다. 재시작 정리에서 관측 보존 규칙만 먼저 맞췄다.
+- 발견 사항 (이번 변경과 무관, main 에서도 같음): `python run_integrated.py` 의 폐루프 4스텝이 모두 `FAILED` 다.
+  점화 칸(19,142)이 A 기지에서 약 15 km 라 UAV 가 `LOW_BATTERY` 로 거절한다. 시연용 점화 위치나 기지 배치를 다시 볼 필요가 있다.
+- INT-04 추가 근거: UGV 서버의 A 거점 위치(38.0928, 128.1796)는 위 세 곳과도 또 다르다.
+
+---
+
+# 3. 2019 인제 산불 — "드론이 있었다면" 3D 재현
+
+## 실행
+
+```bash
+python tools/inje2019_whatif.py                         # 시나리오 생성 (약 1분) → web/static/inje2019/scenario.json
+python -m uvicorn web.app:app --port 8080               # 관제판 서버
+# 브라우저 http://localhost:8080/inje3d
+python -m pytest tests/test_inje2019_whatif.py -q       # 불변식 6개
+```
+
+## 무엇을 재현하나
+
+같은 진짜 세계(팀 CA + 기상청 인제 211 시간자료 + 실제 DEM·도로망)를 한 번 돌리고, 총괄이 아는 세계를 세 갈래로 만든다.
+
+| 갈래 | 낮 | 밤 (19:06 일몰 ~ 일출) |
+|---|---|---|
+| A 실제 기록 근사 | 헬기 육안으로 화선을 안다 | 공중 관측 없음 (백서: 19:06 헬기 진화 중단) |
+| B 드론 · 현장 이착륙 | A 와 같음 | 열화상 UAV 2대 교대 순회 |
+| B′ 드론 · 원통 기지 출발 | A 와 같음 | 같은 드론, 편도 약 10 km 왕복 → 현장 체류 스텝당 약 7분 |
+
+드론의 가치는 **진압이 아니라 '아는 것'과 '예측'** 으로 잰다 (진압 모델 ENV-07 없음). 예측은 묶음 1의 ENV-04 분석기를 그대로 쓴다.
+
+## 결과 (seed 9, CA 한 스텝 2,100초)
+
+| 지표 (야간 평균) | A | B | B′ |
+|---|---|---|---|
+| 총괄이 모르는 타는 면적 | 29.3 ha | 0 ha | 1.1 ha |
+| 2시간 확산 예측 재현율 | 3% | 35% | 33% |
+| 2시간 확산 예측 정밀도 | 7% | 88% | 86% |
+| 05:55 시점 모르는 소실 면적 | 135 ha | 0 ha | 6.5 ha |
+
+그날 밤 인제 관측소 풍속은 3.8~6.0 m/s 로 UAV 한계(10 m/s) 아래였다 — 관측소 기준으로는 밤새 비행 가능.
+
+## 근거와 가정
+
+- 시각: 14:43 발화·14:45 신고(보도), 15:06 소방헬기 불가·15:38 대피·16:25 대응 2단계·19:06 일몰 헬기 중단(백서 142~146쪽, 총괄 문서 인용), 19:00 약 10 ha(보도), 최종 345 ha(보도).
+- 위치: 남전약수터·남전1리 마을회관·인제휴게소는 지도 장소 검색 좌표. 발화점 = 약수터 최근접 연료 칸 (정밀 발화 좌표 아님). 격자 서쪽 끝에서 약 1 km 라 서쪽 확산은 잘린다.
+- CA 시간 축은 19:00 추정 10 ha 하나로 맞췄다 (12개 seed 평균 10.7 ha, 범위 4~25 ha). 진압이 없어서 24시간 면적 282 ha 는 실제 최종 345 ha(사흘, 진압 포함)와 직접 비교하면 안 된다.
+- 낮 헬기 육안 = 화선 전체를 안다고 단순화 (연기 가림 무시) → A 를 유리하게 둔 가정이다.
+- 드론 수치는 uav-agent 설정값(10 m/s, 0.033%/s) — 그 파일도 '실측 보정 필요'로 적혀 있다. 3D 화면의 드론·차량 크기는 보이게 과장했다.
+- 차량 경로는 UGV 팀 도로망 Dijkstra. 거점은 도로망 밖이라 경계 노드까지 50 km/h 가정.
+
+---
+
+# 4. 디지털 트윈 — LIVE 연결 · 위성 실제 피해지 · 당시 투입 자원
+
+## 실행
+
+```bash
+bash tools/run_twin.sh                   # 서버 7개(환경·UAV×2·UGV·총괄·관제판·시계) + 야간 순찰 요청자. Ctrl+C 로 전부 종료
+# 브라우저 http://localhost:8080/inje3d → '실시간 연결 LIVE'
+python tools/burn_scar_s2.py             # (인터넷 필요) Sentinel-2 전·후 영상으로 실제 피해지 → burn_scar.json
+```
+
+| 옵션 | 뜻 |
+|---|---|
+| `UAV_MODE=real` | uav-agent 를 PX4 real 로 (PX4 SITL 먼저). 시계 1배속 |
+| `TWIN_LAUNCH=base` | 드론을 원통 기지에서 띄움 — 아래 '발견' 그대로 재현 |
+| `TWIN_SPEED=100` | 시뮬레이션 초/실제 초. mock 드론(100배속)과 맞춘 기본값 |
+| `TWIN_OPERATOR=0` | 야간 순찰 요청 끔 |
+
+## 구성
+
+- **진짜 세계** = 환경 계약 서버. 재현과 같은 설정(`scenario.json.twin_env`)으로 띄우며, **12스텝(7시간) 동안 칸 단위로 재현과 같다**는 시험이 있다.
+- **시계 하나** = `tools/twin_clock.py` 만 `/advance` 를 부른다 (INT-05).
+- **드론** = 실제 uav-agent 서버 (mock 또는 PX4 real). 화면 위치는 그 서버가 보고한 위경도.
+- **총괄** = 실제 총괄 서버(`ORCH_ENV_MODE=team_http`). 신고 → 최초 정찰 → 출동 → 관측 → 환경 ACK 가 실제 HTTP 로 돈다.
+- **야간 순찰** = `tools/twin_operator.py` 가 일몰 뒤 스텝마다 `POST /tasks`(MONITOR) 를 보낸다. 진짜 불 위치를 보지 않고
+  신고 칸 중심 탐색 고리를 바람 부는 쪽부터 돈다. 순찰 중 불을 찾으면 총괄이 스스로 바람 측정(ENV_SENSE)을 붙인다.
+- **관제판** `/api/twin` 은 계산하지 않고 각 서버 값을 모아 보여 준다 (서버가 꺼지면 그 항목만 ○ 로 표시).
+- **실제 투입 자원**: 보도 시각 기준 헬기·장비·인력·대피 숫자를 그 시각에 맞춰 표시 (출처 함께).
+- **위성 실제 피해지**: dNBR ≥ 0.27 칸을 연보라로 겹치고 CA 소실 영역과 IoU 를 표시. FIRMS 키가 있으면 위성 열점도 시각에 맞춰 표시.
+
+## 발견 (트윈이 스스로 드러낸 것)
+
+`TWIN_LAUNCH=base` 로 돌리면 드론이 뜨지 못한다: 원통 기지 → 남전약수터 12.07 km, 복귀 뒤 배터리 11.4% < 예비 15% →
+UAV 가 COUNTER(관측 30초로 줄이면 가능)를 내지만 총괄 요청에 `observe_duration_s` 칸이 없어 버린다 → HOLD.
+**요청서 UAV-02 가 실제 운용을 막는 지점**이며, 반사실 재현의 B′(기지 출발) 결론과 같은 방향이다.
+
+## 한계
+
+- 위성 피해지 계산은 이 샌드박스에서 내려받기가 막혀 **합성 장면으로만 검증**했다 (면적 오차 12% 이내, 구름 칸 판정 불가 처리,
+  먼 변화 제거). 실제 장면은 사용자 PC 에서 처음 돈다. 4월 초 식생 변화·산 그림자가 dNBR 에 섞일 수 있어 임계값별 면적을 함께 낸다.
+- 헬기·진화대는 서버가 없어 LIVE 에 나오지 않는다 (재현 모드에는 낮 헬기 표시). 진압 효과는 여전히 모델 없음.
+- 실제 투입 자원은 보도 숫자이며 보도마다 다를 수 있다 (예: 19시 헬기 9대 vs 다른 기사 6대).
+- `environment/src/contract_env.py` 의 `grid.cells` 반복 생성 문제를 고쳐 snapshot 이 0.57 s → 0.03 s 가 됐다.
