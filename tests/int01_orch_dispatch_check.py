@@ -9,7 +9,12 @@ INT-01 확인 (총괄 팀별 요청서): 관제판 "출동" 버튼을 총괄 경
 
 실행: python -m tests.int01_orch_dispatch_check   (총괄·UAV 서버 불필요 — 응답을 흉내 냄)
 """
+import tempfile
+
 import config
+
+# 관제판을 불러오면 로그 파일을 새로 만들므로, 실제 logs/web_auto.jsonl 을 지우지 않게 임시 폴더를 쓴다
+config.LOG_DIR = tempfile.mkdtemp(prefix="adair_test_")
 import httpx
 from fastapi.testclient import TestClient
 
@@ -93,3 +98,4 @@ check("꺼짐(기본): 총괄을 부르지 않고 기존처럼 UAV 직접", not 
       and any(u.endswith("/evaluate") for u, _ in calls))
 
 print("\n모두 통과" if ok else "\n실패 항목 있음")
+raise SystemExit(0 if ok else 1)   # 자동 시험(GitHub Actions)이 실패를 알아채도록

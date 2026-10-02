@@ -7,7 +7,12 @@ INT-02 수락 확인 (총괄 팀별 요청서): 도착 즉시 진화 제거
 
 실행: python -m tests.int02_extinguish_check   (UAV·UGV 서버 불필요)
 """
+import tempfile
+
 import config
+
+# 관제판을 불러오면 로그 파일을 새로 만들므로, 실제 logs/web_auto.jsonl 을 지우지 않게 임시 폴더를 쓴다
+config.LOG_DIR = tempfile.mkdtemp(prefix="adair_test_")
 from fastapi.testclient import TestClient
 
 import web.app as webapp
@@ -49,3 +54,4 @@ check("시연 스위치를 켜면 진화 반영", r.get("ok") is True and (x, y)
 config.WEB_DEMO_EXTINGUISH = False
 
 print("\n모두 통과" if ok else "\n실패 항목 있음")
+raise SystemExit(0 if ok else 1)   # 자동 시험(GitHub Actions)이 실패를 알아채도록
