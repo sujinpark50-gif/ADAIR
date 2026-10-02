@@ -55,6 +55,7 @@ DENSIFY_M = 10.0          # 도로 높이·면을 이 간격으로 쪼갠다
 SMOOTH_M = 150.0          # DEM 이동평균 창 (90 m 격자 계단을 지운다)
 MAX_GRADE = 0.08          # 경사 상한 8% (실제 도로 설계 수준). 양 끝 높이차 때문에 불가능하면 선형
 NODE_PAD_R = 5.0          # 교차로 패드 반지름 — 도로끼리 이어지는 곳의 틈을 메운다
+BLEND_DZ_M = 2.0          # 이보다 높이차가 큰 다른 도로는 입체교차(고가)로 보고 높이를 섞지 않는다
 CARVE_CLEAR_M = 0.6       # 지형을 도로 면보다 이만큼 아래로 깎는다
 SPAWN_Z_OFFSET_M = 0.4
 SPAWN_GAP_M = 8.0         # 같은 거점 두 번째 차량은 도로를 따라 이만큼 앞에 세운다
@@ -97,10 +98,14 @@ def densify(xy):
 def road_profile(xy, z_raw, za, zb):
     """이동평균 → 양 끝 노드 높이에 맞춤 → 경사 상한. 반환 (z, 선형으로 대체했는지)."""
     s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
+    return _profile(s, z_raw, za, zb)
+
+
+def _profile(s, z_raw, za, zb):
     L = s[-1]
     if L < 1e-6:
-        return np.full(len(xy), za), False
-    w = max(1, int(round(SMOOTH_M / DENSIFY_M)))
+        return np.full(len(s), za), False
+    w = max(1, min(int(round(SMOOTH_M / DENSIFY_M)), len(s) // 2))
     pad = np.pad(z_raw, w, mode="edge")
     z = np.convolve(pad, np.ones(2 * w + 1) / (2 * w + 1), mode="same")[w:-w]
     z = z + (za - z[0]) + (s / L) * ((zb - z[-1]) - (za - z[0]))       # 양 끝 맞춤
@@ -147,14 +152,45 @@ def smooth_nodes(node_z, node_xy, roads, iters=300):
     return z
 
 
+class RoadField:
+    """도로 면 높이장: 도로 띠의 모든 꼭짓점 높이를 '근처 도로 중심선 높이의 가중평균'으로 정한다.
+    도로마다 따로 높이를 정하면 띠가 겹치는 곳(교차로 주변, 나란히 붙은 도로)에서 한쪽 띠 가장자리가
+    다른 띠보다 높아 턱이 생긴다 (2026-10-02 시험). 같은 높이장을 쓰면 겹치는 띠는 같은 높이가 된다.
+    자기 도로 높이와 BLEND_DZ_M 이상 다른 도로는 입체교차로 보고 섞지 않는다."""
+
+    def __init__(self, road_xyz):
+        from scipy.spatial import cKDTree
+        self.p = np.vstack([v[:, :2] for v in road_xyz.values()])
+        self.z = np.concatenate([v[:, 2] for v in road_xyz.values()])
+        self.tree = cKDTree(self.p)
+        self.r = ROAD_WIDTH_M
+
+    def at(self, xy, z_own):
+        out = np.array(z_own, dtype=float)
+        for k, nb in enumerate(self.tree.query_ball_point(xy, self.r)):
+            if not nb:
+                continue
+            nb = np.asarray(nb)
+            zn = self.z[nb]
+            keep = np.abs(zn - z_own[k]) < BLEND_DZ_M
+            if not keep.any():
+                continue
+            d = np.hypot(*(self.p[nb[keep]] - xy[k]).T)
+            w = (1 - d / self.r) ** 2 + 1e-6
+            out[k] = (w * zn[keep]).sum() / w.sum()
+        return out
+
+
 # --- 메시 ---------------------------------------------------------------------
 
 class Obj:
     def __init__(self):
-        self.v, self.f = [], []
+        self.v, self.f, self.owner = [], [], []
+        self.tag = 0                # 꼭짓점이 어느 도로·패드 것인지 (턱 검사용)
 
     def vert(self, x, y, z):
         self.v.append((x, y, z))
+        self.owner.append(self.tag)
         return len(self.v)          # OBJ 는 1부터
 
     def tri(self, a, b, c):
@@ -173,7 +209,7 @@ class Obj:
             f.writelines(f"f {a}//1 {b}//1 {c}//1\n" for a, b, c in self.f)
 
 
-def ribbon(mesh: Obj, xyz):
+def ribbon(mesh: Obj, xyz, field=None):
     """도로 띠: 각 점에서 좌우로 폭/2. 이웃 구간이 꼭짓점을 공유해 면이 끊기지 않는다."""
     xy = xyz[:, :2]
     d = np.diff(xy, axis=0)
@@ -181,16 +217,23 @@ def ribbon(mesh: Obj, xyz):
     t = np.vstack([d[:1], d[:-1] + d[1:], d[-1:]])                     # 점별 진행방향 (꺾이는 곳은 평균)
     t /= np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None]
     n = np.stack([-t[:, 1], t[:, 0]], axis=1) * (ROAD_WIDTH_M / 2)      # 왼쪽 법선
-    L = [mesh.vert(x + nx, y + ny, z) for (x, y, z), (nx, ny) in zip(xyz, n)]
-    R = [mesh.vert(x - nx, y - ny, z) for (x, y, z), (nx, ny) in zip(xyz, n)]
+    zl = zr = xyz[:, 2]
+    if field is not None:                                               # 겹치는 띠와 같은 높이가 되게
+        zl = field.at(xy + n, xyz[:, 2])
+        zr = field.at(xy - n, xyz[:, 2])
+    L = [mesh.vert(x + nx, y + ny, z) for (x, y, _), (nx, ny), z in zip(xyz, n, zl)]
+    R = [mesh.vert(x - nx, y - ny, z) for (x, y, _), (nx, ny), z in zip(xyz, n, zr)]
     for i in range(len(xyz) - 1):
         mesh.quad(R[i], R[i + 1], L[i + 1], L[i])                       # 윗면 (위에서 반시계)
 
 
-def pad(mesh: Obj, x, y, z, k=12):
-    c = mesh.vert(x, y, z)
-    ring = [mesh.vert(x + NODE_PAD_R * math.cos(2 * math.pi * i / k),
-                      y + NODE_PAD_R * math.sin(2 * math.pi * i / k), z) for i in range(k)]
+def pad(mesh: Obj, x, y, z, k=12, field=None):
+    ang = 2 * math.pi * np.arange(k) / k
+    rx, ry = x + NODE_PAD_R * np.cos(ang), y + NODE_PAD_R * np.sin(ang)
+    rz = np.full(k, z) if field is None else field.at(np.column_stack([rx, ry]), np.full(k, z))
+    cz = z if field is None else field.at(np.array([[x, y]]), np.array([z]))[0]
+    c = mesh.vert(x, y, cz)
+    ring = [mesh.vert(a, b, h) for a, b, h in zip(rx, ry, rz)]
     for i in range(k):
         mesh.tri(c, ring[i], ring[(i + 1) % k])
 
@@ -278,9 +321,17 @@ def build():
         z, lin = road_profile(xy, z_raw, node_z[r["node_a"]], node_z[r["node_b"]])
         if lin:
             linear.append(r["road_id"])
-        xyz = np.column_stack([xy, z])
-        road_xyz[r["road_id"]] = xyz
-        ribbon(mesh, xyz)
+        road_xyz[r["road_id"]] = np.column_stack([xy, z])
+
+    field = RoadField(road_xyz)
+    for rid, xyz in road_xyz.items():
+        xyz[:, 2] = field.at(xyz[:, :2], xyz[:, 2])                    # 중심선도 같은 높이장으로
+    field = RoadField(road_xyz)
+
+    for rid, xyz in road_xyz.items():
+        xy, z = xyz[:, :2], xyz[:, 2]
+        mesh.tag += 1
+        ribbon(mesh, xyz, field)
         seg = np.hypot(*np.diff(xy, axis=0).T)
         grades += list(np.abs(np.diff(z)) / np.maximum(seg, 1e-6))
         # 깎기 검사점: 중심선 + 양 끝 (폭 방향)
@@ -290,9 +341,21 @@ def build():
         for off in (0, 1, -1):
             all_pts.append(np.column_stack([xy + off * nrm, z]))
     for nid, (x, y) in node_xy.items():
-        pad(mesh, x, y, node_z[nid])
+        mesh.tag += 1
+        pad(mesh, x, y, node_z[nid], field=field)
         all_pts.append(np.array([[x + NODE_PAD_R * math.cos(a), y + NODE_PAD_R * math.sin(a), node_z[nid]]
                                  for a in np.linspace(0, 2 * math.pi, 8, endpoint=False)] + [[x, y, node_z[nid]]]))
+
+    # 턱 검사: 서로 다른 도로의 꼭짓점이 1.5 m 안에 겹치는데 높이가 다른 곳 (입체교차 BLEND_DZ_M 이상 제외)
+    from scipy.spatial import cKDTree
+    V = np.array(mesh.v)
+    owner = np.array(mesh.owner)
+    pr = cKDTree(V[:, :2]).query_pairs(1.5, output_type="ndarray")
+    pr = pr[owner[pr[:, 0]] != owner[pr[:, 1]]]
+    dzv = np.abs(V[pr[:, 0], 2] - V[pr[:, 1], 2])
+    ledge = dzv[dzv < BLEND_DZ_M]
+    print(f"겹치는 꼭짓점 {len(pr)} 쌍: 높이차 최대 {ledge.max() if len(ledge) else 0:.2f} m, "
+          f">0.10 m {(ledge > 0.10).sum()} 쌍, 입체교차로 둔 곳 {(dzv >= BLEND_DZ_M).sum()} 쌍")
 
     OUT_MODEL.mkdir(parents=True, exist_ok=True)
     mesh.write(OUT_MODEL / "roads.obj", "roads")
@@ -361,9 +424,20 @@ def build():
                     "road_width_m": ROAD_WIDTH_M, "max_grade": MAX_GRADE}
     NET.write_text(json.dumps(net, ensure_ascii=False, indent=1), encoding="utf-8")
 
+    # 대표 경로의 최대 경사 (주행 가능 여부를 미리 본다)
+    from ugv import graph_gpkg
+    from ugv.road_graph import RoadGraph
+    G = RoadGraph(graph_gpkg.NODES, graph_gpkg.ROADS)
+    for a_, b_ in (("A", "B"), ("B", "A")):
+        rt = G.find_route(a_, b_, 2.0)
+        worst = max(((np.abs(np.diff(road_xyz[G.road_between(u, v).road_id][:, 2]))
+                      / np.maximum(np.hypot(*np.diff(road_xyz[G.road_between(u, v).road_id][:, :2], axis=0).T), 1e-6)).max(),
+                     G.road_between(u, v).road_id) for u, v in zip(rt.path, rt.path[1:]))
+        print(f"  경로 {a_}→{b_}: 최대 경사 {worst[0]*100:.1f}% (도로 {worst[1]})")
+
     g = np.array(grades)
     print(f"도로 메시: {len(mesh.f)} 삼각형 (시각·충돌 공용) → {OUT_MODEL.relative_to(ROOT)}/roads.obj")
-    print(f"경사: 최대 {g.max()*100:.1f}%  >6% 구간 {(g > 0.06).sum()}/{len(g)}  >8% 구간 {(g > 0.0801).sum()}"
+    print(f"경사: 최대 {g.max()*100:.1f}%  >6% 구간 {(g > 0.06).sum()}/{len(g)}  >8% {(g > 0.0801).sum()}  >10% {(g > 0.10).sum()}"
           f"  (상한 불가로 선형 처리한 도로 {len(linear)}개)")
     print(f"지형이 도로 면을 뚫던 점: 깎기 전 {(before > -CARVE_CLEAR_M).sum()}/{len(pts)} → 후 "
           f"{(after > -CARVE_CLEAR_M + 0.01).sum()}  (낮춘 꼭짓점 {dz.size}개, 평균 {dz.mean():.1f} m, 최대 {dz.max():.1f} m)")
