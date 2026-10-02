@@ -50,11 +50,11 @@ LOCAL = (f"+proj=tmerc +lat_0={DATUM_LAT} +lon_0={DATUM_LON} +k=1 "
          "+x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs")
 EARTH_R = 6371000.0
 
-ROAD_WIDTH_M = 6.0        # 도로 면 폭 (차선 2개 정도). r1_rover 폭 약 0.5 m
+ROAD_WIDTH_M = 10.0       # 도로 면 폭. 실제 2차로(약 7 m)보다 넓게 — PX4 경로 추종이 코너를 안쪽으로 질러도 떨어지지 않게
 DENSIFY_M = 5.0           # 도로 높이·면을 이 간격으로 쪼갠다 (교차로에서 면끼리 높이가 맞게 촘촘히)
 SMOOTH_M = 150.0          # DEM 이동평균 창 (90 m 격자 계단을 지운다)
 MAX_GRADE = 0.08          # 경사 상한 8% (실제 도로 설계 수준). 양 끝 높이차 때문에 불가능하면 선형
-NODE_PAD_R = 5.0          # 교차로 패드 반지름 — 도로끼리 이어지는 곳의 틈을 메운다
+NODE_PAD_R = 7.0          # 교차로 패드 반지름 — 도로끼리 이어지는 곳의 틈을 메운다
 FIELD_STEP_M = 2.0        # 높이장 표본 간격 (도로 중심선)
 FIELD_SIGMA_M = 6.0       # 높이장 가우스 폭 — 교차로·나란한 도로가 이 거리 안에서 같은 높이로 이어진다
 FIELD_ROUNDS = 3          # 높이장 ↔ 경사 상한 반복 횟수
@@ -412,7 +412,8 @@ def build():
     sep = led >= LAYER_DZ_M                                             # 입체교차 (위·아래 도로가 따로 있다)
     lg = led[~sep]
     print(f"턱 검사 (1 m 격자 {len(led)} 칸): 겹친 면 높이차 최대 {lg.max():.2f} m, "
-          f">0.05 m {(lg > 0.05).sum()} 칸, >0.10 m {(lg > 0.10).sum()} 칸, 입체교차 {sep.sum()} 칸")
+          f">0.05 m {(lg > 0.05).sum()} 칸, 0.10~1 m {((lg > 0.10) & (lg < 1)).sum()} 칸, "
+          f"1 m 이상(입체교차 경계) {(lg >= 1).sum()} 칸, 입체교차 {sep.sum()} 칸")
 
     OUT_MODEL.mkdir(parents=True, exist_ok=True)
     mesh.write(OUT_MODEL / "roads.obj", "roads")

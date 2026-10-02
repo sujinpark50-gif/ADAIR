@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 TELEMETRY_RATE_HZ = 1.0
 ARM_SETTLE_S = 2.0   # arm 직후 곧바로 start_mission 하면 DENIED
-ACCEPT_RADIUS_M = 10.0                  # 웨이포인트 도착 반경. 2m 는 지나쳐 버린다
+ACCEPT_RADIUS_M = 4.0                   # 웨이포인트 도착 반경. 10 m 면 통과형 웨이포인트에서 코너를 크게 질러 도로 밖으로 나간다 (2026-10-03). 2 m 는 지나쳐 버린다
 # 웨이포인트 간격(2 × 도착 반경)은 ugv/route_plan.py 가 맞춰서 넘긴다. 여기서 다시 솎으면
 # 진행률 번호가 경로 계획과 어긋나므로 드라이버는 받은 그대로 올린다.
 

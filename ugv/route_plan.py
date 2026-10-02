@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from .geo import distance_m, to_ned
 
-WAYPOINT_GAP_M = 20.0     # = 2 × PX4 도착 반경(ACCEPT_RADIUS_M 10 m)
+WAYPOINT_GAP_M = 8.0      # = 2 × PX4 도착 반경(ACCEPT_RADIUS_M 4 m). 도로 모양 점을 덜 솎아 굽은 길을 더 잘 따라간다
 
 
 @dataclass
