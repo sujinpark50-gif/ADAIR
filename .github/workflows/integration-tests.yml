@@ -48,5 +48,8 @@ jobs:
       - name: Orchestrator v0.1.2 (박수진)
         run: python -m pytest -q orchestrator_v012/tests
 
-      - name: 총괄 오케스트레이터 (박수진)
+      - name: 총괄 오케스트레이터 (박수진) + 환경 계약 어댑터 (멘토 패치)
         run: python -m pytest -q orchestrator
+
+      - name: 멘토 패치 — 환경 계약·실행 키·2019 재현·위성 피해지
+        run: python -m pytest -q environment/tests tests/test_exec_idempotency.py tests/test_inje2019_whatif.py tests/test_burn_scar.py
