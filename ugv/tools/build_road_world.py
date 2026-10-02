@@ -51,11 +51,14 @@ LOCAL = (f"+proj=tmerc +lat_0={DATUM_LAT} +lon_0={DATUM_LON} +k=1 "
 EARTH_R = 6371000.0
 
 ROAD_WIDTH_M = 6.0        # 도로 면 폭 (차선 2개 정도). r1_rover 폭 약 0.5 m
-DENSIFY_M = 10.0          # 도로 높이·면을 이 간격으로 쪼갠다
+DENSIFY_M = 5.0           # 도로 높이·면을 이 간격으로 쪼갠다 (교차로에서 면끼리 높이가 맞게 촘촘히)
 SMOOTH_M = 150.0          # DEM 이동평균 창 (90 m 격자 계단을 지운다)
 MAX_GRADE = 0.08          # 경사 상한 8% (실제 도로 설계 수준). 양 끝 높이차 때문에 불가능하면 선형
 NODE_PAD_R = 5.0          # 교차로 패드 반지름 — 도로끼리 이어지는 곳의 틈을 메운다
-BLEND_DZ_M = 2.0          # 이보다 높이차가 큰 다른 도로는 입체교차(고가)로 보고 높이를 섞지 않는다
+FIELD_STEP_M = 2.0        # 높이장 표본 간격 (도로 중심선)
+FIELD_SIGMA_M = 6.0       # 높이장 가우스 폭 — 교차로·나란한 도로가 이 거리 안에서 같은 높이로 이어진다
+FIELD_ROUNDS = 3          # 높이장 ↔ 경사 상한 반복 횟수
+LAYER_DZ_M = 3.0          # 자기 도로 높이와 이보다 다른 표본은 섞지 않는다 (입체교차를 평면으로 합치지 않게)
 CARVE_CLEAR_M = 0.6       # 지형을 도로 면보다 이만큼 아래로 깎는다
 SPAWN_Z_OFFSET_M = 0.4
 SPAWN_GAP_M = 8.0         # 같은 거점 두 번째 차량은 도로를 따라 이만큼 앞에 세운다
@@ -99,6 +102,24 @@ def road_profile(xy, z_raw, za, zb):
     """이동평균 → 양 끝 노드 높이에 맞춤 → 경사 상한. 반환 (z, 선형으로 대체했는지)."""
     s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
     return _profile(s, z_raw, za, zb)
+
+
+def cap_grade(s, z):
+    """양 끝 고정, 경사 MAX_GRADE 상한 (앞뒤로 반복). 양 끝 높이차가 커서 불가능하면 그대로 둔다."""
+    z = z.copy()
+    if abs(z[-1] - z[0]) > MAX_GRADE * s[-1]:
+        return z
+    for _ in range(50):
+        prev = z.copy()
+        for i in range(1, len(z) - 1):
+            d = s[i] - s[i - 1]
+            z[i] = np.clip(z[i], z[i - 1] - MAX_GRADE * d, z[i - 1] + MAX_GRADE * d)
+        for i in range(len(z) - 2, 0, -1):
+            d = s[i + 1] - s[i]
+            z[i] = np.clip(z[i], z[i + 1] - MAX_GRADE * d, z[i + 1] + MAX_GRADE * d)
+        if np.allclose(prev, z, atol=1e-3):
+            break
+    return z
 
 
 def _profile(s, z_raw, za, zb):
@@ -153,32 +174,68 @@ def smooth_nodes(node_z, node_xy, roads, iters=300):
 
 
 class RoadField:
-    """도로 면 높이장: 도로 띠의 모든 꼭짓점 높이를 '근처 도로 중심선 높이의 가중평균'으로 정한다.
-    도로마다 따로 높이를 정하면 띠가 겹치는 곳(교차로 주변, 나란히 붙은 도로)에서 한쪽 띠 가장자리가
-    다른 띠보다 높아 턱이 생긴다 (2026-10-02 시험). 같은 높이장을 쓰면 겹치는 띠는 같은 높이가 된다.
-    자기 도로 높이와 BLEND_DZ_M 이상 다른 도로는 입체교차로 보고 섞지 않는다."""
+    """도로 면 높이장 — 연속 함수 하나로 모든 도로 면의 높이를 정한다.
+    도로마다 높이를 따로 정하거나 꼭짓점마다 끊어서 섞으면, 띠가 겹치는 교차로에서 한 띠가 다른 띠
+    위로 올라와 턱이 생긴다 (2026-10-02 시험, 교차로마다 턱). 그래서 모든 도로 중심선을 FIELD_STEP_M
+    간격으로 찍은 높이를 가우스 가중평균(σ=FIELD_SIGMA_M)한 연속 함수로 만들고, 모든 도로 띠·교차로
+    패드의 꼭짓점을 이 함수에서 읽는다. 겹치는 면은 같은 함수를 쓰므로 높이가 같다 (삼각형 보간 오차만 남는다).
+    다만 자기 높이와 LAYER_DZ_M 이상 다른 표본(입체교차의 위·아래 도로)은 섞지 않는다."""
 
     def __init__(self, road_xyz):
         from scipy.spatial import cKDTree
-        self.p = np.vstack([v[:, :2] for v in road_xyz.values()])
-        self.z = np.concatenate([v[:, 2] for v in road_xyz.values()])
+        pts = []
+        for v in road_xyz.values():
+            s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(v[:, :2], axis=0).T))])
+            q = np.arange(0, s[-1] + 1e-9, FIELD_STEP_M)
+            pts.append(np.column_stack([np.interp(q, s, v[:, 0]), np.interp(q, s, v[:, 1]),
+                                        np.interp(q, s, v[:, 2])]))
+        p = np.vstack(pts)
+        self.p, self.z = p[:, :2], p[:, 2]
         self.tree = cKDTree(self.p)
-        self.r = ROAD_WIDTH_M
 
-    def at(self, xy, z_own):
-        out = np.array(z_own, dtype=float)
-        for k, nb in enumerate(self.tree.query_ball_point(xy, self.r)):
-            if not nb:
-                continue
+    def at(self, xy, z_own=None):
+        xy = np.atleast_2d(xy)
+        out = np.empty(len(xy))
+        for k, nb in enumerate(self.tree.query_ball_point(xy, 3 * FIELD_SIGMA_M)):
             nb = np.asarray(nb)
-            zn = self.z[nb]
-            keep = np.abs(zn - z_own[k]) < BLEND_DZ_M
-            if not keep.any():
+            if not len(nb):
+                out[k] = np.nan if z_own is None else z_own[k]
                 continue
-            d = np.hypot(*(self.p[nb[keep]] - xy[k]).T)
-            w = (1 - d / self.r) ** 2 + 1e-6
-            out[k] = (w * zn[keep]).sum() / w.sum()
+            if z_own is not None:                                       # 입체교차: 높이가 크게 다른 층은 섞지 않는다
+                nb = nb[np.abs(self.z[nb] - z_own[k]) < LAYER_DZ_M]
+                if not len(nb):
+                    out[k] = z_own[k]
+                    continue
+            d2 = ((self.p[nb] - xy[k]) ** 2).sum(axis=1)
+            w = np.exp(-d2 / (2 * FIELD_SIGMA_M ** 2))
+            out[k] = (w * self.z[nb]).sum() / w.sum()
         return out
+
+
+def ledge_check(mesh, cell=1.0):
+    """메시를 1 m 격자로 찍어, 한 칸을 덮는 면들의 높이차(턱)를 잰다. 반환 (턱 높이 배열)."""
+    V = np.array(mesh.v); F = np.array(mesh.f) - 1
+    lo, hi = {}, {}
+    for a, b, c in F:
+        A, B, C = V[a], V[b], V[c]
+        x0, x1 = np.floor(min(A[0], B[0], C[0])), np.ceil(max(A[0], B[0], C[0]))
+        y0, y1 = np.floor(min(A[1], B[1], C[1])), np.ceil(max(A[1], B[1], C[1]))
+        gx, gy = np.meshgrid(np.arange(x0, x1 + cell, cell), np.arange(y0, y1 + cell, cell))
+        gx, gy = gx.ravel(), gy.ravel()
+        den = (B[1] - C[1]) * (A[0] - C[0]) + (C[0] - B[0]) * (A[1] - C[1])
+        if abs(den) < 1e-9:
+            continue
+        l1 = ((B[1] - C[1]) * (gx - C[0]) + (C[0] - B[0]) * (gy - C[1])) / den
+        l2 = ((C[1] - A[1]) * (gx - C[0]) + (A[0] - C[0]) * (gy - C[1])) / den
+        l3 = 1 - l1 - l2
+        ins = (l1 >= 0) & (l2 >= 0) & (l3 >= 0)
+        z = l1[ins] * A[2] + l2[ins] * B[2] + l3[ins] * C[2]
+        for key, h in zip(zip(gx[ins].astype(int), gy[ins].astype(int)), z):
+            if key in lo:
+                lo[key] = min(lo[key], h); hi[key] = max(hi[key], h)
+            else:
+                lo[key] = hi[key] = h
+    return np.array([hi[k] - lo[k] for k in lo])
 
 
 # --- 메시 ---------------------------------------------------------------------
@@ -323,9 +380,14 @@ def build():
             linear.append(r["road_id"])
         road_xyz[r["road_id"]] = np.column_stack([xy, z])
 
-    field = RoadField(road_xyz)
-    for rid, xyz in road_xyz.items():
-        xyz[:, 2] = field.at(xyz[:, :2], xyz[:, 2])                    # 중심선도 같은 높이장으로
+    # 높이장 ↔ 경사 상한을 번갈아 몇 번: 높이장으로 겹치는 도로를 맞추면 경사가 조금 커지므로 다시 상한을 걸고,
+    # 상한 건 중심선으로 높이장을 다시 만든다. 마지막 높이장에서 모든 꼭짓점을 읽는다.
+    for _ in range(FIELD_ROUNDS):
+        field = RoadField(road_xyz)
+        for rid, xyz in road_xyz.items():
+            z = field.at(xyz[:, :2], xyz[:, 2])                         # 중심선도 같은 높이장으로
+            s_ = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xyz[:, :2], axis=0).T))])
+            xyz[:, 2] = cap_grade(s_, z) if s_[-1] > 0 else z
     field = RoadField(road_xyz)
 
     for rid, xyz in road_xyz.items():
@@ -346,16 +408,11 @@ def build():
         all_pts.append(np.array([[x + NODE_PAD_R * math.cos(a), y + NODE_PAD_R * math.sin(a), node_z[nid]]
                                  for a in np.linspace(0, 2 * math.pi, 8, endpoint=False)] + [[x, y, node_z[nid]]]))
 
-    # 턱 검사: 서로 다른 도로의 꼭짓점이 1.5 m 안에 겹치는데 높이가 다른 곳 (입체교차 BLEND_DZ_M 이상 제외)
-    from scipy.spatial import cKDTree
-    V = np.array(mesh.v)
-    owner = np.array(mesh.owner)
-    pr = cKDTree(V[:, :2]).query_pairs(1.5, output_type="ndarray")
-    pr = pr[owner[pr[:, 0]] != owner[pr[:, 1]]]
-    dzv = np.abs(V[pr[:, 0], 2] - V[pr[:, 1], 2])
-    ledge = dzv[dzv < BLEND_DZ_M]
-    print(f"겹치는 꼭짓점 {len(pr)} 쌍: 높이차 최대 {ledge.max() if len(ledge) else 0:.2f} m, "
-          f">0.10 m {(ledge > 0.10).sum()} 쌍, 입체교차로 둔 곳 {(dzv >= BLEND_DZ_M).sum()} 쌍")
+    led = ledge_check(mesh)
+    sep = led >= LAYER_DZ_M                                             # 입체교차 (위·아래 도로가 따로 있다)
+    lg = led[~sep]
+    print(f"턱 검사 (1 m 격자 {len(led)} 칸): 겹친 면 높이차 최대 {lg.max():.2f} m, "
+          f">0.05 m {(lg > 0.05).sum()} 칸, >0.10 m {(lg > 0.10).sum()} 칸, 입체교차 {sep.sum()} 칸")
 
     OUT_MODEL.mkdir(parents=True, exist_ok=True)
     mesh.write(OUT_MODEL / "roads.obj", "roads")
