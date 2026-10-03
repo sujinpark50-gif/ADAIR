@@ -20,7 +20,7 @@
 ## 💡 프로젝트 개요 (Overview)
 
 ### 산불 환경 모델링의 목적과 역할
-본 환경 모델의 주 목적은 단순히 특정 지역의 산불을 가상 예측하는 것에 그치지 않고, **총괄 오케스트레이터(Master Orchestrator)의 자원 배치 및 재할당 판단**과 **UAV/UGV 에이전트의 접근성 판별**을 가능하게 만드는 **동적 환경 상태(State Space)를 제공**하는 것이다.
+본 환경 모델의 주 목적은 특정 지역의 산불을 가상 예측하고, **총괄 오케스트레이터(Master Orchestrator)의 자원 배치 및 재할당 판단**과 **UAV/UGV 에이전트의 접근성 판별**을 가능하게 만드는 **동적 환경 상태(State Space)를 제공**하는 것이다.
 
 * **지형 및 도로망 반영**: 능선 및 경사도로 인한 UGV 지상 자원의 우회 경로 판별 및 도로망 차단 여부 평가
 * **기상 변수 결합**: 풍향 및 풍속 변화에 따른 실시간 화재 확산 방향 및 위험지역(Downwind Risk Area) 동적 계산
@@ -138,10 +138,12 @@ RNG(Random Number Generator) 난수 시드(`seed`)로 `roll < P_combined` 조건
 `src/risk.py` 모듈은 오케스트레이터의 자원 배치 우선순위 결정을 위해 각 셀별 복합 위험도(`risk_score` $\in [0.0, 1.0]$)를 산출한다.
 
 $$\text{risk}_{\text{score}}(T) = \begin{cases} 
-1.0 & \text{if } \text{fire}_{\text{state}} = \text{BURNING} \\
+\text{clamp}_{[0, 1]}\left(B + (1.0 - B) \cdot E\right) & \text{if } \text{fire}_{\text{state}} = \text{BURNING} \\
 0.2 & \text{if } \text{fire}_{\text{state}} = \text{BURNED} \\
 \text{clamp}_{[0, 1]}\left(\sum_{i} W_i \cdot S_i\right) & \text{if } \text{fire}_{\text{state}} = \text{UNBURNED}
 \end{cases}$$
+
+*(단, $B$는 `burning_risk_floor` 기본값 $0.70$, $E$는 노출 가중치 재정규화 점수 $E = \frac{\sum_{\text{exp}} W_i S_i}{\sum_{\text{exp}} W_i}$)*
 
 
 ### 1. UNBURNED 셀 복합 위험도 (Two-Level WLC)
@@ -529,7 +531,7 @@ print(format_ahp_report(result))
 본 프로젝트의 환경 모델 관련 핵심 소스 코드, 설정 파일, 데이터 및 테스트 디렉터리 구조이다.
 
 ```text
-environmental-modeling/
+environment/
 ├── config/
 │   └── environment_config.yaml      # 공간, 식생 매핑, 바람, CA 확산, Risk 수식 통합 설정
 ├── data/
@@ -542,22 +544,24 @@ environmental-modeling/
 │       ├── roads_raster.tif         # 도로망 래스터
 │       ├── buildings_inje.tif       # 건물 유형 래스터 (RESIDENTIAL, IMPORTANT, CRITICAL 등)
 │       └── hillshade.tif            # 음영기복 래스터 Overlay용
-├── src/
-│   └── environment/                 # 환경 및 산불 모델 핵심 소스 모듈
-│       ├── __init__.py
-│       ├── ahp.py                   # AHP 기반 최상위 위험도 가중치 산출 및 일관성 검증 도구
-│       ├── api.py                   # Public API Gateway Facade (EnvironmentModelAPI)
-│       ├── benchmark.py             # 확산 모드 비교 및 N-step CA 앙상블 벤치마크 도구
-│       ├── cell.py                  # Cell 데이터 클래스 & FireState Enum 정의
-│       ├── fire_model.py            # CA 엔진 & 확산 예측 (geometric / ensemble)
-│       ├── grid.py                  # Rasterio 기반 raster 데이터 읽기 및 2D 격자 생성
-│       ├── observation.py           # UAV/UGV 관측 보고서(ObservationReport) 반영기
-│       └── risk.py                  # Dynamic Risk Scoring WLC 다기준 집계 모듈
-├── tests/                           # 자동화 유닛, 회귀 및 벤치마크 테스트
+├── src/                             # 환경 및 산불 모델 핵심 소스 모듈
+│   ├── __init__.py
+│   ├── ahp.py                       # AHP 기반 최상위 위험도 가중치 산출 및 일관성 검증 도구
+│   ├── api.py                       # Public API Gateway Facade (EnvironmentModelAPI)
+│   ├── benchmark.py                 # 확산 모드 비교 및 N-step CA 앙상블 벤치마크 도구
+│   ├── cell.py                      # Cell 데이터 클래스 & FireState Enum 정의
+│   ├── evaluation.py                # 산불 시뮬레이션-참조 래스터 공간 일치도(IoU/Dice) 및 면적 평가 모듈
+│   ├── fire_model.py                # CA 엔진 & 확산 예측 (geometric / ensemble)
+│   ├── grid.py                      # Rasterio 기반 raster 데이터 읽기 및 2D 격자 생성
+│   ├── observation.py               # UAV/UGV 관측 보고서(ObservationReport) 반영기
+│   ├── risk.py                      # Dynamic Risk Scoring WLC 다기준 집계 모듈
+│   └── weather.py                   # 시계열 ASOS 기상 데이터 공급 및 풍향/풍속 벡터 평균 모듈
+├── evaluate_2019_inje.py            # 2019 인제 산불 재구성 정량 평가 및 CSV/GeoTIFF 출력 실행 도구
 ├── images/                          # 시각화 gif 파일 저장
 ├── visualize_fire.py                # 6-Layer 통합 GIS 시각화 및 애니메이션 실행 도구
 └── README.md                        # 본 환경 모델 시스템 통합 안내서
 ```
+* `data/inje2019/burned_area/inje_2019_burn_reference_binary.tif`: Sentinel-2 dNBR에서 추정한 2019 인제 산불 피해 reference footprint (ground truth아님)
 
 ---
 
@@ -602,7 +606,7 @@ python visualize_fire.py --x 120 --y 120 --steps 30
 
 #### 1. 특정 발화점 지정 및 30 Step 저장
 ```bash
-python visualize_fire.py --x 120 --y 120 --steps 30 --save fire_simulation.gif --fps 5
+python visualize_fire.py --x 120 --y 120 --steps 30 --save fire_spread.gif --fps 5
 ```
 
 #### 2. 시드값을 변경하여 재현성 비교 테스트
@@ -612,11 +616,20 @@ python visualize_fire.py --seed 1004 --steps 40 --interval 100
 
 ### 실행 화면
 
+(2019/04/04 인제 산불 조건들로 실행)
 ```bash
-$ python visualize_fire.py --x 165 --y 115 --steps 30
+$ python visualize_fire.py --steps 50
 ```
 
 ![화재 확산 시뮬레이션](./images/fire_spread_2.gif)
+
+---
+
+참고) 2019년 인제 산불 검증 리포트 생성
+```bash
+cd environment
+python evaluate_2019_inje.py --steps 50
+```
 
 ---
 
@@ -664,13 +677,20 @@ $ python visualize_fire.py --x 165 --y 115 --steps 30
 
 1. 고도(DEM): [국토교통부 V-월드 디지털트윈국토](https://www.vworld.kr) > `공간정보 다운로드` 클릭  > `수치표고모델(DEM)_90M` 검색
     * 대체: [국토지리정보원 국토정보플랫폼](https://map.ngii.go.kr/) > `자료실` > `지도자료` > `공개DEM` > 시도 '강원특별자치도' & 시군구 '인제군' & 제작년도 '2025' > 검색 
-2. 산림지도: [산림청](https://map.forest.go.kr/forest/) > 산림공간정보 다운로드 > 일반인 신청
+2. 산림지도: [산림청](https://map.forest.go.kr/forest/) > 산림공간정보 다운로드 > 무료신청 > 일반인 신청 > 대축적 임상도(1:5000) > 2025년 임상도 또는 2019년 임상도(2015 ~ 2019)
 3. 도로망: [국가교통DB(KTDB)](https://ktdb.go.kr/www/index.do)
 4. GIS건물통합정보: [국토교통부 V-월드 디지털트윈국토](https://www.vworld.kr) > `공간정보 다운로드` 클릭  > `GIS건물통합정보` 검색
-5. 산불통계: 
+5. 기상관측자료: [기상청 기상자료개방포털 - 종관기상관측(ASOS)](https://data.kma.go.kr/data/grnd/selectAsosRltmList.do?pgmNo=36) 또는 [방재기상관측(AWS)](https://data.kma.go.kr/data/grnd/selectAwsRltmList.do?pgmNo=56)
+6. 산불통계: 
     * [산림청 국가산불정보시스템 산불통계](https://fd.forest.go.kr/ffas/pubConn/movePage/sub3.do)
     * [산림청 산림임업통계플랫폼](https://kfss.forest.go.kr/stat/ptl/newStat/newStatDtl.do?curMenu=3193)
-    * [산림청 산불통계데이터](https://www.data.go.kr/data/15121380/fileData.do?utm_source=chatgpt.com)
+    * [산림청 산불통계데이터](https://www.data.go.kr/data/15121380/fileData.do?utm_source=chatgpt.com): 2022-2025
+    * [KOSIS 시도별 산불발생 현황](https://kosis.kr/statHtml/statHtml.do?sso=ok&returnurl=https%3A%2F%2Fkosis.kr%3A443%2FstatHtml%2FstatHtml.do%3FtblId%3DDT_13625_A011%26orgId%3D136%26)
+    * [산불발생현황](https://www.forest.go.kr/kfsweb/kfi/kfs/frfr/selectFrfrStatsArea.do?mn=AR04_01_03)
+7. 산불지역:
+    * [Copernicus Browser](https://browser.dataspace.copernicus.eu/)
+    * [NASA FIRMS(Fire Information for Resource Management System)](https://firms.modaps.eosdis.nasa.gov/)
+    * [Copernicus Burnt Area 2019](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/clms/bio-geophysical-parameters/vegetation/burnt-area/ba_global_300m_monthly_v3.html)
 
 <br>
 </details>
@@ -681,6 +701,12 @@ $ python visualize_fire.py --x 165 --y 115 --steps 30
 <summary><b>[📘 용어]</b></summary>
 <br>
 
-* **래스터(Raster)**: 지표면이나 이미지를 픽셀(Pixel)이라는 사각형 격자(Grid) 형태로 나누어 각 칸에 색상이나 수치 값을 저장하고 표현하는 방식
+* **래스터(Raster)**: 지표면이나 이미지를 픽셀(Pixel)이라는 사각형 격자(Grid) 형태로 나누어 각 칸에 색상이나 수치 값을 저장하고 표현하는 방식.
+* **DEM (Digital Elevation Model / 수치표고모델)**: 건물이나 식생을 제외한 순수한 맨땅의 지표면 높낮이(고도) 데이터를 격자 형태로 디지털화한 것.
+* **EPSG:5186 (European Petroleum Survey Group 5186 / 한국 중부좌표계)**: 대한민국 중부 지역(서울·경기·충청·강원서부)의 위치를 정밀하게 표현하기 위해 국가에서 사용하는 표준 지도 좌표계 고유 번호.
+* **GIS (Geographic Information System / 지리정보시스템)**: 공간 정보(위치, 주소 등)를 수집·저장·분석하여 지도 형태로 시각화하고 관리하는 전체적인 컴퓨터 시스템.
+* **QGIS (Quantum GIS / 큐지아이에스)**: 누구나 무료로 다운로드하여 사용할 수 있는 오픈소스 형태의 대표적인 지리정보시스템(GIS) 데스크톱 소프트웨어로, DEM 데이터를 불러오거나 EPSG:5186 좌표계를 설정하여 공간 데이터를 시각화하고 분석할 수 있는 프로그램.
+* **.tif (GeoTIFF):** 좌표 정보가 포함된 **래스터(격자) 데이터 파일**. 위성·항공 이미지뿐 아니라 DEM, 경사도, 연료 유형처럼 각 셀에 값을 저장하는 GIS 데이터에 주로 사용.
+* **.gpkg (GeoPackage):** 점·선·면 등의 **벡터 데이터와 속성 정보를 저장하는 SQLite 기반 공간 데이터베이스 파일**. 여러 레이어를 하나의 파일에 저장할 수 있으며 QGIS 등에서 널리 사용.
 
 ---
