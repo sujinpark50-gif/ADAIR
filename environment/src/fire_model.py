@@ -596,7 +596,8 @@ class WildfireCAEngine:
             return 0.0
 
         # Roads are firebreaks: fire cannot spread into a road cell.
-        if self._roads_block_spread and target.is_road:
+        roads_block = getattr(self, "_roads_block_spread", False)
+        if roads_block and getattr(target, "is_road", False):
             return 0.0
 
         fuel_factor = target.fuel_amount
@@ -616,8 +617,15 @@ class WildfireCAEngine:
             towards_deg = float(weather.wind_direction_deg)
         else:
             wind_cfg = self._config.get("wind", {})
-            wind_speed = float(wind_cfg.get("speed_ms", self._current_weather.wind_speed_ms))
-            towards_deg = float(self._current_weather.wind_direction_deg)
+            curr_w = getattr(self, "_current_weather", None)
+            curr_speed = curr_w.wind_speed_ms if curr_w is not None else 0.0
+            wind_speed = float(wind_cfg.get("speed_ms", curr_speed))
+            if curr_w is not None and "direction_deg" not in wind_cfg:
+                towards_deg = float(curr_w.wind_direction_deg)
+            else:
+                wind_deg = float(wind_cfg.get("direction_deg", 270.0))
+                conv = self._config.get("weather", {}).get("wind_direction_convention", "from")
+                towards_deg = to_toward_direction(wind_deg, conv)
 
         towards_rad = math.radians(towards_deg)
         wind_dx = math.sin(towards_rad)
@@ -742,7 +750,7 @@ class WildfireCAEngine:
                 if (
                     neighbor.fire_state == FireState.UNBURNED
                     and neighbor.fuel_amount > 0.0
-                    and not (self._roads_block_spread and neighbor.is_road)
+                    and not (getattr(self, "_roads_block_spread", False) and getattr(neighbor, "is_road", False))
                 ):
                     cid = neighbor.cell_id
                     if cid not in candidate_sources:
