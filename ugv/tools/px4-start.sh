@@ -53,7 +53,7 @@ WORLD_SDF="$REPO/$WORLD_REL"
 STEP_MS="${STEP_MS:-}"
 SPEED="${SPEED:-1}"
 UGV_HOST="${UGV_HOST:-}"
-LOG_DIR="${LOG_DIR:-/tmp/ugv-px4}"
+LOG_DIR="${LOG_DIR:-$REPO/ugv/.state/px4}"   # /tmp 는 WSL 재시작 때 지워져 PX4 로그를 잃었다 (2026-10-03)
 ONLY="${1:-}"
 
 [ -x "$BUILD/bin/px4" ] || { echo "PX4 빌드 없음: $BUILD (make px4_sitl 먼저)"; exit 1; }

@@ -47,7 +47,7 @@ watch -n2 'curl -s localhost:8100/ugv/A-ugv1/task/T1'
 ```bash
 ./ugv/tools/px4-stop.sh --params                      # 이전 파라미터·미션 정리 (처음 한 번)
 UGV_HOST=<Mac IP> SPEED=5 ./ugv/tools/px4-start.sh    # GUI=1 을 앞에 붙이면 Gazebo 창
-tail -f /tmp/ugv-px4/px4-1.log
+tail -f ugv/.state/px4/px4-1.log
 ```
 - `SPEED` = `PX4_SIM_SPEED_FACTOR`. 서버의 `UGV_TIME_SCALE` 과 **같은 값**이어야 한다.
   3대 + 지형이라 WSL 이 실제로 몇 배속까지 버티는지 확인 필요 (Gazebo RTF 가 SPEED 에 못 미치면 시계가 어긋난다).
@@ -223,7 +223,7 @@ UGV_GZ_FX=1 UGV_TIME_SCALE=4 UGV_DRIVER=px4 UGV_PX4_RESOURCES=A-ugv1,A-fire1 \
 `WORLD=` 로 다른 월드를 띄웠으면 서버에도 `UGV_GZ_WORLD=<같은 이름>`.
 
 아직 WSL 에서 확인 안 된 것 (Gazebo 가 여기 없어 실행 검증 못 함):
-1. 소방차 모델 — 바퀴 토픽이 `/model/fire_truck_3/...` 만 있는지 (`gz topic -l | grep fire_truck`) (`/tmp/ugv-px4/px4-3.log`).
+1. 소방차 모델 — 바퀴 토픽이 `/model/fire_truck_3/...` 만 있는지 (`gz topic -l | grep fire_truck`) (`ugv/.state/px4/px4-3.log`).
    안 되면 `FIRE_TRUCK=0` 으로 기반 모델만.
 2. 파티클 켜고 끄기 — `gz topic -t /ugv/fx/A-fire1/water -m gz.msgs.ParticleEmitter -p 'emitting: {data: true}'`
 3. 벽 생성·삭제 — 시나리오 시각(5·10·20분)에 인제 쪽 도로에 빨간 벽
