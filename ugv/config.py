@@ -12,8 +12,10 @@ import os
 RESOURCES = [
     {"resource_id": "A-ugv1",  "resource_type": "UGV",
      "base": "A", "home_node": "A", "px4_instance": 1, "px4_model": "r1_rover", "max_speed_mps": 2.0},
+    # 소방차도 r1_rover 기반 (2026-10-03 WSL): rover_ackermann 은 명령 없이(disarm 상태) 조향된 채 굴러가
+    # 도로 밖으로 떨어졌다. 경광등·방수포는 px4-start.sh 가 r1_rover 위에 붙인다 (ugv/gazebo/fire_truck)
     {"resource_id": "A-fire1", "resource_type": "FIRE_ENGINE",
-     "base": "A", "home_node": "A", "px4_instance": 3, "px4_model": "rover_ackermann", "max_speed_mps": 2.5},
+     "base": "A", "home_node": "A", "px4_instance": 3, "px4_model": "r1_rover", "max_speed_mps": 2.0},
     {"resource_id": "B-ugv1",  "resource_type": "UGV",
      "base": "B", "home_node": "B", "px4_instance": 2, "px4_model": "r1_rover", "max_speed_mps": 2.0},
 ]
