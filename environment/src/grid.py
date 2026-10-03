@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import rasterio
+import rasterio.warp
 import yaml
 
 from src.cell import Cell, FireState
@@ -70,6 +71,66 @@ def _read_raster(path: str | Path, nodata_fill: float = 0.0) -> Tuple[np.ndarray
     return data, meta
 
 
+def _read_fuel_raster(path: str | Path, nodata_strategy: str = "barrier") -> Tuple[np.ndarray, dict]:
+    """Read the categorical fuel-type raster, handling nodata (-9999) per *nodata_strategy*.
+
+    The fuel raster distinguishes genuine *non-fuel* (class ``0``: water / road /
+    barren) from *missing data* (its declared nodata value, e.g. ``-9999``). These
+    are semantically different: a non-fuel cell is a real fire barrier, whereas a
+    nodata cell is simply unclassified terrain that may well carry fuel.
+
+    Strategies
+    ----------
+    ``"barrier"``
+        Replace nodata with class ``0`` (non-fuel). Nodata becomes a hard fire
+        barrier. This is the conservative legacy behaviour.
+    ``"nearest"``
+        Fill each nodata cell with the fuel class of its nearest classified
+        neighbour (nearest-neighbour interpolation). This repairs holes in the
+        fuel layer so they do not artificially fragment the fire front, while
+        preserving genuine non-fuel (class ``0``) cells as barriers.
+
+    Returns
+    -------
+    Tuple[np.ndarray, dict]
+        Float fuel-class array (values in {0, 1, 2, 3}) and the raster metadata.
+    """
+    with rasterio.open(path) as ds:
+        raw = ds.read(1)
+        nd = ds.nodata
+        meta = {
+            "shape": raw.shape,
+            "crs": ds.crs,
+            "transform": ds.transform,
+            "bounds": ds.bounds,
+            "resolution": (abs(ds.transform.a), abs(ds.transform.e)),
+        }
+
+    data = raw.astype(np.float64)
+    nodata_mask = np.isnan(data)
+    if nd is not None:
+        nodata_mask |= (raw == nd)
+
+    if nodata_strategy == "nearest" and nodata_mask.any() and (~nodata_mask).any():
+        # Nearest-neighbour fill: each nodata cell inherits the nearest valid class.
+        try:
+            from scipy import ndimage
+        except ImportError as exc:  # pragma: no cover - environment dependency
+            raise ImportError(
+                "fuel_mapping.nodata_strategy='nearest' requires SciPy "
+                "(scipy.ndimage). Install scipy or use nodata_strategy='barrier'."
+            ) from exc
+        nearest_idx = ndimage.distance_transform_edt(
+            nodata_mask, return_distances=False, return_indices=True
+        )
+        data = data[tuple(nearest_idx)]
+    else:
+        # Barrier (legacy): nodata becomes non-fuel (class 0).
+        data[nodata_mask] = 0.0
+
+    return data, meta
+
+
 class EnvironmentGrid:
     """2D spatial grid of :class:`Cell` objects backed by GIS rasters.
 
@@ -89,6 +150,8 @@ class EnvironmentGrid:
     * ``get_neighbors(x, y, mode)`` – return list of adjacent valid cells.
     * ``rowcol_to_xy(row, col)``    – convert row/col indices to world (x, y) coordinates.
     * ``xy_to_rowcol(x, y)``        – convert world (x, y) coordinates to row/col indices.
+    * ``latlon_to_rowcol(lat, lon)``– convert a WGS84 lat/lon point to row/col indices.
+    * ``nearest_fuel_rowcol(row, col)`` – nearest fuel-bearing cell to an index.
     * ``rows``, ``cols``            – grid dimensions.
     * ``cells``                     – flat list of all cells.
     * ``seed``                      – stored seed parameter for reproducibility.
@@ -104,14 +167,32 @@ class EnvironmentGrid:
     ) -> None:
         self._config: dict = _load_config(config_path)
         self._project_root = Path(config_path).resolve().parent.parent
-        self._seed: Optional[int] = seed
+
+        if seed is not None:
+            self._seed: Optional[int] = int(seed)
+        else:
+            cfg_seed = (
+                self._config.get("simulation", {}).get("random_seed")
+                if isinstance(self._config.get("simulation"), dict)
+                else None
+            )
+            if cfg_seed is None and isinstance(self._config.get("simulation"), dict):
+                cfg_seed = self._config.get("simulation", {}).get("seed")
+            if cfg_seed is None:
+                cfg_seed = self._config.get("random_seed", self._config.get("seed"))
+            self._seed: Optional[int] = int(cfg_seed) if cfg_seed is not None else None
 
         # --- load raster arrays and metadata ---------------------------------------
         raster_cfg = self._config["raster_paths"]
         self._dem, dem_meta = _read_raster(self._project_root / raster_cfg["dem_path"], nodata_fill=0.0)
         self._slope, slope_meta = _read_raster(self._project_root / raster_cfg["slope_path"], nodata_fill=0.0)
         self._aspect, aspect_meta = _read_raster(self._project_root / raster_cfg["aspect_path"], nodata_fill=0.0)
-        self._fuel_type, fuel_meta = _read_raster(self._project_root / raster_cfg["fuel_path"], nodata_fill=0.0)
+        fuel_nodata_strategy = str(
+            self._config.get("fuel_mapping", {}).get("nodata_strategy", "barrier")
+        )
+        self._fuel_type, fuel_meta = _read_fuel_raster(
+            self._project_root / raster_cfg["fuel_path"], nodata_strategy=fuel_nodata_strategy
+        )
         self._roads, roads_meta = _read_raster(self._project_root / raster_cfg["roads_path"], nodata_fill=0.0)
 
         # Buildings raster is optional — if not configured, building_type defaults to 0 (no building).
@@ -219,6 +300,7 @@ class EnvironmentGrid:
                 ft = int(self._fuel_type[row, col])     # 현재 픽셀의 연료 유형 코드를 가져옴
                 fa = self._fuel_type_to_amount.get(ft, self._default_fuel_amount)
                 bt = int(self._buildings[row, col]) if has_buildings else 0
+                is_road = bool(self._roads[row, col] > 0.0)  # roads_raster: 1 = road, 0 = none
 
                 cell = Cell(
                     cell_id=cell_id,
@@ -232,6 +314,7 @@ class EnvironmentGrid:
                     building_type=bt,
                     fire_state=FireState.UNBURNED,
                     risk_score=0.0,
+                    is_road=is_road,
                 )
                 row_cells.append(cell)
                 self._id_map[cell_id] = cell
@@ -327,6 +410,82 @@ class EnvironmentGrid:
                 f"Coordinates ({x}, {y}) out of grid bounds."
             )
         return (int(row), int(col))
+
+    def latlon_to_rowcol(self, lat: float, lon: float) -> Tuple[int, int]:
+        """Convert a geographic WGS84 (lat, lon) point to grid (row, col) indices.
+
+        The ignition point in ``config/environment_config.yaml`` is supplied as
+        geographic latitude/longitude (EPSG:4326), whereas the grid lives in a
+        projected CRS (e.g. EPSG:5186). This reprojects the point into the grid
+        CRS and then maps it to row/col indices via :meth:`xy_to_rowcol`.
+
+        Parameters
+        ----------
+        lat : float
+            Latitude in decimal degrees (WGS84 / EPSG:4326).
+        lon : float
+            Longitude in decimal degrees (WGS84 / EPSG:4326).
+
+        Returns
+        -------
+        Tuple[int, int]
+            ``(row, col)`` grid indices for the cell containing the point.
+
+        Raises
+        ------
+        IndexError
+            If the point falls outside the grid bounds.
+        """
+        xs, ys = rasterio.warp.transform("EPSG:4326", self._crs, [lon], [lat])
+        return self.xy_to_rowcol(xs[0], ys[0])
+
+    def nearest_fuel_rowcol(
+        self, row: int, col: int, max_radius: int = 12
+    ) -> Optional[Tuple[int, int]]:
+        """Return (row, col) of the nearest cell with ``fuel_amount > 0``.
+
+        Searches outward in expanding square rings (Chebyshev radius) from
+        (*row*, *col*) up to *max_radius*. Within the first ring that contains any
+        fuel-bearing cell, the geometrically closest (Euclidean) one is returned.
+
+        This is used to make ignition robust: an ignition point that lands on a
+        non-fuel or nodata cell (``fuel_amount == 0``) cannot start a fire, so the
+        caller may snap it to the nearest cell that can actually burn.
+
+        Parameters
+        ----------
+        row, col : int
+            Starting grid indices.
+        max_radius : int, default 12
+            Maximum Chebyshev search radius in cells.
+
+        Returns
+        -------
+        Optional[Tuple[int, int]]
+            ``(row, col)`` of the nearest fuel-bearing cell, or ``None`` if no
+            such cell exists within *max_radius*.
+        """
+        if 0 <= row < self._rows and 0 <= col < self._cols:
+            if self._grid[row][col].fuel_amount > 0.0:
+                return (row, col)
+
+        for radius in range(1, max_radius + 1):
+            best: Optional[Tuple[int, int]] = None
+            best_d2 = float("inf")
+            r_lo, r_hi = max(0, row - radius), min(self._rows - 1, row + radius)
+            c_lo, c_hi = max(0, col - radius), min(self._cols - 1, col + radius)
+            for rr in range(r_lo, r_hi + 1):
+                for cc in range(c_lo, c_hi + 1):
+                    # only cells on the current ring boundary are new this radius
+                    if max(abs(rr - row), abs(cc - col)) != radius:
+                        continue
+                    if self._grid[rr][cc].fuel_amount > 0.0:
+                        d2 = (rr - row) ** 2 + (cc - col) ** 2
+                        if d2 < best_d2:
+                            best_d2, best = d2, (rr, cc)
+            if best is not None:
+                return best
+        return None
 
     def get_neighbors(
         self,
