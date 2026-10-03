@@ -27,6 +27,13 @@ class UgvState(BaseModel):
     fault: str | None = None           # state=UNAVAILABLE 일 때 이상 내용 'CODE: 설명'. /stop 으로 해제
     current_road_id: str | None = None # 주행 중 지금 달리는 도로
     sim_time_s: float | None = None    # 응답 시점 시뮬레이션 초 (ugv/sim_clock.py)
+    activity: str | None = None        # IDLE | LOADING | SUPPRESSING | UNLOADING (state=WORKING 이면 도착 뒤 작업 중)
+    equipment: dict | None = None      # 물탱크·펌프·적재·경광등 (ugv/equipment.py Equipment.to_dict)
+
+
+class CargoSpec(BaseModel):
+    name: str                          # 예: "구호물자", "호스 릴"
+    kg: float
 
 
 class EvaluateRequest(BaseModel):
@@ -34,6 +41,8 @@ class EvaluateRequest(BaseModel):
     decision_id: str
     target: LatLon | None = None       # 화재 좌표 (권장). 반경 안 도로 노드 중 도달 가능한 가장 가까운 곳으로 판단
     target_node: str | None = None     # 도로 노드 id 를 이미 알 때 (target 대신)
+    cargo: CargoSpec | None = None     # 실을 짐 (UGV). 적재 한도를 넘으면 REJECT
+    via_node: str | None = None        # 짐 싣는 곳(도로 노드). 없으면 지금 자리에서 싣고 출발
 
 
 class TargetNode(BaseModel):
@@ -60,6 +69,8 @@ class ExecuteRequest(BaseModel):
     decision_id: str
     target: LatLon | None = None       # 화재 좌표 (권장, UAV 와 같은 방식). evaluate 와 같은 규칙으로 목적지를 고른다
     target_node: str | None = None     # 도로 노드 id 를 직접 지정할 때 (target 대신)
+    cargo: CargoSpec | None = None     # evaluate 와 같다
+    via_node: str | None = None
 
 
 class ExecuteResponse(BaseModel):
@@ -83,8 +94,15 @@ class TaskStatus(BaseModel):
     error: str | None = None
     reroutes: list[dict] | None = None # 주행 중 차단으로 경로를 바꾼 기록 {sim_time_s, result, blocked_road_id, eta_s}
     agent_restart: dict | None = None  # 서버 재시작으로 끊긴 실행이면 근거
+    cargo: dict | None = None          # {"name", "kg", "via_node", "loaded_sim_s", "unloaded_sim_s"}
+    work: dict | None = None           # 도착 뒤 작업 {"activity": SUPPRESSING|UNLOADING, "status": ACTIVE|DONE|EMPTY|STOPPED, ...}
     timing: dict | None = None         # 주행 시각 요약: 시작·끝(벽시계/서버 시뮬/PX4), eta_sec, 경과, 실제 배속, 실제/ETA
     drive_log: str | None = None       # 정밀 주행 기록 CSV 경로 (ugv/drive_log.py)
+
+
+class SuppressRequest(BaseModel):
+    action: Literal["start", "stop"]
+    task_id: str | None = None         # start 때 기록에 남길 task (선택)
 
 
 class GridCell(BaseModel):

@@ -8,6 +8,8 @@
 #   ./ugv/tools/px4-stop.sh                                  # 전부 종료
 #   WORLD=kangwon_ugv2 ...                                   # 다른 월드 (ugv/gazebo/<이름>.sdf). 기본은 road_network.json world
 #   STEP_MS=8 ...                                            # 물리 스텝 (기본 4 ms). 실험용 — 아래 '배속' 참고
+#   TERRAIN_COLLISION=0 ...                                  # 지형 충돌 끄기 (배속 원인 찾기용 — 차는 도로 면에만 닿는다)
+#   FIRE_TRUCK=0 ...                                         # 소방차(A-fire1)를 경광등·방수포 없이 기반 모델로
 #
 # 구성 (값의 정본은 ugv/config.py RESOURCES 와 ugv/data/road_network.json spawn — 이 스크립트는 읽기만 한다)
 #   자원      PX4 인스턴스  MAVLink 포트  모델
@@ -57,13 +59,6 @@ ONLY="${1:-}"
 [ -x "$BUILD/bin/px4" ] || { echo "PX4 빌드 없음: $BUILD (make px4_sitl 먼저)"; exit 1; }
 [ -f "$WORLD_SDF" ]     || { echo "월드 없음: $WORLD_SDF"; exit 1; }
 mkdir -p "$LOG_DIR"
-if [ -n "$STEP_MS" ]; then                          # 물리 스텝을 바꾼 월드 사본 (model:// 경로라 위치가 달라도 된다)
-    STEP_S=$(python3 -c "print($STEP_MS/1000)")
-    sed -e "s|<max_step_size>[^<]*</max_step_size>|<max_step_size>$STEP_S</max_step_size>|" \
-        -e "s|<real_time_update_rate>[^<]*</real_time_update_rate>|<real_time_update_rate>$(python3 -c "print(round(1000/$STEP_MS))")</real_time_update_rate>|" \
-        "$WORLD_SDF" > "$LOG_DIR/$WORLD_NAME-step${STEP_MS}ms.sdf"
-    WORLD_SDF="$LOG_DIR/$WORLD_NAME-step${STEP_MS}ms.sdf"
-fi
 [ -d "$PX4_DIR/.venv" ] && source "$PX4_DIR/.venv/bin/activate"
 
 # PX4 의 모델·월드 경로 (PX4_GZ_MODELS, GZ_SIM_RESOURCE_PATH 등). standalone 이면 PX4 가 안 읽으므로 여기서 읽는다
@@ -71,7 +66,44 @@ GZ_ENV=$(find "$BUILD" -maxdepth 2 -name gz_env.sh | head -1)
 [ -n "$GZ_ENV" ] || { echo "gz_env.sh 없음 ($BUILD) — PX4 gz 빌드 확인"; exit 1; }
 # shellcheck disable=SC1090
 source "$GZ_ENV"
-export GZ_SIM_RESOURCE_PATH="$REPO/ugv/gazebo/models:$REPO/uav/gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"   # model://kangwon_ugv, model://kangwon
+export GZ_SIM_RESOURCE_PATH="$LOG_DIR/models:$REPO/ugv/gazebo/models:$REPO/uav/gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"   # fire_truck, model://kangwon_ugv, model://kangwon
+# 월드 사본 (항상): 텍스처 자리표시(@UAV_TEX@ — 산불 파티클) → 절대 경로, 물리 스텝(STEP_MS),
+# 지형 충돌 끄기(TERRAIN_COLLISION=0). model:// 경로라 사본 위치가 달라도 된다
+OUT="$LOG_DIR/$WORLD_NAME${STEP_MS:+-step${STEP_MS}ms}$([ "${TERRAIN_COLLISION:-1}" = 0 ] && echo -noterrain).sdf"
+python3 - "$WORLD_SDF" "$OUT" "${STEP_MS:-}" "${TERRAIN_COLLISION:-1}" "$REPO/uav/gazebo/models/kangwon/materials/textures" <<'PY'
+import re, sys
+src, out, step_ms, terrain, uav_tex = sys.argv[1:]
+w = open(src, encoding="utf-8").read().replace("@UAV_TEX@", uav_tex)
+if step_ms:
+    w = re.sub(r"<max_step_size>[^<]*</max_step_size>", f"<max_step_size>{float(step_ms)/1000}</max_step_size>", w)
+    w = re.sub(r"<real_time_update_rate>[^<]*</real_time_update_rate>",
+               f"<real_time_update_rate>{round(1000/float(step_ms))}</real_time_update_rate>", w)
+if terrain == "0":   # 지형 heightmap 충돌 제거 — 차는 도로 면(메시)에만 닿는다. 도로 밖으로 나가면 떨어진다 (실험용)
+    w, n = re.subn(r'\s*<model name="kangwon_terrain_collision">.*?</model>', "", w, count=1, flags=re.S)
+    assert n == 1, "kangwon_terrain_collision 모델을 못 찾음"
+open(out, "w", encoding="utf-8").write(w)
+PY
+WORLD_SDF="$OUT"
+echo "월드 사본: $WORLD_SDF"
+STEP_S=$(python3 -c "print(${STEP_MS:-4}/1000)")
+
+# Gazebo 서버 시스템 목록 = PX4 기본(server.config) + ParticleEmitter (산불·경광등·물줄기 파티클).
+# 월드에 <plugin> 을 적으면 Gazebo 가 기본 목록을 안 읽어 물리·센서가 빠지므로 목록 파일을 바꿔 준다 (UAV 와 같은 방식)
+SRC_CFG="${GZ_SIM_SERVER_CONFIG_PATH:-${PX4_GZ_SERVER_CONFIG:-}}"
+if [ -f "$SRC_CFG" ]; then
+    python3 - "$SRC_CFG" "$LOG_DIR/server.config" <<'PY'
+import sys
+src, out = sys.argv[1:]
+c = open(src, encoding="utf-8").read()
+if "particle-emitter" not in c:
+    c = c.replace("</plugins>", '  <plugin entity_name="*" entity_type="world" filename="gz-sim-particle-emitter-system" '
+                  'name="gz::sim::systems::ParticleEmitter"/>\n  </plugins>', 1)
+open(out, "w", encoding="utf-8").write(c)
+PY
+    export GZ_SIM_SERVER_CONFIG_PATH="$LOG_DIR/server.config"
+else
+    echo "PX4 server.config 를 못 찾음 — 파티클(산불·경광등·물줄기)이 안 보일 수 있다"
+fi
 export GZ_PARTITION=ugv
 export GZ_IP=127.0.0.1
 export PX4_GZ_STANDALONE=1
@@ -114,11 +146,11 @@ for r in RESOURCES:
     if only and r["resource_id"] != only:
         continue
     s = spawn[r["resource_id"]]
-    print(r["resource_id"], r["px4_instance"], r["px4_model"], s["x"], s["y"], s["z"], s["yaw"])
+    print(r["resource_id"], r["px4_instance"], r["px4_model"], s["x"], s["y"], s["z"], s["yaw"], r["resource_type"])
 PY
 [ -s "$LOG_DIR/resources.txt" ] || { echo "자원 없음: ${ONLY:-전체}"; exit 1; }
 
-while read -r RID INST MODEL X Y Z YAW; do
+while read -r RID INST MODEL X Y Z YAW RTYPE; do
     # 이미 떠 있는 인스턴스는 다시 띄우지 않는다. 같은 -i 를 두 번 띄우면 잠금·포트(1454i)를 두고 싸우고
     # 차량 이름(<모델>_<i>)이 겹쳐 스폰이 실패해, 달리던 차의 텔레메트리까지 끊긴다.
     if pgrep -f "bin/px4 -i $INST " > /dev/null; then
@@ -132,11 +164,25 @@ while read -r RID INST MODEL X Y Z YAW; do
     done
     [ -n "$AF" ] || { echo "$RID: 쓸 수 있는 rover 모델이 없다"; exit 1; }
 
+    # 소방차: 기반 모델 + 경광등·방수포 (ugv/gazebo/fire_truck/model.sdf.in). FIRE_TRUCK=0 이면 기반 모델 그대로
+    SPAWN="$MODEL"; MODELS_DIR="$PX4_GZ_MODELS"
+    if [ "$RTYPE" = "FIRE_ENGINE" ] && [ "${FIRE_TRUCK:-1}" = "1" ]; then
+        BASE_LINK=$(grep -o "<link name=['\"][^'\"]*" "$PX4_GZ_MODELS/$MODEL/model.sdf" | head -1 | sed "s/<link name=['\"]//" || true)
+        mkdir -p "$LOG_DIR/models/fire_truck"
+        sed -e "s|@BASE@|$MODEL|g" -e "s|@BASE_LINK@|${BASE_LINK:-base_link}|g" -e "s|@RID@|$RID|g" \
+            -e "s|@FX@|$REPO/ugv/gazebo/fire_truck|g" "$REPO/ugv/gazebo/fire_truck/model.sdf.in" \
+            > "$LOG_DIR/models/fire_truck/model.sdf"
+        printf '<?xml version="1.0"?>\n<model><name>fire_truck</name><version>1.0</version><sdf version="1.9">model.sdf</sdf></model>\n' \
+            > "$LOG_DIR/models/fire_truck/model.config"
+        SPAWN="fire_truck"; MODELS_DIR="$LOG_DIR/models"
+        echo "  소방차 모델: $MODEL + 경광등·방수포 (차체 링크 ${BASE_LINK:-base_link})"
+    fi
+
     WD="$BUILD/rootfs/$INST"                        # PX4 Tools/simulation 의 다중 인스턴스 스크립트와 같은 위치
     mkdir -p "$WD"
-    echo "$RID  인스턴스 $INST  모델 $MODEL(에어프레임 $AF)  스폰 ($X, $Y, $Z)  포트 $((14540 + INST))"
+    echo "$RID  인스턴스 $INST  모델 $SPAWN(에어프레임 $AF)  스폰 ($X, $Y, $Z)  포트 $((14540 + INST))"
     ( cd "$WD" && \
-      PX4_SYS_AUTOSTART="$AF" PX4_SIM_MODEL="gz_$MODEL" PX4_GZ_MODEL_POSE="$X,$Y,$Z,0,0,$YAW" \
+      PX4_SYS_AUTOSTART="$AF" PX4_SIM_MODEL="gz_$SPAWN" PX4_GZ_MODELS="$MODELS_DIR" PX4_GZ_MODEL_POSE="$X,$Y,$Z,0,0,$YAW" \
       exec "$BUILD/bin/px4" -i "$INST" -d "$BUILD/etc" > "$LOG_DIR/px4-$INST.log" 2>&1 ) &
     echo "$! $INST" >> "$LOG_DIR/pids"
 

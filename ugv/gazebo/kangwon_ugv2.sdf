@@ -45,6 +45,258 @@
         </visual>
       </link>
     </model>
+    <model name="fire_1">
+      <static>true</static>
+      <pose>11539.5 3482.4 585.0 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_1_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_2">
+      <static>true</static>
+      <pose>11739.0 3379.5 582.7 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_2_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_3">
+      <static>true</static>
+      <pose>11335.1 3472.3 552.1 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_3_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_4">
+      <static>true</static>
+      <pose>11631.3 3693.2 683.3 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_4_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_5">
+      <static>true</static>
+      <pose>11392.5 3326.0 515.2 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_5_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_6">
+      <static>true</static>
+      <pose>11761.3 3631.3 669.7 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_6_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_7">
+      <static>true</static>
+      <pose>11678.7 3571.5 645.9 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_7_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="fire_8">
+      <static>true</static>
+      <pose>11445.6 3229.3 535.1 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="fire_8_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 45 45</size>
+          <particle_size>18 18 18</particle_size>
+          <lifetime>2.5</lifetime>
+          <rate>35</rate>
+          <min_velocity>6</min_velocity>
+          <max_velocity>14</max_velocity>
+          <scale_rate>4</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/fire.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/fire_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="smoke_1">
+      <static>true</static>
+      <pose>11402.1 3627.0 652.5 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="smoke_1_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 80 80</size>
+          <particle_size>45 45 45</particle_size>
+          <lifetime>22</lifetime>
+          <rate>4</rate>
+          <min_velocity>5</min_velocity>
+          <max_velocity>9</max_velocity>
+          <scale_rate>5</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/smoke.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/smoke_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="smoke_2">
+      <static>true</static>
+      <pose>11679.0 3528.5 658.0 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="smoke_2_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 80 80</size>
+          <particle_size>45 45 45</particle_size>
+          <lifetime>22</lifetime>
+          <rate>4</rate>
+          <min_velocity>5</min_velocity>
+          <max_velocity>9</max_velocity>
+          <scale_rate>5</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/smoke.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/smoke_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
+
+    <model name="smoke_3">
+      <static>true</static>
+      <pose>11574.2 3379.6 581.9 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="smoke_3_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 80 80</size>
+          <particle_size>45 45 45</particle_size>
+          <lifetime>22</lifetime>
+          <rate>4</rate>
+          <min_velocity>5</min_velocity>
+          <max_velocity>9</max_velocity>
+          <scale_rate>5</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/smoke.png</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/smoke_colors.png</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>
     <light name="sunUTC" type="directional">
       <pose>0 0 500 0 -0 0</pose>
       <cast_shadows>true</cast_shadows>

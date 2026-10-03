@@ -87,6 +87,10 @@ V2_TAPER = _os.getenv("UGV_V2_TAPER", "0") == "1"      # 기본 끔: 넓힌 띠�
 V2_SHOULDER = _os.getenv("UGV_V2_SHOULDER", "1") == "1"
 JUNCTION_PAD_R = float(_os.getenv("UGV_V2_PAD_R", JUNCTION_PAD_R))
 V2_DRY = _os.getenv("UGV_V2_DRY", "0") == "1"
+# v2 산불 표시 — UAV 월드(uav/gazebo/add_fire.py)와 같은 자리·같은 배치(시드)·같은 텍스처. 파티클이라 GUI 에서만 보인다.
+# 텍스처 경로는 @UAV_TEX@ 자리표시 — px4-start.sh 가 띄울 때 절대 경로로 바꾼다.
+FIRE_LAT, FIRE_LON = 38.0425, 128.2541
+FIRE_N, FIRE_R, SMOKE_N = 8, 300.0, 3
 RIBBON_STRIPS = int(_os.getenv("UGV_V2_STRIPS", RIBBON_STRIPS))
 COLLISION_STRIPS = int(_os.getenv("UGV_V2_COLL_STRIPS", COLLISION_STRIPS))
 COLLISION_STRIDE = int(_os.getenv("UGV_V2_COLL_STRIDE", COLLISION_STRIDE))
@@ -468,6 +472,56 @@ class Heightmap:
         self.oz, self.sz = zmin, zmax - zmin
 
 
+# --- 산불 표시 (v2) --------------------------------------------------------------
+
+def _emitter(name, x, y, z, *, size, psize, lifetime, rate, vmin, vmax, scale_rate, tex, colors):
+    """uav/gazebo/add_fire.py 의 emitter 와 같은 모양. 파티클은 이미터 +X 로 나가므로 pitch -90° 로 위를 향한다."""
+    return f"""
+    <model name="{name}">
+      <static>true</static>
+      <pose>{x:.1f} {y:.1f} {z:.1f} 0 0 0</pose>
+      <link name="link">
+        <particle_emitter name="{name}_emitter" type="box">
+          <pose>0 0 0 0 -1.5708 0</pose>
+          <emitting>true</emitting>
+          <size>2 {size} {size}</size>
+          <particle_size>{psize} {psize} {psize}</particle_size>
+          <lifetime>{lifetime}</lifetime>
+          <rate>{rate}</rate>
+          <min_velocity>{vmin}</min_velocity>
+          <max_velocity>{vmax}</max_velocity>
+          <scale_rate>{scale_rate}</scale_rate>
+          <material>
+            <diffuse>1 1 1</diffuse>
+            <pbr><metal><albedo_map>@UAV_TEX@/{tex}</albedo_map></metal></pbr>
+          </material>
+          <color_range_image>@UAV_TEX@/{colors}</color_range_image>
+        </particle_emitter>
+      </link>
+    </model>"""
+
+
+def fire_models(hm) -> str:
+    """UAV 월드와 같은 산불 (같은 중심·반경·난수 시드). 높이는 이 월드의 지형 충돌면."""
+    import random
+    cx, cy = to_local.transform(FIRE_LON, FIRE_LAT)
+    ground = lambda x, y: float(hm.surface(np.array([x]), np.array([y]))[0])    # noqa: E731
+    random.seed(11)
+    out = []
+    for i in range(FIRE_N):
+        rr = FIRE_R * math.sqrt(random.random()) if i else 0.0
+        a = random.uniform(0, 2 * math.pi)
+        x, y = cx + rr * math.cos(a), cy + rr * math.sin(a)
+        out.append(_emitter(f"fire_{i + 1}", x, y, ground(x, y), size=45, psize=18, lifetime=2.5, rate=35,
+                            vmin=6, vmax=14, scale_rate=4, tex="fire.png", colors="fire_colors.png"))
+    for i in range(SMOKE_N):
+        x, y = cx + random.uniform(-150, 150), cy + random.uniform(-150, 150)
+        out.append(_emitter(f"smoke_{i + 1}", x, y, ground(x, y) + 30, size=80, psize=45, lifetime=22, rate=4,
+                            vmin=5, vmax=9, scale_rate=5, tex="smoke.png", colors="smoke_colors.png"))
+    print(f"산불 표시: 불꽃 {FIRE_N}, 연기 {SMOKE_N} — 중심 ({cx:.0f}, {cy:.0f}, {ground(cx, cy):.0f})")
+    return "\n".join(out).strip()
+
+
 # --- 실행 ---------------------------------------------------------------------
 
 def build(v2: bool = False):
@@ -668,6 +722,19 @@ def build(v2: bool = False):
 """
     roads_model = roads_model.replace("MODEL", out_model.name).replace("COLL_OBJ", "roads.obj")
     w = w.replace("</world>", roads_model + "  </world>", 1)
+    if v2:
+        i = w.index("<light ")
+        w = w[:i] + fire_models(hm) + "\n    " + w[i:]
+        # 도로 차단 벽 위치 (ugv/gz_fx.py): 도로 길이의 가운데 점과 진행 방향
+        marks = {}
+        for rid, xyz in road_xyz.items():
+            s_ = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xyz[:, :2], axis=0).T))])
+            k = int(min(max(np.searchsorted(s_, s_[-1] / 2) - 1, 0), len(xyz) - 2))
+            t_ = (s_[-1] / 2 - s_[k]) / max(s_[k + 1] - s_[k], 1e-9)
+            p_ = xyz[k] + t_ * (xyz[k + 1] - xyz[k])
+            yaw = math.atan2(xyz[k + 1, 1] - xyz[k, 1], xyz[k + 1, 0] - xyz[k, 0])
+            marks[rid] = [round(float(p_[0]), 2), round(float(p_[1]), 2), round(float(p_[2]), 2), round(yaw, 3)]
+        (out_model / "road_marks.json").write_text(json.dumps(marks), encoding="utf-8")
     out_sdf.write_text(w, encoding="utf-8")
 
     # 스폰: 거점 노드에서 나가는 가장 긴 도로를 따라 k × SPAWN_GAP_M 앞, 도로 면 위
@@ -689,10 +756,14 @@ def build(v2: bool = False):
         spawn[res["resource_id"]] = {"x": round(float(p[0]), 1), "y": round(float(p[1]), 1),
                                      "z": round(float(p[2]) + SPAWN_Z_OFFSET_M, 2), "yaw": round(yaw, 3),
                                      "node": node}
-    if v2:      # 기본 월드(v1)의 world·spawn 은 그대로. 스폰은 도로 중심 높이라 v1 과 같아야 한다 — 확인만
+    if v2:      # v2 를 기본 월드로 (2026-10-03 WSL 주행 비교 뒤 표준). 스폰은 도로 중심 높이라 v1 과 같다 — 확인만
         sd = max(abs(spawn[k]["z"] - net["spawn"][k]["z"]) + abs(spawn[k]["x"] - net["spawn"][k]["x"])
                  + abs(spawn[k]["y"] - net["spawn"][k]["y"]) for k in spawn)
         print(f"스폰 (v1 과 차이 합 최대 {sd:.2f} m — 0 이면 road_network.json spawn 을 그대로 쓴다)")
+        net["world"] = {"sdf": str(out_sdf.relative_to(ROOT)), "name": world_name,
+                        "datum": [DATUM_LAT, DATUM_LON, DATUM_ALT],
+                        "road_width_m": ROAD_WIDTH_M, "max_grade": MAX_GRADE, "shoulder_m": SHOULDER_W_M}
+        NET.write_text(json.dumps(net, ensure_ascii=False, indent=1), encoding="utf-8")
     else:
         net["spawn"] = spawn
         net["world"] = {"sdf": str(OUT_SDF.relative_to(ROOT)), "name": WORLD_NAME,

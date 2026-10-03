@@ -27,15 +27,16 @@
   }
  },
  "world": {
-  "sdf": "ugv/gazebo/kangwon_ugv.sdf",
-  "name": "kangwon_ugv",
+  "sdf": "ugv/gazebo/kangwon_ugv2.sdf",
+  "name": "kangwon_ugv2",
   "datum": [
    38.0112,
    128.122643,
    172.1
   ],
   "road_width_m": 10.0,
-  "max_grade": 0.08
+  "max_grade": 0.08,
+  "shoulder_m": 4.0
  },
  "spawn": {
   "A-ugv1": {

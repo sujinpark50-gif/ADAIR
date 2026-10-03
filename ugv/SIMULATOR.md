@@ -69,9 +69,15 @@ curl -s localhost:8100/health | python3 -m json.tool  # resources 가 모두 px4
 | 값 | 어디 | 의미 |
 |---|---|---|
 | `SPEED` / `PX4_SIM_SPEED_FACTOR` | WSL | Gazebo·PX4 가 도는 배율 |
-| `UGV_TIME_SCALE` | Mac | 서버 시계 배율 — 위와 같게 |
+| `UGV_TIME_SCALE` | 서버 | sim 드라이버 차량 속도 배율, PX4 시각이 안 들어올 때 서버 시계 배율 — SPEED 와 같게 |
+| `UGV_CLOCK_SOURCE` | 서버 | `px4`(기본): PX4 차량이 있으면 서버 시계가 PX4(Gazebo) 시뮬레이션 시간을 따른다. `wall`: 예전처럼 벽시계 × TIME_SCALE |
 | `UGV_SECONDS_PER_ENV_STEP` | Mac | 환경 1스텝 = 몇 초 (잠정 60, INT-05 미정) |
 | `max_speed_mps` | `ugv/config.py` | 차량 최고속도 (UGV 2.0, 소방차 2.5 m/s) |
+
+Gazebo 배속은 상한이라 CPU 가 밀리면 흔들린다 (실측 30초 평균 3.1~4.0, 목표 4). 벽시계 × 4 로 세면 서버만 6~10% 앞서
+시나리오 사건이 일찍 발동했다. 그래서 PX4 차량이 연결돼 있으면 서버 시계의 '흐름'은 PX4 시각을 따른다 — 환경 시계를
+바꾸지 않고 읽기만 한다. `GET /clock` 의 `rate_source` 가 `px4:A-ugv1` 이면 PX4 를, `wall` 이면 벽시계를 따르는 중.
+멈춤 판정(STALL_TIMEOUT_S)도 시뮬레이션 초다. 주행 기록 분석의 `서버시계/PX4` 가 1.0 이면 맞게 도는 것.
 
 환경 스텝은 `POST /clock/env {"sim_step": n}` 로 알려 주면 시계가 `n × SECONDS_PER_ENV_STEP` 에 맞춰지고,
 `last_drift_s`(내 시계 − 환경 시계)로 어긋남을 볼 수 있다. 아직 이 호출을 넣는 쪽(총괄/환경 루프)이 없다.
@@ -115,9 +121,11 @@ python3 -m ugv.tools.build_road_world       # numpy scipy pillow rasterio pyproj
 ```
 UAV 월드로 돌아가려면 `road_network.json` 의 `world` 를 지우거나 `build_road_network` 만 다시 실행한다.
 
-### v2 월드 (`WORLD=kangwon_ugv2`) — 갓길 + 교차로 턱 줄임
+### v2 월드 (`kangwon_ugv2`, 기본) — 갓길 + 교차로 턱 줄임 + 산불 표시
 
-v1 과 같은 도로 높이·폭·스폰에 두 가지를 더했다. 기본 월드는 여전히 v1 이다 (`road_network.json` 의 world).
+v1 과 같은 도로 높이·폭·스폰에 갓길·턱 줄임을 더했다. 2026-10-03 WSL 주행 비교 뒤 **기본 월드**다
+(`road_network.json` 의 world). v1 은 `WORLD=kangwon_ugv`. 산불(UAV 월드와 같은 자리·배치의 파티클 불꽃 8·연기 3)과
+도로 차단 벽 위치(`models/kangwon_ugv2/road_marks.json`)도 이 빌드가 만든다.
 
 | 항목 | v1 | v2 |
 |---|---|---|
@@ -158,3 +166,65 @@ python3 -m ugv.tools.analyze_drive_log --roads ugv/.state/drive_logs/LOG1.csv
 
 사이마다 `./ugv/tools/px4-stop.sh`. Mac 서버의 `UGV_TIME_SCALE` 은 그때의 SPEED 와 같게.
 GUI 는 배속을 깎으므로 측정할 때는 끈다 (`GUI=1` 은 눈으로 볼 때만).
+
+## 장비·작업 — 진압(소방차), 짐(UGV), 경광등 (`ugv/equipment.py`)
+
+task 는 지금 계약 그대로 **도착하면 COMPLETED** 다. 그 뒤 작업 동안 차는 `state: "WORKING"` 이라 READY 가 아니고,
+총괄은 READY 를 확인한 뒤에만 반납하므로(`orchestrator/engine.py _maybe_release`) 점유가 유지된다. 총괄 코드는 그대로.
+
+| 무엇 | 언제 | 끝 | 보이는 곳 |
+|---|---|---|---|
+| 진압 SUPPRESSING (소방차) | 도착하면 자동 (`UGV_AUTO_SUPPRESS=1`, 거점 노드 제외) | 물이 바닥(EMPTY) · `POST /ugv/{id}/suppress {"action":"stop"}`(STOPPED) · `/stop` | task `work`, 상태 `equipment.water_l` |
+| 짐 싣기 LOADING (UGV) | execute 에 `cargo` — `via_node` 가 있으면 거기 가서, 없으면 출발 전 | `UGV_LOAD_S` (60 시뮬레이션 초) | task `progress.phase=LOADING`, `stage` |
+| 짐 내리기 UNLOADING | 짐을 싣고 목적지 도착 | `UGV_UNLOAD_S` (60초) | task `work`, `cargo.unloaded_sim_s` |
+| 물 채우기 | 거점(home_node) 도착 | 즉시 | 보고 `UGV_REFILLED` |
+| 경광등 | 소방차 출동·진압 중 | 작업 끝 · `/stop` | 상태 `equipment.siren_on` |
+
+- 물탱크 3,000 L, 30 L/s(분당 1,800 L) → 100초 진압 (`ugv/config.py EQUIPMENT`, 잠정값). 진압이 화재를 끄는 효과는
+  환경 담당이다 — 총괄도 `SUPPRESSION_CONTRACT_READY = False`. UGV 는 상태만 보고한다.
+- 적재 한도(UGV 100 kg)를 넘거나 소방차에 짐을 실으면 evaluate·execute 가 `REQUIRED_CAPABILITY_UNAVAILABLE` 로 거절.
+- ETA 에는 싣기 시간이 들어가고, 내리기·진압은 도착 뒤라 들어가지 않는다.
+- 수동 진압: `POST /ugv/A-fire1/suppress {"action":"start"}` (READY, task 없음, 물 있음일 때만).
+
+```bash
+# 짐 + 경유지
+curl -XPOST localhost:8100/ugv/A-ugv1/execute -H 'content-type: application/json' \
+  -d '{"task_id":"K1","decision_id":"d1","target_node":"495068","cargo":{"name":"구호물자","kg":40},"via_node":"495070"}'
+# 소방차 출동 → 도착하면 자동 진압
+curl -XPOST localhost:8100/ugv/A-fire1/execute -H 'content-type: application/json' \
+  -d '{"task_id":"F1","decision_id":"d1","target_node":"622559"}'
+curl -s localhost:8100/ugv/A-fire1/state | python3 -m json.tool      # activity, equipment.water_l
+curl -XPOST localhost:8100/ugv/A-fire1/suppress -H 'content-type: application/json' -d '{"action":"stop"}'
+```
+
+## Gazebo 표시 — 산불·경광등·물줄기·도로 차단 벽 (`ugv/gz_fx.py`, `UGV_GZ_FX=1`)
+
+서버가 **Gazebo 와 같은 기계(WSL)** 에서 돌 때만 켠다. gz CLI 로 보내고 결과를 기다리지 않는다 (실패해도 주행 무관).
+파티클은 Gazebo 화면(GUI)에서만 보이고 물리 계산에 들지 않는다.
+
+| 표시 | 방식 | 준비 |
+|---|---|---|
+| 산불 | 월드에 고정 파티클 (UAV 와 같은 자리) | v2 월드 |
+| 경광등·물줄기 | 소방차 모델의 particle emitter 를 `/ugv/fx/<자원>/siren·water` 로 켜고 끔 | `px4-start.sh` 가 소방차 모델(기반 rover + 경광등·방수포)을 만든다 |
+| 도로 차단 벽 | 막히면 빨간 벽 모델 생성, 풀리면 삭제 (충돌 없음 — 차는 재탐색으로 피한다) | `road_marks.json` |
+| 짐 | 표시 없음 (상태만) | |
+
+`px4-start.sh` 는 Gazebo 서버 시스템 목록에 ParticleEmitter 를 더한다 (PX4 server.config 사본 → `$LOG_DIR/server.config`).
+월드에 `<plugin>` 을 직접 적으면 기본 목록이 빠져 물리·센서가 없어지므로 이 방식을 쓴다 (UAV 와 같음).
+
+```bash
+# WSL — 소방차까지 2대, Gazebo 창
+GUI=1 SPEED=4 ./ugv/tools/px4-start.sh A-ugv1
+GUI=1 SPEED=4 ./ugv/tools/px4-start.sh A-fire1
+# WSL — 서버도 여기서 (Gazebo 표시는 같은 기계에서만)
+UGV_GZ_FX=1 UGV_TIME_SCALE=4 UGV_DRIVER=px4 UGV_PX4_RESOURCES=A-ugv1,A-fire1 \
+  python3 -m uvicorn ugv.server:app --port 8100
+```
+`WORLD=` 로 다른 월드를 띄웠으면 서버에도 `UGV_GZ_WORLD=<같은 이름>`.
+
+아직 WSL 에서 확인 안 된 것 (Gazebo 가 여기 없어 실행 검증 못 함):
+1. 소방차 모델 스폰 — `<include merge>` 로 PX4 rover 를 감싼 모델을 PX4 가 띄우는지 (`/tmp/ugv-px4/px4-3.log`).
+   안 되면 `FIRE_TRUCK=0` 으로 기반 모델만.
+2. 파티클 켜고 끄기 — `gz topic -t /ugv/fx/A-fire1/water -m gz.msgs.ParticleEmitter -p 'emitting: {data: true}'`
+3. 벽 생성·삭제 — 시나리오 시각(5·10·20분)에 인제 쪽 도로에 빨간 벽
+4. 2대일 때 배속 (1대 3.8 → ?)

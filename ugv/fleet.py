@@ -2,6 +2,7 @@ from . import config
 from .agent import GroundResourceAgent
 from .drivers.base import MotionDriver
 from .drivers.sim import SimDriver
+from .equipment import Equipment
 from . import graph_data_demo
 from .resource import GroundResource
 from .road_graph import RoadGraph
@@ -28,6 +29,7 @@ class GroundFleet:
                 lat=node.lat,
                 lon=node.lon,
                 current_node=cfg["home_node"],
+                equipment=Equipment.for_type(config.EQUIPMENT.get(cfg["resource_type"], {})),
             )
             driver = self._make_driver(cfg, node, use_px4)
             self.agents[cfg["resource_id"]] = GroundResourceAgent(

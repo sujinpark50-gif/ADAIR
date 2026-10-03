@@ -20,6 +20,19 @@ RESOURCES = [
 for _r in RESOURCES:
     _r["px4_port"] = 14540 + _r["px4_instance"]
 
+# 장비 (ugv/equipment.py) — 잠정값
+#   소방차: 물탱크·방수량. 도착하면 자동으로 진압(SUPPRESSING) — 물이 바닥나거나 /suppress stop 까지.
+#     3,000 L 탱크 + 분당 1,800 L(30 L/s) 방수는 중형 펌프차 수준 → 100 초. 거점 노드에 도착하면 다시 채운다.
+#   UGV: 적재 한도. execute 의 cargo(이름, kg) + via_node(싣는 곳) → 싣기(LOADING)·내리기(UNLOADING) 자동.
+#   경광등(siren)은 소방차가 출동·진압 중일 때 켠다 (Gazebo 표시: ugv/gz_fx.py).
+EQUIPMENT = {
+    "FIRE_ENGINE": {"water_capacity_l": 3000.0, "pump_lps": 30.0, "payload_kg": 0.0, "siren": True},
+    "UGV":         {"water_capacity_l": 0.0,    "pump_lps": 0.0,  "payload_kg": 100.0, "siren": False},
+}
+LOAD_S = float(os.getenv("UGV_LOAD_S", "60"))       # 짐 싣기 (시뮬레이션 초)
+UNLOAD_S = float(os.getenv("UGV_UNLOAD_S", "60"))   # 짐 내리기
+AUTO_SUPPRESS = os.getenv("UGV_AUTO_SUPPRESS", "1") != "0"   # 소방차 도착 즉시 진압 시작
+
 # PX4 연결
 # PX4 SITL 은 MAVLink 를 자기 호스트의 127.0.0.1 로만 보낸다. Gazebo/PX4 가 원격(WSL)이면
 # 그쪽에서 ugv/tools/mavlink_relay.py 가 이 서버 호스트의 같은 포트로 넘겨준다 → 여기서는 0.0.0.0 으로 받는다.
@@ -56,7 +69,7 @@ NODE_ARRIVE_M = 20.0        # 이 거리 안이면 노드 도착으로 간주
 STALE_AFTER_S = 10.0        # 이 시간 넘으면 STALE (주행 중이면 TELEMETRY_LOST 로 task 실패)
 
 # 주행 감시 (server._watch_task) — 잠정값, PX4 rover(2 m/s) 기준
-STALL_TIMEOUT_S = float(os.getenv("UGV_STALL_TIMEOUT_S", "60"))   # 이 시간 동안
+STALL_TIMEOUT_S = float(os.getenv("UGV_STALL_TIMEOUT_S", "60"))   # 이 시뮬레이션 초 동안 (2026-10-03 부터 벽시계 아님 — 4배속이면 벽시계 15초)
 STALL_MOVE_M = 10.0          # 이만큼도 못 움직이고 웨이포인트도 안 넘어가면 STALLED
 OFF_ROUTE_M = 100.0          # 경로(노드를 이은 선)에서 이보다 벗어나면 OFF_ROUTE
 # 추락 판정은 고도 하강 속도로 한다. 강원 지형 월드는 도로를 따라 고도가 수백 m 바뀌므로

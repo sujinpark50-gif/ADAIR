@@ -86,6 +86,14 @@ def summarize(path, by_road=False):
         actual = out.get("px4_s", out["server_sim_s"])
         out["actual_over_eta"] = round(actual / eta, 2)
         out["actual_basis"] = "px4" if "px4_s" in out else "server_sim"
+    # 달린 구간만의 ETA (중간에 /stop 해도 비교 가능): 남은 ETA 가 줄어든 양의 합.
+    # 재탐색으로 남은 ETA 가 늘어난 순간은 건너뛴다 (늘어난 만큼을 빼면 우회한 구간이 ETA 에서 빠진다)
+    e = [x for x in col("eta_remaining_sec") if x is not None]
+    used = sum(max(0.0, a - b) for a, b in zip(e, e[1:]))
+    if used > 0:
+        out["leg_eta_sec"] = round(used)
+        actual = out.get("px4_s", out["server_sim_s"])
+        out["leg_actual_over_eta"] = round(actual / out["leg_eta_sec"], 2)
     if rec:
         out["status"] = rec.get("status")
         out["reroutes"] = len(rec.get("reroutes") or [])
@@ -152,6 +160,8 @@ def main(argv=None):
         if "eta_sec" in r:
             print(f"  ETA    {r['eta_sec']}s → 실제 {r.get('px4_s', r['server_sim_s'])}s ({r['actual_basis']})"
                   f" = ETA x{r['actual_over_eta']}   상태 {r.get('status', '-')}  재탐색 {r.get('reroutes', '-')}")
+        if "leg_eta_sec" in r:
+            print(f"  달린구간 ETA {r['leg_eta_sec']}s → 실제 {r.get('px4_s', r['server_sim_s'])}s = x{r['leg_actual_over_eta']}")
         if "offset" in r:
             o = r["offset"]
             print(f"  횡오차 중앙값 {o['median_m']:+}m 평균 {o['mean_m']:+}m (+왼/-오) → {o['bias']}"
