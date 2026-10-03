@@ -205,7 +205,7 @@ curl -XPOST localhost:8100/ugv/A-fire1/suppress -H 'content-type: application/js
 | 표시 | 방식 | 준비 |
 |---|---|---|
 | 산불 | 월드에 고정 파티클 (UAV 와 같은 자리) | v2 월드 |
-| 경광등·물줄기 | 소방차 모델의 particle emitter 를 `/ugv/fx/<자원>/siren·water` 로 켜고 끔 | `px4-start.sh` 가 소방차 모델(기반 rover + 경광등·방수포)을 만든다 |
+| 경광등·물줄기 | 소방차 모델의 particle emitter 를 `/ugv/fx/<자원>/siren·water` 로 켜고 끔 | `px4-start.sh` 가 소방차 모델을 만든다 — 기반 rover(`r1_rover`) model.sdf 복사본 + 경광등·방수포 (`ugv/tools/make_fire_truck.py`). `<include merge>` 로 감싸면 바퀴 토픽이 어긋나 한쪽만 돌았다 |
 | 도로 차단 벽 | 막히면 빨간 벽 모델 생성, 풀리면 삭제 (충돌 없음 — 차는 재탐색으로 피한다) | `road_marks.json` |
 | 짐 | 표시 없음 (상태만) | |
 
@@ -223,7 +223,7 @@ UGV_GZ_FX=1 UGV_TIME_SCALE=4 UGV_DRIVER=px4 UGV_PX4_RESOURCES=A-ugv1,A-fire1 \
 `WORLD=` 로 다른 월드를 띄웠으면 서버에도 `UGV_GZ_WORLD=<같은 이름>`.
 
 아직 WSL 에서 확인 안 된 것 (Gazebo 가 여기 없어 실행 검증 못 함):
-1. 소방차 모델 스폰 — `<include merge>` 로 PX4 rover 를 감싼 모델을 PX4 가 띄우는지 (`/tmp/ugv-px4/px4-3.log`).
+1. 소방차 모델 — 바퀴 토픽이 `/model/fire_truck_3/...` 만 있는지 (`gz topic -l | grep fire_truck`) (`/tmp/ugv-px4/px4-3.log`).
    안 되면 `FIRE_TRUCK=0` 으로 기반 모델만.
 2. 파티클 켜고 끄기 — `gz topic -t /ugv/fx/A-fire1/water -m gz.msgs.ParticleEmitter -p 'emitting: {data: true}'`
 3. 벽 생성·삭제 — 시나리오 시각(5·10·20분)에 인제 쪽 도로에 빨간 벽

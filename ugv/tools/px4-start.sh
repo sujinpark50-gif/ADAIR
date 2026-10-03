@@ -167,18 +167,13 @@ while read -r RID INST MODEL X Y Z YAW RTYPE; do
     done
     [ -n "$AF" ] || { echo "$RID: 쓸 수 있는 rover 모델이 없다"; exit 1; }
 
-    # 소방차: 기반 모델 + 경광등·방수포 (ugv/gazebo/fire_truck/model.sdf.in). FIRE_TRUCK=0 이면 기반 모델 그대로
+    # 소방차: 기반 모델 복사본 + 경광등·방수포 (ugv/tools/make_fire_truck.py). FIRE_TRUCK=0 이면 기반 모델 그대로
     SPAWN="$MODEL"; MODELS_DIR="$PX4_GZ_MODELS"
     if [ "$RTYPE" = "FIRE_ENGINE" ] && [ "${FIRE_TRUCK:-1}" = "1" ]; then
-        BASE_LINK=$(grep -o "<link name=['\"][^'\"]*" "$PX4_GZ_MODELS/$MODEL/model.sdf" | head -1 | sed "s/<link name=['\"]//" || true)
-        mkdir -p "$LOG_DIR/models/fire_truck"
-        sed -e "s|@BASE@|$MODEL|g" -e "s|@BASE_LINK@|${BASE_LINK:-base_link}|g" -e "s|@RID@|$RID|g" \
-            -e "s|@FX@|$REPO/ugv/gazebo/fire_truck|g" "$REPO/ugv/gazebo/fire_truck/model.sdf.in" \
-            > "$LOG_DIR/models/fire_truck/model.sdf"
-        printf '<?xml version="1.0"?>\n<model><name>fire_truck</name><version>1.0</version><sdf version="1.9">model.sdf</sdf></model>\n' \
-            > "$LOG_DIR/models/fire_truck/model.config"
+        BASE_LINK=$(python3 "$REPO/ugv/tools/make_fire_truck.py" "$PX4_GZ_MODELS/$MODEL/model.sdf" "$MODEL" "$RID" \
+                    "$LOG_DIR/models/fire_truck")
         SPAWN="fire_truck"; MODELS_DIR="$LOG_DIR/models"
-        echo "  소방차 모델: $MODEL + 경광등·방수포 (차체 링크 ${BASE_LINK:-base_link})"
+        echo "  소방차 모델: $MODEL 복사본 + 경광등·방수포 (차체 링크 $BASE_LINK)"
     fi
 
     WD="$BUILD/rootfs/$INST"                        # PX4 Tools/simulation 의 다중 인스턴스 스크립트와 같은 위치
