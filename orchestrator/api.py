@@ -375,7 +375,8 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                  "field_weather_excluded": field["excluded"], "weather_policy": orch.weather_policy(),
                  "scenario_start_kst": snap.scenario_start_kst, "run_id": orch.ledger.active_run(),
                  "run_gate": snap.run_gate,
-                 "simulation_time_s": now, "analysis_source": snap.analysis_source}
+                 "simulation_time_s": now, "analysis_source": snap.analysis_source,
+                 "env_source": snap.source}
         premon_tasks = {t.request_key: t.task_id for t in orch.ledger.list_tasks()
                         if (t.request_key or "").startswith("AUTO-PREMON:")}
         forecast = {"ref": snap.forecast_ref, "cell_count": len(snap.spread_forecast),
