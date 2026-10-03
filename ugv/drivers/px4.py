@@ -33,6 +33,9 @@ class Snapshot:
     rel_alt_m: float = 0.0              # 홈 기준 상대고도. 지형 월드에서는 도로를 따라 수백 m 바뀐다
     updated_at: float = 0.0             # 마지막 위치 수신 시각 (monotonic)
     descent_mps: float = 0.0            # 최근 하강 속도 (시뮬레이션 초당 m, 양수 = 내려감). 추락 판정용
+    px4_time_s: float | None = None     # PX4 부팅 후 시각 (IMU 타임스탬프). SITL lockstep 이라 = Gazebo 시뮬레이션 시간
+    speed_mps: float = float("nan")     # 지면 속도 (북·동 성분)
+    heading_deg: float = float("nan")
 
 
 class PX4Driver(MotionDriver):
@@ -79,7 +82,7 @@ class PX4Driver(MotionDriver):
             except Exception as e:
                 log.warning("param %s 설정 실패: %s", name, e)
 
-        for name in ("set_rate_position", "set_rate_battery"):
+        for name in ("set_rate_position", "set_rate_battery", "set_rate_imu", "set_rate_velocity_ned"):
             try:
                 await getattr(self._drone.telemetry, name)(TELEMETRY_RATE_HZ)
             except Exception as e:
@@ -90,6 +93,9 @@ class PX4Driver(MotionDriver):
             asyncio.create_task(self._watch_battery()),
             asyncio.create_task(self._watch_flight_mode()),
             asyncio.create_task(self._watch_armed()),
+            asyncio.create_task(self._watch_imu_time()),
+            asyncio.create_task(self._watch_velocity()),
+            asyncio.create_task(self._watch_heading()),
         ]
 
     async def _watch_position(self) -> None:
@@ -119,6 +125,33 @@ class PX4Driver(MotionDriver):
                 self.snapshot.flight_mode = str(m)
         except Exception:
             log.exception("flight_mode 구독 종료")
+
+    async def _watch_imu_time(self) -> None:
+        """IMU 타임스탬프 = PX4 시각. lockstep SITL 에서는 Gazebo 시뮬레이션 시간과 같아 실제 배속을 잴 수 있다."""
+        try:
+            async for imu in self._drone.telemetry.imu():
+                if imu.timestamp_us:
+                    self.snapshot.px4_time_s = imu.timestamp_us / 1e6
+        except Exception:
+            log.exception("imu 구독 종료")
+
+    async def _watch_velocity(self) -> None:
+        try:
+            async for v in self._drone.telemetry.velocity_ned():
+                self.snapshot.speed_mps = (v.north_m_s ** 2 + v.east_m_s ** 2) ** 0.5
+        except Exception:
+            log.exception("velocity 구독 종료")
+
+    async def _watch_heading(self) -> None:
+        try:
+            async for h in self._drone.telemetry.heading():
+                self.snapshot.heading_deg = h.heading_deg
+        except Exception:
+            log.exception("heading 구독 종료")
+
+    def telemetry(self) -> dict:
+        s = self.snapshot
+        return {"px4_time_s": s.px4_time_s, "speed_mps": s.speed_mps, "heading_deg": s.heading_deg}
 
     async def _watch_armed(self) -> None:
         try:
@@ -219,21 +252,6 @@ class PX4Driver(MotionDriver):
                 log.info("stop: %s 성공", name)
             except Exception as e:
                 log.warning("stop: %s 실패: %s", name, e)
-
-    @staticmethod
-    def _thin(waypoints: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        """직전 점과 MIN_WAYPOINT_GAP_M 보다 가까운 중간점을 뺀다. 마지막 점은 항상 남긴다.
-        도로망 교차로 노드는 수 m 간격으로 몰려 있어, 도착 반경(ACCEPT_RADIUS_M) 안에
-        다음 점이 들어가 있으면 rover 가 점을 건너뛰거나 도착 판정이 꼬인다."""
-        kept = [waypoints[0]]
-        for p in waypoints[1:-1]:
-            if distance_m(kept[-1], p) >= MIN_WAYPOINT_GAP_M:
-                kept.append(p)
-        if len(waypoints) > 1:
-            if distance_m(kept[-1], waypoints[-1]) < MIN_WAYPOINT_GAP_M and len(kept) > 1:
-                kept.pop()
-            kept.append(waypoints[-1])
-        return kept
 
     def _waypoint(self, lat: float, lon: float, speed_mps: float | None = None,
                   fly_through: bool = False) -> MissionItem:

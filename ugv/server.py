@@ -37,6 +37,7 @@ from .road_status import RoadStatus
 from .scenario import Scenario
 from .sim_clock import SimClock
 from .reporter import Reporter
+from .drive_log import DriveLog, ENABLED as DRIVE_LOG_ENABLED
 from .api_models import BlockRequest, EnvClockRequest
 from interfaces.exec_store import ExecStore
 
@@ -326,7 +327,8 @@ def _check_run(agent: GroundResourceAgent, w: dict, now: float) -> str | None:
     return None
 
 
-async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str) -> None:
+async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str,
+                      eta_sec: float | None = None) -> None:
     """도착할 때까지 진행률을 기록한다. 도착하면 COMPLETED, 이상이 확정되면 FAILED.
 
     이상(_check_run)이 나면 차를 세우고 자원을 UNAVAILABLE 로 둔다.
@@ -338,6 +340,10 @@ async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str
     w = dict(started=now, mark_t=now, mark_pos=(agent.resource.lat, agent.resource.lon),
              mark_wp=0, fault_since=None)
     last_road = None
+    dlog = DriveLog(_STATE_DIR, task_id, agent, clock) if DRIVE_LOG_ENABLED else None
+    if dlog:
+        rel = os.path.relpath(dlog.path)
+        t["drive_log"] = dlog.path if rel.startswith("..") else rel
     try:
         while True:
             agent.refresh()
@@ -348,6 +354,8 @@ async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str
                 != ("ENROUTE", cur, total)
             t["status"] = "IN_PROGRESS"
             t["progress"] = {"phase": "ENROUTE", "waypoint": cur, "total": total, **_remaining(agent, cur)}
+            if dlog:
+                dlog.sample(t["progress"])
             if changed:                         # 파일 저장은 웨이포인트가 바뀔 때만 (남은 거리·시각은 매번 바뀐다)
                 _save()
             if agent.resource.state == "READY" and agent.resource.current_node == target_node:
@@ -405,6 +413,9 @@ async def _watch_task(task_id: str, agent: GroundResourceAgent, target_node: str
         log.exception("task %s 실패", task_id)
         _report("UGV_TASK_FAILED", agent, task_id, reason="INTERNAL_ERROR", error=str(e))
     finally:
+        if dlog:
+            dlog.sample(t.get("progress") or {}, force=True)
+            t["timing"] = dlog.close(eta_sec)
         _save()
         _task_of[rid] = None
         _watchers.pop(task_id, None)
@@ -457,7 +468,7 @@ async def execute(resource_id: str, req: ExecuteRequest):
                                        "target_node": node_id, "progress": None, "observation": None},
                    resp.model_dump())
     _task_of[resource_id] = req.task_id
-    _watchers[req.task_id] = asyncio.create_task(_watch_task(req.task_id, agent, node_id))
+    _watchers[req.task_id] = asyncio.create_task(_watch_task(req.task_id, agent, node_id, d["eta_sec"]))
     _report("UGV_TASK_STARTED", agent, req.task_id, decision_id=req.decision_id, target_node=node_id,
             eta_sec=d["eta_sec"], path=d["path"])
     return resp

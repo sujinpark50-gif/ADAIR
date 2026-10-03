@@ -6,6 +6,8 @@
 #   UGV_HOST=192.168.0.23 ./ugv/tools/px4-start.sh A-ugv1    # 한 대만
 #   GUI=1 SPEED=5 UGV_HOST=... ./ugv/tools/px4-start.sh      # Gazebo 창 + 5배속
 #   ./ugv/tools/px4-stop.sh                                  # 전부 종료
+#   WORLD=kangwon_ugv2 ...                                   # 다른 월드 (ugv/gazebo/<이름>.sdf). 기본은 road_network.json world
+#   STEP_MS=8 ...                                            # 물리 스텝 (기본 4 ms). 실험용 — 아래 '배속' 참고
 #
 # 구성 (값의 정본은 ugv/config.py RESOURCES 와 ugv/data/road_network.json spawn — 이 스크립트는 읽기만 한다)
 #   자원      PX4 인스턴스  MAVLink 포트  모델
@@ -23,6 +25,10 @@
 #
 # 시간: SPEED(=PX4_SIM_SPEED_FACTOR) 는 UGV 서버의 UGV_TIME_SCALE 과 반드시 같게 한다.
 #       다르면 ETA·시나리오 시각과 실제 주행이 어긋난다.
+# 배속: SPEED 는 '목표 상한'이다. Gazebo 는 lockstep(매 스텝 PX4 를 기다림)이라 CPU 가 버티는 만큼만 빨라진다
+#       (PX4 문서: 데스크톱 6~10배, 노트북 3~4배 — 빈 월드·기체 1대 기준). 실제 배속은 시작 끝에 찍는
+#       /world/<이름>/stats 의 real_time_factor, 또는 주행 기록(ugv/tools/analyze_drive_log.py)으로 본다.
+#       STEP_MS=8 은 같은 시뮬 1초에 스텝 수를 절반으로 줄인다. 대신 IMU 가 125 Hz 로 떨어진다 (PX4 경고 확인).
 #
 # 확인된 주의사항 (이전 단독 월드 구성에서)
 #   SYS_HAS_MAG / FD_FAIL_* 는 건드리지 말 것 — yaw_align 이 서지 않아 arm 이 거부된다.
@@ -36,8 +42,13 @@ PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
 BUILD="$PX4_DIR/build/px4_sitl_default"
 # 월드는 ugv/data/road_network.json 의 world 를 따른다 (기본: ugv/tools/build_road_world.py 가 만든
 # ugv/gazebo/kangwon_ugv.sdf — 강원 지형 + 도로 면). 값이 없으면 UAV 월드(uav/gazebo/kangwon.sdf).
-read -r WORLD_REL WORLD_NAME < <(python3 -c "import json;w=json.load(open('$REPO/ugv/data/road_network.json',encoding='utf-8')).get('world',{});print(w.get('sdf','uav/gazebo/kangwon.sdf'),w.get('name','kangwon'))")
+if [ -n "${WORLD:-}" ]; then
+    WORLD_REL="ugv/gazebo/$WORLD.sdf"; WORLD_NAME="$WORLD"
+else
+    read -r WORLD_REL WORLD_NAME < <(python3 -c "import json;w=json.load(open('$REPO/ugv/data/road_network.json',encoding='utf-8')).get('world',{});print(w.get('sdf','uav/gazebo/kangwon.sdf'),w.get('name','kangwon'))")
+fi
 WORLD_SDF="$REPO/$WORLD_REL"
+STEP_MS="${STEP_MS:-}"
 SPEED="${SPEED:-1}"
 UGV_HOST="${UGV_HOST:-}"
 LOG_DIR="${LOG_DIR:-/tmp/ugv-px4}"
@@ -46,6 +57,13 @@ ONLY="${1:-}"
 [ -x "$BUILD/bin/px4" ] || { echo "PX4 빌드 없음: $BUILD (make px4_sitl 먼저)"; exit 1; }
 [ -f "$WORLD_SDF" ]     || { echo "월드 없음: $WORLD_SDF"; exit 1; }
 mkdir -p "$LOG_DIR"
+if [ -n "$STEP_MS" ]; then                          # 물리 스텝을 바꾼 월드 사본 (model:// 경로라 위치가 달라도 된다)
+    STEP_S=$(python3 -c "print($STEP_MS/1000)")
+    sed -e "s|<max_step_size>[^<]*</max_step_size>|<max_step_size>$STEP_S</max_step_size>|" \
+        -e "s|<real_time_update_rate>[^<]*</real_time_update_rate>|<real_time_update_rate>$(python3 -c "print(round(1000/$STEP_MS))")</real_time_update_rate>|" \
+        "$WORLD_SDF" > "$LOG_DIR/$WORLD_NAME-step${STEP_MS}ms.sdf"
+    WORLD_SDF="$LOG_DIR/$WORLD_NAME-step${STEP_MS}ms.sdf"
+fi
 [ -d "$PX4_DIR/.venv" ] && source "$PX4_DIR/.venv/bin/activate"
 
 # PX4 의 모델·월드 경로 (PX4_GZ_MODELS, GZ_SIM_RESOURCE_PATH 등). standalone 이면 PX4 가 안 읽으므로 여기서 읽는다
@@ -70,7 +88,7 @@ airframe_of() {
 
 # 1) Gazebo 서버 (이미 떠 있으면 재사용)
 if gz topic -l 2>/dev/null | grep -q "^/world/$WORLD_NAME/clock"; then
-    echo "Gazebo 월드 $WORLD_NAME 이미 실행 중 (파티션 $GZ_PARTITION)"
+    echo "Gazebo 월드 $WORLD_NAME 이미 실행 중 (파티션 $GZ_PARTITION) — WORLD·STEP_MS 를 바꿨다면 px4-stop.sh 먼저"
 else
     echo "Gazebo 서버 시작: $WORLD_SDF"
     gz sim --verbose=1 -r -s "$WORLD_SDF" > "$LOG_DIR/gz.log" 2>&1 &
@@ -136,6 +154,15 @@ while read -r RID INST MODEL X Y Z YAW; do
                       || echo "  MAVLink 링크 추가 실패 — ugv/tools/mavlink_relay.py 사용 ($LOG_DIR/px4-$INST.log)"
     fi
 done < "$LOG_DIR/resources.txt"
+
+# 4) 물리 설정 확인 (PX4 가 배속을 걸면서 스텝을 덮어쓸 수 있어, STEP_MS 를 줬으면 한 번 더 건다)
+if [ -n "$STEP_MS" ]; then
+    gz service -s "/world/$WORLD_NAME/set_physics" --reqtype gz.msgs.Physics --reptype gz.msgs.Boolean \
+        --timeout 3000 --req "max_step_size: $STEP_S, real_time_factor: $SPEED" > /dev/null 2>&1 || true
+fi
+sleep 3
+STATS=$(timeout 5 gz topic -e -t "/world/$WORLD_NAME/stats" -n 1 2>/dev/null | tr '\n' ' ' || true)
+echo "물리: $(echo "$STATS" | grep -o 'step_size {[^}]*}' | head -1)  real_time_factor: $(echo "$STATS" | grep -o 'real_time_factor: [0-9.e-]*' | head -1 | cut -d' ' -f2)  (목표 SPEED=$SPEED)"
 
 echo
 echo "로그: $LOG_DIR   Mac 쪽 서버:"

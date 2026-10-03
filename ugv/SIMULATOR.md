@@ -103,7 +103,7 @@ UAV 월드의 지형은 90 m DEM 을 56 m heightmap 으로 보간한 것이라 �
 
 | 항목 | 값 |
 |---|---|
-| 도로 면 | 모든 도로를 폭 6 m 띠로, 교차로는 반지름 5 m 패드. 시각·충돌 공용 `models/kangwon_ugv/roads.obj` |
+| 도로 면 | 모든 도로를 폭 10 m 띠로, 교차로는 반지름 7 m 패드. 시각·충돌 공용 `models/kangwon_ugv/roads.obj` |
 | 도로 높이 | 원본 DEM → 도로 따라 150 m 이동평균 → 교차로 높이 일치 → 경사 상한 8% (최대 8.4%) |
 | 지형 | 도로 면보다 0.6 m 이상 높던 곳을 깎은 heightmap 사본 (터널 구간은 100 m 넘게 깎인 곳도 있다) |
 | 스폰 | 도로 면 위 + 0.4 m. 같은 거점 두 번째 차량은 도로를 따라 8 m 앞 |
@@ -114,3 +114,47 @@ python3 -m ugv.tools.build_road_network     # 도로망이 바뀐 경우만
 python3 -m ugv.tools.build_road_world       # numpy scipy pillow rasterio pyproj 필요
 ```
 UAV 월드로 돌아가려면 `road_network.json` 의 `world` 를 지우거나 `build_road_network` 만 다시 실행한다.
+
+### v2 월드 (`WORLD=kangwon_ugv2`) — 갓길 + 교차로 턱 줄임
+
+v1 과 같은 도로 높이·폭·스폰에 두 가지를 더했다. 기본 월드는 여전히 v1 이다 (`road_network.json` 의 world).
+
+| 항목 | v1 | v2 |
+|---|---|---|
+| 갓길 | 없음 — 도로 끝에서 0.6 m 이상 아래 지형으로 떨어진다 | 양옆 4 m, 바깥으로 0.25 m 내려가는 비탈 |
+| 띠 폭 방향 꼭짓점 | 양 끝 2개 | 가운데 1줄 추가 (교차로에서 높이장과 덜 어긋남) |
+| 길이 방향 꼭짓점 | 5 m | 10 m |
+| 주 경로(A↔B) 10 m 안 턱 0.1 m 이상 | 16 칸 (최대 0.15 m) | 3 칸 (최대 0.14 m) |
+| 삼각형 / 파일 | 82k / 4.5 MB | 159k / 7.3 MB (갓길이 절반) |
+
+교차로 넓히기(패드 12 m, 끝 폭 16 m 테이퍼)는 해 봤지만 버렸다: 넓힌 면이 교차로 높이장과 어긋나
+주 경로 턱이 54~107 칸(최대 0.37 m), 갓길이 도로 위로 1 m 솟는 곳까지 생겼다. 코너에서 떨어지는 문제는
+넓히기 대신 갓길로 받는다. 다시 해 보려면 `UGV_V2_PAD_R=12 UGV_V2_TAPER=1 python3 -m ugv.tools.build_road_world --v2`.
+
+```bash
+python3 -m ugv.tools.build_road_world --v2      # 다시 만들기 (road_network.json 은 건드리지 않는다)
+```
+
+## 주행 정밀 기록 — 시간·중심 치우침·속도 (`ugv/drive_log.py`)
+
+task 마다 `ugv/.state/drive_logs/<task_id>.csv` 에 0.5 초 간격으로 남는다 (`UGV_DRIVE_LOG=0` 이면 끔).
+열: 벽시계 / 서버 시뮬 시각 / PX4 시각(imu), 위치, 경로선 기준 횡오차(+ 왼쪽, − 오른쪽), 실제·명령 속도, 방위, 도로.
+task 조회(`GET /ugv/{id}/task/{task_id}`)의 `timing` 에 시작·끝 시각, ETA, 실제 배속, 실제/ETA 요약이 붙는다.
+
+```bash
+python3 -m ugv.tools.analyze_drive_log --roads ugv/.state/drive_logs/LOG1.csv
+```
+읽는 법: 횡오차 중앙값이 한쪽(+1.5 m 이상 등)으로 쏠리면 '중심 치우침', 평균은 0 근처인데 |p95| 만 크면 '코너 자르기'.
+`실제배속` 이 SPEED 보다 낮으면 CPU 한계. `서버시계/PX4` 가 1 에서 멀면 서버 ETA 시계가 Gazebo 와 어긋난 것.
+중간에 `/stop` 해도 '달린구간 ETA' 로 ETA 대비 실제를 본다.
+
+### 측정 순서 (각 10분 정도, 매번 새 task_id)
+
+| # | WSL | 보는 것 |
+|---|---|---|
+| 1 | `SPEED=2 UGV_HOST=<Mac IP> ./ugv/tools/px4-start.sh A-ugv1` | 기준: v1 월드, 4 ms |
+| 2 | `WORLD=kangwon_ugv2 SPEED=2 ...` | 갓길·턱 — 치우침·멈춤 비교 |
+| 3 | `WORLD=kangwon_ugv2 STEP_MS=8 SPEED=4 ...` | 배속 — `실제배속` 이 1·2 보다 오르는지, PX4 경고(accel/gyro timeout) |
+
+사이마다 `./ugv/tools/px4-stop.sh`. Mac 서버의 `UGV_TIME_SCALE` 은 그때의 SPEED 와 같게.
+GUI 는 배속을 깎으므로 측정할 때는 끈다 (`GUI=1` 은 눈으로 볼 때만).

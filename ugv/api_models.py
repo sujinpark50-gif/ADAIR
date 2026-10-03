@@ -83,6 +83,8 @@ class TaskStatus(BaseModel):
     error: str | None = None
     reroutes: list[dict] | None = None # 주행 중 차단으로 경로를 바꾼 기록 {sim_time_s, result, blocked_road_id, eta_s}
     agent_restart: dict | None = None  # 서버 재시작으로 끊긴 실행이면 근거
+    timing: dict | None = None         # 주행 시각 요약: 시작·끝(벽시계/서버 시뮬/PX4), eta_sec, 경과, 실제 배속, 실제/ETA
+    drive_log: str | None = None       # 정밀 주행 기록 CSV 경로 (ugv/drive_log.py)
 
 
 class GridCell(BaseModel):

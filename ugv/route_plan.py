@@ -87,3 +87,23 @@ def distance_to_polyline_m(here: tuple[float, float], line: list[tuple[float, fl
         t = 0.0 if seg2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / seg2))
         best = min(best, math.hypot(ax + t * dx, ay + t * dy))
     return best
+
+
+def signed_offset_m(here: tuple[float, float], line: list[tuple[float, float]]) -> tuple[float, int]:
+    """꺾은선에서 가장 가까운 점까지 거리, 왼쪽(진행방향 기준)이면 +, 오른쪽이면 −. (거리, 구간 번호).
+    주행 기록에서 차가 도로 중심선의 어느 쪽으로 치우치는지 볼 때 쓴다."""
+    if len(line) < 2:
+        return 0.0, 0
+    best, best_i = math.inf, 0
+    for i, (a, b) in enumerate(zip(line, line[1:])):
+        ay, ax = to_ned(*a, *here)          # 현재 위치 기준 (북, 동). 현재 위치가 원점
+        by, bx = to_ned(*b, *here)
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        t = 0.0 if seg2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / seg2))
+        px, py = ax + t * dx, ay + t * dy   # 선 위 가장 가까운 점 (현재 위치 기준)
+        d = math.hypot(px, py)
+        if d < abs(best):
+            cross = dx * (-py) - dy * (-px)  # 진행방향 × (선→현재위치) : 양수면 왼쪽
+            best, best_i = (d if cross >= 0 else -d), i
+    return best, best_i

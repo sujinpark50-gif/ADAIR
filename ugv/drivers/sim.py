@@ -27,6 +27,7 @@ class SimDriver(MotionDriver):
         self._status = "IDLE"
         self._progress = (0, 0)
         self._task: asyncio.Task | None = None
+        self._speed = 0.0
 
     async def connect(self) -> None:
         pass
@@ -42,6 +43,9 @@ class SimDriver(MotionDriver):
 
     def progress(self) -> tuple[int, int]:
         return self._progress
+
+    def telemetry(self) -> dict:
+        return {"speed_mps": self._speed if self._status == "MISSION" else 0.0}
 
     async def goto(self, waypoints: list[tuple[float, float]],
                    speeds: list[float] | None = None) -> bool:
@@ -67,6 +71,7 @@ class SimDriver(MotionDriver):
         i, n = 0, len(waypoints)
         while i < n:
             budget = self.tick_s * self.time_scale          # 이번 tick 의 시뮬레이션 초
+            self._speed = speeds[i]
             while i < n and budget > 0:
                 target, v = waypoints[i], speeds[i]
                 remaining = distance_m(self._pos, target)

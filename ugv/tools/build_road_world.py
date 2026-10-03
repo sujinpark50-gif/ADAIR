@@ -20,7 +20,18 @@
 #   4) 경사를 MAX_GRADE 로 제한 (양 끝 고정, 앞뒤로 반복 적용). 양 끝 높이차가 커서 불가능하면 선형
 #   월드 z = 해발 − DATUM_ALT − 곡률 보정(d²/2R). build_world.py 와 같은 규칙이라 GPS 고도 = 해발.
 #
-# 실행 (build_road_network.py 다음에):  python3 -m ugv.tools.build_road_world
+# 실행 (build_road_network.py 다음에):
+#   python3 -m ugv.tools.build_road_world          # v1: kangwon_ugv  (road_network.json 의 world·spawn 갱신 = 기본 월드)
+#   python3 -m ugv.tools.build_road_world --v2     # v2: kangwon_ugv2 (아래 차이. world·spawn 은 건드리지 않는다)
+#   px4-start.sh 에서 WORLD=kangwon_ugv2 로 고른다.
+#
+# v2 (2026-10-03, WSL 주행 뒤): 교차로·코너에서 아슬아슬하던 곳을 넓히고, 길가에서 바로 떨어지지 않게 한다
+#   도로 양옆에 SHOULDER_W_M 폭 갓길이 SHOULDER_DROP_M 만큼 비스듬히 내려간다 — 코너를 질러 도로 끝을 넘어도
+#   0.6 m 아래 지형으로 떨어지지 않고 완만한 비탈을 탄다. 갓길이 다른 도로 면보다 높으면 바깥 끝을 내린다.
+#   넓히기(교차로 패드 JUNCTION_PAD_R, 테이퍼 TAPER_*)는 실험 스위치로만 남겼다 (아래).
+#   도로 띠는 폭 방향으로 COLLISION_STRIPS 줄(가운데 꼭짓점) — 끝점 둘로만 보간하면 교차로에서 높이장과 어긋나 턱이 생긴다.
+#   길이 방향 꼭짓점은 COLLISION_STRIDE 개마다 하나 (10 m). 이 메시 하나를 시각·충돌 공용으로 쓴다.
+#   교차로 패드는 7 m 유지: 12 m·테이퍼(16 m)로 넓히면 주 경로 근처 턱이 2 → 54~107 칸(최대 0.37 m)으로 늘었다.
 # 필요: numpy scipy pillow rasterio pyproj (런타임 서버에는 필요 없다)
 
 import json
@@ -61,6 +72,24 @@ FIELD_ROUNDS = 3          # 높이장 ↔ 경사 상한 반복 횟수
 LAYER_DZ_M = 3.0          # 자기 도로 높이와 이보다 다른 표본은 섞지 않는다 (입체교차를 평면으로 합치지 않게)
 CARVE_CLEAR_M = 0.6       # 지형을 도로 면보다 이만큼 아래로 깎는다
 SPAWN_Z_OFFSET_M = 0.4
+# v2 전용 (--v2)
+JUNCTION_PAD_R = 7.0      # 3갈래 이상 교차로 패드 반지름. 12 m 는 주 경로에 0.2 m 턱·갓길 1 m 솟음이 생겨 7 m 유지 (2026-10-03)
+TAPER_W_M = 16.0          # 교차로에 닿는 도로 끝 폭
+TAPER_LEN_M = 20.0        # 이 거리에 걸쳐 ROAD_WIDTH_M 로 좁아진다
+SHOULDER_W_M = 4.0        # 갓길 폭 (도로 끝에서 바깥으로)
+SHOULDER_DROP_M = 0.25    # 갓길 바깥 끝이 도로 끝보다 낮은 정도 (경사 약 6%)
+COLLISION_STRIDE = 2      # 충돌 메시: 길이 방향 꼭짓점 간격 = DENSIFY_M × 이 값
+RIBBON_STRIPS = 2         # 시각 메시 폭 방향 줄 수 (v1 은 1). 시각은 턱과 무관해 가볍게
+COLLISION_STRIPS = 2      # 충돌 메시 폭 방향 줄 수
+# 실험용 스위치 (환경변수): UGV_V2_TAPER=0/1, UGV_V2_SHOULDER=0/1, UGV_V2_PAD_R=<m>, UGV_V2_DRY=1(파일 안 씀)
+import os as _os
+V2_TAPER = _os.getenv("UGV_V2_TAPER", "0") == "1"      # 기본 끔: 넓힌 띠가 교차로 높이장과 어긋나 주 경로 턱이 늘었다 (2026-10-03)
+V2_SHOULDER = _os.getenv("UGV_V2_SHOULDER", "1") == "1"
+JUNCTION_PAD_R = float(_os.getenv("UGV_V2_PAD_R", JUNCTION_PAD_R))
+V2_DRY = _os.getenv("UGV_V2_DRY", "0") == "1"
+RIBBON_STRIPS = int(_os.getenv("UGV_V2_STRIPS", RIBBON_STRIPS))
+COLLISION_STRIPS = int(_os.getenv("UGV_V2_COLL_STRIPS", COLLISION_STRIPS))
+COLLISION_STRIDE = int(_os.getenv("UGV_V2_COLL_STRIDE", COLLISION_STRIDE))
 SPAWN_GAP_M = 8.0         # 같은 거점 두 번째 차량은 도로를 따라 이만큼 앞에 세운다
 
 
@@ -212,8 +241,21 @@ class RoadField:
         return out
 
 
-def ledge_check(mesh, cell=1.0):
-    """메시를 1 m 격자로 찍어, 한 칸을 덮는 면들의 높이차(턱)를 잰다. 반환 (턱 높이 배열)."""
+def ledge_check(mesh, cell=1.0, near=None):
+    """메시를 1 m 격자로 찍어, 한 칸을 덮는 면들의 높이차(턱)를 잰다. 반환 (턱 높이 배열).
+    near(kd-tree, 반경) 를 주면 (전체, 그 반경 안 칸만) 두 배열을 돌려준다 — 주 경로 근처 턱 확인용."""
+    lo, hi = raster(mesh, cell)
+    keys = list(lo)
+    led = np.array([hi[k] - lo[k] for k in keys])
+    if near is None:
+        return led
+    tree, rad = near
+    d, _ = tree.query(np.array(keys, dtype=float) + 0.5 * cell)
+    return led, led[d <= rad]
+
+
+def raster(mesh, cell=1.0):
+    """메시를 cell 격자로 찍어 칸별 (최저, 최고) 면 높이 dict 두 개를 돌려준다."""
     V = np.array(mesh.v); F = np.array(mesh.f) - 1
     lo, hi = {}, {}
     for a, b, c in F:
@@ -235,7 +277,7 @@ def ledge_check(mesh, cell=1.0):
                 lo[key] = min(lo[key], h); hi[key] = max(hi[key], h)
             else:
                 lo[key] = hi[key] = h
-    return np.array([hi[k] - lo[k] for k in lo])
+    return lo, hi
 
 
 # --- 메시 ---------------------------------------------------------------------
@@ -266,33 +308,113 @@ class Obj:
             f.writelines(f"f {a}//1 {b}//1 {c}//1\n" for a, b, c in self.f)
 
 
-def ribbon(mesh: Obj, xyz, field=None):
-    """도로 띠: 각 점에서 좌우로 폭/2. 이웃 구간이 꼭짓점을 공유해 면이 끊기지 않는다."""
+def ribbon(mesh: Obj, xyz, field=None, half_w=None, strips=1):
+    """도로 띠: 각 점에서 좌우로 폭/2 (half_w 를 주면 점별 반폭). 이웃 구간이 꼭짓점을 공유해 면이 끊기지 않는다.
+    반환 (왼쪽 끝 꼭짓점들, 오른쪽 끝 꼭짓점들, 점별 왼쪽 단위법선) — 갓길을 이어 붙일 때 쓴다."""
     xy = xyz[:, :2]
     d = np.diff(xy, axis=0)
     d /= np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-9)[:, None]
     t = np.vstack([d[:1], d[:-1] + d[1:], d[-1:]])                     # 점별 진행방향 (꺾이는 곳은 평균)
     t /= np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None]
-    n = np.stack([-t[:, 1], t[:, 0]], axis=1) * (ROAD_WIDTH_M / 2)      # 왼쪽 법선
+    u = np.stack([-t[:, 1], t[:, 0]], axis=1)                           # 왼쪽 단위법선
+    n = u * (ROAD_WIDTH_M / 2 if half_w is None else half_w[:, None])
     zl = zr = xyz[:, 2]
     if field is not None:                                               # 겹치는 띠와 같은 높이가 되게
         zl = field.at(xy + n, xyz[:, 2])
         zr = field.at(xy - n, xyz[:, 2])
     L = [mesh.vert(x + nx, y + ny, z) for (x, y, _), (nx, ny), z in zip(xyz, n, zl)]
     R = [mesh.vert(x - nx, y - ny, z) for (x, y, _), (nx, ny), z in zip(xyz, n, zr)]
+    if strips <= 1:
+        for i in range(len(xyz) - 1):
+            mesh.quad(R[i], R[i + 1], L[i + 1], L[i])                   # 윗면 (위에서 반시계)
+    else:
+        # v2: 폭 방향으로 strips 줄로 나눈다 — 폭 10 m 를 끝점 둘로만 선형 보간하면 높이장(σ 6 m)과 어긋나
+        # 교차로에서 겹친 띠끼리 턱이 생긴다 (4줄이면 주 경로 근처 턱 16 → 2 칸, 2026-10-03)
+        cols = [R]
+        for f in np.linspace(-1, 1, strips + 1)[1:-1]:
+            pxy = xy + f * n
+            pz = xyz[:, 2] if field is None else field.at(pxy, xyz[:, 2])
+            cols.append([mesh.vert(x, y, z) for (x, y), z in zip(pxy, pz)])
+        cols.append(L)
+        for A, B in zip(cols, cols[1:]):
+            for i in range(len(xyz) - 1):
+                mesh.quad(A[i], A[i + 1], B[i + 1], B[i])
+    return L, R, u, n
+
+
+def shoulder(mesh: Obj, xyz, L, R, u, n, field):
+    """도로 끝 꼭짓점(L, R)을 안쪽 변으로, 바깥 SHOULDER_W_M 에 높이장 − SHOULDER_DROP_M 인 갓길 띠를 붙인다.
+    안쪽 변은 도로 끝과 같은 꼭짓점이라 틈이 없고, 바깥 변은 높이장보다 낮아 다른 도로 위로 올라오지 않는다."""
+    xy, z = xyz[:, :2], xyz[:, 2]
+    w = u * SHOULDER_W_M
+    lo_xy, ro_xy = xy + n + w, xy - n - w
+    lz = field.at(lo_xy, z) - SHOULDER_DROP_M
+    rz = field.at(ro_xy, z) - SHOULDER_DROP_M
+    LO = [mesh.vert(x, y, h) for (x, y), h in zip(lo_xy, lz)]
+    RO = [mesh.vert(x, y, h) for (x, y), h in zip(ro_xy, rz)]
     for i in range(len(xyz) - 1):
-        mesh.quad(R[i], R[i + 1], L[i + 1], L[i])                       # 윗면 (위에서 반시계)
+        mesh.quad(L[i], L[i + 1], LO[i + 1], LO[i])                     # 왼쪽 갓길 (도로 끝 → 바깥)
+        mesh.quad(RO[i], RO[i + 1], R[i + 1], R[i])                     # 오른쪽 갓길
+    return np.column_stack([lo_xy, lz]), np.column_stack([ro_xy, rz]), LO + RO
 
 
-def pad(mesh: Obj, x, y, z, k=12, field=None):
+def clamp_shoulders(mesh: Obj, outer_ids: set[int], rlo: dict, rhi: dict, rounds: int = 8) -> int:
+    """갓길 면이 다른 도로 면보다 높은 곳이 있으면 그 면의 바깥 꼭짓점을 내린다 (안쪽 변은 자기 도로 끝이라 고정).
+    면마다 꼭짓점·변 중점·무게중심 7점을 1 m 칸에 찍어 도로 면 최고보다 높으면 0.3 m 씩 내리기를 반복."""
+    V = np.array(mesh.v)
+    faces = np.array([f for f in mesh.f if any(v in outer_ids for v in f)]) - 1
+    is_out = np.zeros(len(V), bool); is_out[np.array(sorted(outer_ids)) - 1] = True
+    lowered = set()
+    for _ in range(rounds):
+        A, B, C = V[faces[:, 0]], V[faces[:, 1]], V[faces[:, 2]]
+        samples = [A, B, C, (A + B) / 2, (B + C) / 2, (C + A) / 2, (A + B + C) / 3]
+        bad = np.zeros(len(faces), bool)
+        for P in samples:
+            for i, (x, y, z) in enumerate(P):
+                if not bad[i]:
+                    h = rhi.get((int(math.floor(x)), int(math.floor(y))))
+                    if h is not None and z > h + 0.02 and z < h + LAYER_DZ_M:   # 입체교차 위층은 제외
+                        bad[i] = True
+        if not bad.any():
+            break
+        vs = np.unique(faces[bad].ravel())
+        vs = vs[is_out[vs]]
+        V[vs, 2] -= 0.3
+        lowered.update(vs.tolist())
+    for i in lowered:
+        mesh.v[i] = tuple(V[i])
+    return len(lowered)
+
+
+def taper_half_w(xyz, a_junction, b_junction):
+    """교차로 쪽 끝에서 TAPER_W_M → TAPER_LEN_M 에 걸쳐 ROAD_WIDTH_M 로 좁아지는 점별 반폭."""
+    s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xyz[:, :2], axis=0).T))])
+    w = np.full(len(s), ROAD_WIDTH_M)
+    for is_j, d in ((a_junction, s), (b_junction, s[-1] - s)):
+        if is_j:
+            w = np.maximum(w, ROAD_WIDTH_M + (TAPER_W_M - ROAD_WIDTH_M) * np.clip(1 - d / TAPER_LEN_M, 0, 1))
+    return w / 2
+
+
+def pad(mesh: Obj, x, y, z, k=12, field=None, r=NODE_PAD_R):
     ang = 2 * math.pi * np.arange(k) / k
-    rx, ry = x + NODE_PAD_R * np.cos(ang), y + NODE_PAD_R * np.sin(ang)
+    rx, ry = x + r * np.cos(ang), y + r * np.sin(ang)
     rz = np.full(k, z) if field is None else field.at(np.column_stack([rx, ry]), np.full(k, z))
     cz = z if field is None else field.at(np.array([[x, y]]), np.array([z]))[0]
     c = mesh.vert(x, y, cz)
     ring = [mesh.vert(a, b, h) for a, b, h in zip(rx, ry, rz)]
+    if r <= NODE_PAD_R or field is None:
+        for i in range(k):
+            mesh.tri(c, ring[i], ring[(i + 1) % k])
+        return
+    # 큰 패드(v2)는 안쪽 고리를 하나 더 — 반지름 12 m 부채꼴을 끝점만으로 보간하면 높이장과 어긋난다
+    ix, iy = x + r / 2 * np.cos(ang), y + r / 2 * np.sin(ang)
+    iz = field.at(np.column_stack([ix, iy]), np.full(k, z))
+    inner = [mesh.vert(a, b, h) for a, b, h in zip(ix, iy, iz)]
     for i in range(k):
-        mesh.tri(c, ring[i], ring[(i + 1) % k])
+        j = (i + 1) % k
+        mesh.tri(c, inner[i], inner[j])
+        mesh.quad(inner[i], ring[i], ring[j], inner[j])
 
 
 # --- 지형 깎기 ----------------------------------------------------------------
@@ -348,7 +470,10 @@ class Heightmap:
 
 # --- 실행 ---------------------------------------------------------------------
 
-def build():
+def build(v2: bool = False):
+    out_model = OUT_DIR / "models/kangwon_ugv2" if v2 else OUT_MODEL
+    out_sdf = OUT_DIR / "kangwon_ugv2.sdf" if v2 else OUT_SDF
+    world_name = "kangwon_ugv2" if v2 else WORLD_NAME
     net = json.loads(NET.read_text(encoding="utf-8"))
     dem = Dem(DEM)
     sdf = SRC_SDF.read_text(encoding="utf-8")
@@ -390,35 +515,122 @@ def build():
             xyz[:, 2] = cap_grade(s_, z) if s_[-1] > 0 else z
     field = RoadField(road_xyz)
 
+    degree = {n: 0 for n in node_xy}
+    for r in net["roads"]:
+        degree[r["node_a"]] += 1; degree[r["node_b"]] += 1
+    is_j = {n: d >= 3 for n, d in degree.items()}
+    road_ab = {r["road_id"]: (r["node_a"], r["node_b"]) for r in net["roads"]}
+    sh_vid: set[int] = set()                # v2 갓길 바깥 꼭짓점 (턱 검사를 도로 면과 따로 하려고)
+    coll = Obj() if v2 else None            # v2 충돌 메시 (길이 방향으로 성기게)
+    coll_sh: set[int] = set()
+
+    def add_road(m, xyz, hw, sh, strips=1):
+        L, R, u, n = ribbon(m, xyz, field, hw, strips)
+        if sh is not None:
+            return shoulder(sh, xyz, L, R, u, n, field)
+        return None
+
     for rid, xyz in road_xyz.items():
         xy, z = xyz[:, :2], xyz[:, 2]
         mesh.tag += 1
-        ribbon(mesh, xyz, field)
+        a_, b_ = road_ab[rid]
+        hw = taper_half_w(xyz, is_j[a_], is_j[b_]) if (v2 and V2_TAPER) else np.full(len(xyz), ROAD_WIDTH_M / 2)
+        if v2:
+            sh = mesh if V2_SHOULDER else None
+            res = add_road(mesh, xyz, hw, sh, RIBBON_STRIPS)
+            if res:
+                sh_vid.update(res[2])
+            keep = np.unique(np.r_[np.arange(0, len(xyz), COLLISION_STRIDE), len(xyz) - 1])
+            res = add_road(coll, xyz[keep], hw[keep], coll if V2_SHOULDER else None, COLLISION_STRIPS)
+            if res:
+                coll_sh.update(res[2])
+        else:
+            add_road(mesh, xyz, hw, None)
         seg = np.hypot(*np.diff(xy, axis=0).T)
         grades += list(np.abs(np.diff(z)) / np.maximum(seg, 1e-6))
         # 깎기 검사점: 중심선 + 양 끝 (폭 방향)
         d = np.diff(xy, axis=0); d = np.vstack([d, d[-1:]])
         d /= np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-9)[:, None]
-        nrm = np.stack([-d[:, 1], d[:, 0]], axis=1) * (ROAD_WIDTH_M / 2)
+        nrm = np.stack([-d[:, 1], d[:, 0]], axis=1) * hw[:, None]
         for off in (0, 1, -1):
             all_pts.append(np.column_stack([xy + off * nrm, z]))
     for nid, (x, y) in node_xy.items():
         mesh.tag += 1
-        pad(mesh, x, y, node_z[nid], field=field)
-        all_pts.append(np.array([[x + NODE_PAD_R * math.cos(a), y + NODE_PAD_R * math.sin(a), node_z[nid]]
+        pr = JUNCTION_PAD_R if (v2 and is_j[nid]) else NODE_PAD_R
+        pk = 24 if pr > NODE_PAD_R else 12
+        pad(mesh, x, y, node_z[nid], k=pk, field=field, r=pr)
+        if coll is not None:
+            pad(coll, x, y, node_z[nid], k=pk, field=field, r=pr)
+        all_pts.append(np.array([[x + pr * math.cos(a), y + pr * math.sin(a), node_z[nid]]
                                  for a in np.linspace(0, 2 * math.pi, 8, endpoint=False)] + [[x, y, node_z[nid]]]))
 
-    led = ledge_check(mesh)
+    # 주 경로(A↔B) 근처 — 실제로 달리는 곳의 턱을 따로 본다
+    from scipy.spatial import cKDTree
+    from ugv import graph_gpkg
+    from ugv.road_graph import RoadGraph
+    G0 = RoadGraph(graph_gpkg.NODES, graph_gpkg.ROADS)
+    rt0 = G0.find_route("A", "B", 2.0)
+    main_pts = np.vstack([road_xyz[G0.road_between(u, v).road_id][:, :2] for u, v in zip(rt0.path, rt0.path[1:])])
+    near = (cKDTree(main_pts), 10.0)
+
+    def report(led_all, led_near, label):
+        la, ln = led_all[led_all < 1], led_near[led_near < 1]
+        print(f"턱 {label}: 0.10~1 m 전체 {((la > 0.10)).sum()} 칸 / 주 경로 10 m 안 {((ln > 0.10)).sum()} 칸"
+              f" (그중 0.2 m 이상 {(ln > 0.2).sum()}, 최대 {ln.max() if len(ln) else 0:.2f} m)")
+
+    if v2:
+        # 턱 검사는 도로 면(띠+패드)만으로 한다. 갓길은 일부러 낮으니 '갓길이 도로 면보다 높은 칸'을 따로 센다.
+        road_only, sh_only = Obj(), Obj()
+        road_only.v = mesh.v; sh_only.v = mesh.v
+        for f in mesh.f:                    # 갓길 면 = 바깥 꼭짓점을 하나라도 쓰는 면
+            (sh_only if any(v in sh_vid for v in f) else road_only).f.append(f)
+        led, led_n = ledge_check(road_only, near=near)
+        report(led, led_n, "시각 도로 면")
+        rlo, rhi = raster(road_only)
+        coll_road = Obj(); coll_road.v = coll.v
+        coll_road.f = [f for f in coll.f if not any(v in coll_sh for v in f)]
+        if sh_only.f:
+            clo, chi = raster(coll_road)
+            for m_, ids, lo_, hi_ in ((mesh, sh_vid, rlo, rhi), (coll, coll_sh, clo, chi)):
+                n_low = clamp_shoulders(m_, ids, lo_, hi_)
+                print(f"  갓길 낮춤 ({'시각' if m_ is mesh else '충돌'}): 바깥 꼭짓점 {n_low}개")
+            csh = Obj(); csh.v = coll.v
+            csh.f = [f for f in coll.f if any(v in coll_sh for v in f)]
+            _, cshi = raster(csh)
+            ck = [k for k, h in cshi.items() if k in chi and chi[k] + 0.05 < h < chi[k] + LAYER_DZ_M]
+            cdn, _ = near[0].query(np.array(ck, dtype=float) + 0.5) if ck else (np.array([]), None)
+            print(f"충돌 갓길: 도로 면보다 0.05 m 넘게 높은 칸 {len(ck)} / 주 경로 10 m 안 {(cdn <= near[1]).sum()} 칸")
+            slo, shi = raster(sh_only)
+            ak = [k for k, h in shi.items() if k in rhi and rhi[k] + 0.05 < h < rhi[k] + LAYER_DZ_M]
+            dn, _ = near[0].query(np.array(ak, dtype=float) + 0.5) if ak else (np.array([]), None)
+            hmax = max((shi[k] - rhi[k] for k, d in zip(ak, dn) if d <= near[1]), default=0)
+            print(f"갓길: {len(sh_only.f)} 삼각형, 도로 면보다 0.05 m 넘게 높은 칸 {len(ak)}"
+                  f" / 주 경로 10 m 안 {(dn <= near[1]).sum()} 칸 (최대 {hmax:.2f} m)")
+            all_pts.append(np.array([mesh.v[i - 1] for i in sorted(sh_vid)]))     # 낮춘 갓길 밑으로 지형 깎기
+        cl, cl_n = ledge_check(coll_road, near=near); report(cl, cl_n, "충돌 도로 면"); cl = cl[cl < LAYER_DZ_M]
+        print(f"충돌 메시: {len(coll.f)} 삼각형 (시각 {len(mesh.f)}), 도로 면 턱 0.10~1 m {((cl > 0.10) & (cl < 1)).sum()} 칸")
+    else:
+        led, led_n = ledge_check(mesh, near=near)
+        report(led, led_n, "도로 면")
     sep = led >= LAYER_DZ_M                                             # 입체교차 (위·아래 도로가 따로 있다)
     lg = led[~sep]
     print(f"턱 검사 (1 m 격자 {len(led)} 칸): 겹친 면 높이차 최대 {lg.max():.2f} m, "
           f">0.05 m {(lg > 0.05).sum()} 칸, 0.10~1 m {((lg > 0.10) & (lg < 1)).sum()} 칸, "
           f"1 m 이상(입체교차 경계) {(lg >= 1).sum()} 칸, 입체교차 {sep.sum()} 칸")
 
-    OUT_MODEL.mkdir(parents=True, exist_ok=True)
-    mesh.write(OUT_MODEL / "roads.obj", "roads")
-    for old in ("roads_visual.obj", "roads_collision.obj"):
-        (OUT_MODEL / old).unlink(missing_ok=True)
+    if v2 and V2_DRY:
+        print("UGV_V2_DRY=1 — 파일을 쓰지 않는다")
+        return
+    out_model.mkdir(parents=True, exist_ok=True)
+    if coll is not None:
+        # v2 는 성긴 메시 하나를 시각·충돌 공용으로 쓴다 — 보이는 면 = 바퀴가 닿는 면, 파일도 절반.
+        # 촘촘한 시각 메시(mesh)는 턱 비교용으로만 만들고 쓰지 않는다.
+        coll.write(out_model / "roads.obj", "roads")
+        (out_model / "roads_collision.obj").unlink(missing_ok=True)
+    else:
+        mesh.write(out_model / "roads.obj", "roads")
+        for old in ("roads_visual.obj", "roads_collision.obj"):
+            (out_model / old).unlink(missing_ok=True)
 
     # 지형 깎기 → 새 heightmap (높이 범위가 바뀌면 pose z·size z 도 바뀐다)
     pts = np.vstack(all_pts)
@@ -427,13 +639,13 @@ def build():
     hm.carve(pts)
     dz = (z0 - hm.z)[(z0 - hm.z) > 0]
     after = hm.surface(pts[:, 0], pts[:, 1]) - pts[:, 2]
-    hm.save(OUT_MODEL / "heightmap.png")
+    hm.save(out_model / "heightmap.png")
     for f in ("texture.png", "normal.png"):
-        shutil.copy(SRC_MODEL / f, OUT_MODEL / f)
+        shutil.copy(SRC_MODEL / f, out_model / f)
 
     # 월드 SDF: UAV 월드를 복사해 모델 경로·높이만 바꾸고 도로 모델을 더한다
-    w = sdf.replace("model://kangwon/", "model://kangwon_ugv/")
-    w = re.sub(r'<world name="[^"]+">', f'<world name="{WORLD_NAME}">', w, count=1)
+    w = sdf.replace("model://kangwon/", f"model://{out_model.name}/")
+    w = re.sub(r'<world name="[^"]+">', f'<world name="{world_name}">', w, count=1)
     old_z = f"{float(re.search(r'<size>[^ ]+ [^ ]+ ([^<]+)</size>', sdf).group(1)):.2f}"
     w = re.sub(r"<size>([^ <]+) ([^ <]+) [^<]+</size>", rf"<size>\1 \2 {hm.sz:.2f}</size>", w)
     w = re.sub(r"(<pose>[^ ]+ [^ ]+ )[^ ]+( 0 0 0</pose>)", rf"\g<1>{hm.oz:.2f}\g<2>", w, count=1)   # collision pose
@@ -443,19 +655,20 @@ def build():
       <static>true</static>
       <link name="link">
         <collision name="collision">
-          <geometry><mesh><uri>model://kangwon_ugv/roads.obj</uri></mesh></geometry>
+          <geometry><mesh><uri>model://MODEL/COLL_OBJ</uri></mesh></geometry>
           <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
         </collision>
         <visual name="visual">
-          <geometry><mesh><uri>model://kangwon_ugv/roads.obj</uri></mesh></geometry>
+          <geometry><mesh><uri>model://MODEL/roads.obj</uri></mesh></geometry>
           <material><ambient>0.25 0.25 0.27 1</ambient><diffuse>0.33 0.33 0.35 1</diffuse>
                     <specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
 """
+    roads_model = roads_model.replace("MODEL", out_model.name).replace("COLL_OBJ", "roads.obj")
     w = w.replace("</world>", roads_model + "  </world>", 1)
-    OUT_SDF.write_text(w, encoding="utf-8")
+    out_sdf.write_text(w, encoding="utf-8")
 
     # 스폰: 거점 노드에서 나가는 가장 긴 도로를 따라 k × SPAWN_GAP_M 앞, 도로 면 위
     from ugv.config import RESOURCES
@@ -476,11 +689,16 @@ def build():
         spawn[res["resource_id"]] = {"x": round(float(p[0]), 1), "y": round(float(p[1]), 1),
                                      "z": round(float(p[2]) + SPAWN_Z_OFFSET_M, 2), "yaw": round(yaw, 3),
                                      "node": node}
-    net["spawn"] = spawn
-    net["world"] = {"sdf": str(OUT_SDF.relative_to(ROOT)), "name": WORLD_NAME,
-                    "datum": [DATUM_LAT, DATUM_LON, DATUM_ALT],
-                    "road_width_m": ROAD_WIDTH_M, "max_grade": MAX_GRADE}
-    NET.write_text(json.dumps(net, ensure_ascii=False, indent=1), encoding="utf-8")
+    if v2:      # 기본 월드(v1)의 world·spawn 은 그대로. 스폰은 도로 중심 높이라 v1 과 같아야 한다 — 확인만
+        sd = max(abs(spawn[k]["z"] - net["spawn"][k]["z"]) + abs(spawn[k]["x"] - net["spawn"][k]["x"])
+                 + abs(spawn[k]["y"] - net["spawn"][k]["y"]) for k in spawn)
+        print(f"스폰 (v1 과 차이 합 최대 {sd:.2f} m — 0 이면 road_network.json spawn 을 그대로 쓴다)")
+    else:
+        net["spawn"] = spawn
+        net["world"] = {"sdf": str(OUT_SDF.relative_to(ROOT)), "name": WORLD_NAME,
+                        "datum": [DATUM_LAT, DATUM_LON, DATUM_ALT],
+                        "road_width_m": ROAD_WIDTH_M, "max_grade": MAX_GRADE}
+        NET.write_text(json.dumps(net, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # 대표 경로의 최대 경사 (주행 가능 여부를 미리 본다)
     from ugv import graph_gpkg
@@ -494,12 +712,12 @@ def build():
         print(f"  경로 {a_}→{b_}: 최대 경사 {worst[0]*100:.1f}% (도로 {worst[1]})")
 
     g = np.array(grades)
-    print(f"도로 메시: {len(mesh.f)} 삼각형 (시각·충돌 공용) → {OUT_MODEL.relative_to(ROOT)}/roads.obj")
+    print(f"도로 메시: {len(mesh.f)} 삼각형 → {out_model.relative_to(ROOT)}/roads.obj")
     print(f"경사: 최대 {g.max()*100:.1f}%  >6% 구간 {(g > 0.06).sum()}/{len(g)}  >8% {(g > 0.0801).sum()}  >10% {(g > 0.10).sum()}"
           f"  (상한 불가로 선형 처리한 도로 {len(linear)}개)")
     print(f"지형이 도로 면을 뚫던 점: 깎기 전 {(before > -CARVE_CLEAR_M).sum()}/{len(pts)} → 후 "
           f"{(after > -CARVE_CLEAR_M + 0.01).sum()}  (낮춘 꼭짓점 {dz.size}개, 평균 {dz.mean():.1f} m, 최대 {dz.max():.1f} m)")
-    print(f"heightmap z 범위 {old_z} → {hm.sz:.2f} m, 바닥 {hm.oz:.2f}  → {OUT_SDF.relative_to(ROOT)}")
+    print(f"heightmap z 범위 {old_z} → {hm.sz:.2f} m, 바닥 {hm.oz:.2f}  → {out_sdf.relative_to(ROOT)}")
     for rid, p in spawn.items():
         print(f"  스폰 {rid}: ({p['x']}, {p['y']}, {p['z']}) yaw {p['yaw']}")
     if linear:
@@ -507,4 +725,5 @@ def build():
 
 
 if __name__ == "__main__":
-    build()
+    import sys
+    build(v2="--v2" in sys.argv[1:])

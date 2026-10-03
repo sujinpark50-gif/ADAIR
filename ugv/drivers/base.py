@@ -43,6 +43,10 @@ class MotionDriver(ABC):
         기본 구현(시뮬레이션)은 이상이 없다."""
         return None
 
+    def telemetry(self) -> dict:
+        """주행 기록용 부가 값: px4_time_s(시뮬레이션 시각, 없으면 None), speed_mps, heading_deg."""
+        return {}
+
     @abstractmethod
     def progress(self) -> tuple[int, int]:
         """(통과한 웨이포인트 수, 전체 웨이포인트 수)."""
