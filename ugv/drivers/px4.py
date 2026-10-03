@@ -11,7 +11,6 @@ from mavsdk_grpc import System
 from mavsdk_grpc.mission import MissionItem, MissionPlan
 
 from .. import config
-from ..geo import distance_m
 from .base import MotionDriver
 
 log = logging.getLogger(__name__)
@@ -45,13 +44,18 @@ class PX4Driver(MotionDriver):
         speed_mps: float = 3.0,
         alt_m: float = 2.0,
         time_scale: float = 1.0,
+        grpc_port: int = 50051,
     ):
         self.address = address
+        self.grpc_port = grpc_port
         self.time_scale = time_scale    # 하강 속도를 시뮬레이션 초 기준으로 바꿀 때 쓴다
         self.speed_mps = speed_mps
         self.alt_m = alt_m
         self.snapshot = Snapshot()
-        self._drone = System()
+        # 차량마다 자기 mavsdk_server(gRPC 포트)를 띄운다. 기본값(50051)을 같이 쓰면 두 번째 차의 서버가 포트를 못 잡고
+        # 첫 번째 차의 서버에 붙어, 소방차 명령이 UGV 로 갔다 (2026-10-03 WSL: 소방차는 arm 기록 없음, UGV 는 미션 두 번 시작 후
+        # 소방차의 OFF_ROUTE 처리(disarm)로 꺼짐). 포트는 ugv/fleet.py 가 PX4 인스턴스 번호로 정한다.
+        self._drone = System(port=grpc_port)
         self._tasks: list[asyncio.Task] = []
         self._progress_task: asyncio.Task | None = None
         self._progress = (0, 0)
@@ -59,7 +63,7 @@ class PX4Driver(MotionDriver):
     # --- 연결 / 텔레메트리 ---------------------------------------------
 
     async def connect(self) -> None:
-        log.info("PX4 연결 대기: %s (PX4 SITL 이 떠 있어야 한다)", self.address)
+        log.info("PX4 연결 대기: %s (PX4 SITL 이 떠 있어야 한다, mavsdk gRPC %d)", self.address, self.grpc_port)
         await self._drone.connect(system_address=self.address)
         async for state in self._drone.core.connection_state():
             if state.is_connected:

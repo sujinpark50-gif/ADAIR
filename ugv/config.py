@@ -40,6 +40,9 @@ AUTO_SUPPRESS = os.getenv("UGV_AUTO_SUPPRESS", "1") != "0"   # 소방차 도착 
 # 그쪽에서 ugv/tools/mavlink_relay.py 가 이 서버 호스트의 같은 포트로 넘겨준다 → 여기서는 0.0.0.0 으로 받는다.
 PX4_HOST = "0.0.0.0"
 PX4_BASE_PORT = 14540   # 인스턴스 0 = UAV. UGV 는 위 RESOURCES 의 px4_port 를 쓴다.
+# 차량별 mavsdk_server gRPC 포트 = 이 값 + px4_instance (50061~). 같은 포트를 쓰면 명령이 다른 차로 간다.
+# UAV 쪽 mavsdk 기본 포트(50051)와 겹치지 않게 띄워 둔다.
+MAVSDK_GRPC_BASE = int(os.getenv("UGV_MAVSDK_GRPC_BASE", "50060"))
 # UGV_DRIVER=px4 일 때 실제로 PX4 에 연결할 자원. 나머지는 sim.
 # 띄우지 않은 PX4 를 기다리면 서버가 시작되지 않으므로, 띄운 인스턴스만 적는다.
 PX4_RESOURCES = [r for r in os.getenv("UGV_PX4_RESOURCES", "A-ugv1").split(",") if r]

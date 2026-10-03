@@ -26,6 +26,7 @@ if [ "$1" = "--params" ]; then
     BUILD="${PX4_DIR:-$HOME/PX4-Autopilot}/build/px4_sitl_default"
     for i in $INSTANCES; do
         rm -f "$BUILD/rootfs/$i"/parameters*.bson "$BUILD/rootfs/$i"/dataman \
+              "$BUILD/rootfs/$i"/fs/parameters*.bson "$BUILD/rootfs/$i"/fs/dataman "$BUILD/rootfs/$i"/.ugv_airframe \
               "$BUILD/instance_$i"/fs/parameters*.bson "$BUILD/instance_$i"/fs/dataman 2>/dev/null
     done
     echo "UGV 인스턴스 $INSTANCES 파라미터·미션 초기화 완료"

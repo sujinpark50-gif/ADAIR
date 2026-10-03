@@ -46,6 +46,7 @@ class GroundFleet:
                 speed_mps=cfg.get("max_speed_mps", config.CRUISE_SPEED_MPS),
                 alt_m=config.MISSION_ALT_M,
                 time_scale=self.time_scale or 1.0,
+                grpc_port=config.MAVSDK_GRPC_BASE + cfg["px4_instance"],   # 차량마다 다른 mavsdk_server
             )
         if self.time_scale is None:     # 시연 도로망: 순간이동에 가까운 속도
             return SimDriver(start=(node.lat, node.lon), speed_mps=config.DEMO_SPEED_MPS)
