@@ -137,6 +137,8 @@ function renderForecast(f){const el=document.getElementById("forecast");
 const FIRE_KO={REPORTED:["신고됨 (확인 전)","warn"],CONFIRMED:["불 확인","fire"],CONFIRMED_BURNED:["탄 곳 확인","warn"],OBSERVED_CLEAR:["관측 결과 불 없음","clear"],NOT_DETECTED_PARTIAL:["본 범위에 불 없음 (칸 일부만 관측)","warn"]};
 const WX_STATUS={EXPIRED:"만료",POLICY_NOT_SET:"유효시간 미설정",OBSERVED_TIME_UNKNOWN:"관측시각 불명",VALUE_INVALID:"값 이상"};
 const wxVals=v=>`${v.wind_ms!=null?v.wind_ms+"m/s ":""}${v.wind_dir_deg!=null?v.wind_dir_deg+"° ":""}${v.temperature_c!=null?v.temperature_c+"℃ ":""}${v.humidity_pct!=null?"습도 "+v.humidity_pct+"%":""}`;
+const ENV_KO={FIXTURE:"시험용 가짜 환경 (팀 공유 환경 아님)",TEAM_API:"환경팀 공유 환경 서버",TEAM_ENV_IN_PROCESS:"환경팀 계약 환경 (총괄 안에서 실행 — 관제판과 시계 공유 안 됨)"};
+const ANALYSIS_KO={TEST_INJECTED:"시험 주입값 — 관측으로 계산한 예측 아님 (환경팀 분석 기능 대기)",ENV_BELIEF_ANALYSIS:"환경팀 분석 (총괄이 아는 정보로 계산)",ENV_ANALYSIS_UNAVAILABLE:"환경팀 분석 응답 없음"};
 const SRC_KO={"119_CALL":"119 신고",EXTERNAL_REPORT:"외부 신고",SIMULATED:"모의 관측",KMA_ASOS_HOURLY:"기상청 관측소(시간자료)",FIXTURE_STATION:"시험 관측소"};
 function clock(k,s){if(!k)return `${mins(s)} 경과`;const t=new Date(new Date(k).getTime()+s*1000);return t.toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"});}
 function renderKnown(k){const el=document.getElementById("known");if(!k){el.innerHTML="";return;}
@@ -146,7 +148,7 @@ function renderKnown(k){const el=document.getElementById("known");if(!k){el.inne
  const fx=(k.field_weather_excluded||[]).map(o=>`<div class="row"><span>${esc(o.cell_id)}</span><span>${(WX_LABEL[o.item]||[o.item])[0]} — ${WX_STATUS[o.status]||esc(o.status)} <small class="id">판단에 쓰지 않음</small></span></div>`).join("");
  const unset=((k.weather_policy||{}).field_policy_unset_items||[]).length;
  const fieldCard=`<div class="card"><div class="ctitle">현장 측정 (지금 유효한 값만)</div>${fw||'<p class="note">유효한 현장 측정이 없습니다.</p>'}${fx}${unset?'<p class="note">현장 측정 유효시간이 설정되지 않아 현장 측정값을 판단에 쓰지 않고 관측소 값을 씁니다.</p>':""}</div>`;
- el.innerHTML=`<p class="note">시나리오 시각: <b>${clock(k.scenario_start_kst,k.simulation_time_s)}</b> · 진짜 세계: 시험용 가짜 환경 (팀 공유 환경 아님) · 위험 칸·확산 예측: <b>${esc(k.analysis_source==="TEST_INJECTED"?"시험 주입값 — 관측으로 계산한 예측 아님 (환경팀 분석 기능 대기)":k.analysis_source||"없음")}</b></p>
+ el.innerHTML=`<p class="note">시나리오 시각: <b>${clock(k.scenario_start_kst,k.simulation_time_s)}</b> · 진짜 세계: <b>${esc(ENV_KO[k.env_source]||k.env_source||"알 수 없음")}</b> · 위험 칸·확산 예측: <b>${esc(ANALYSIS_KO[k.analysis_source]||k.analysis_source||"없음")}</b></p>
  <div class="cards"><div class="card"><div class="ctitle">알고 있는 불</div>${fires}</div><div class="card"><div class="ctitle">관측소 최신 관측 (그 시각까지)</div>${st}</div>${fieldCard}</div>${k.run_gate?`<p class="note"><b>주의:</b> 환경의 실행(run)이 바뀌었지만 이전 실행의 기체 점유가 남아 있어 판단을 보류 중입니다 (${esc(k.run_gate)}).</p>`:""}`;}
 const _load=load;load=async function(){await _load();const b=await (await fetch("/priority/board")).json();renderForecast(b.forecast);renderKnown(b.known);};
 load();setInterval(load,2000);
