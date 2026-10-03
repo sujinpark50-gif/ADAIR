@@ -662,8 +662,12 @@ class WildfireCAEngine:
             )
             return []
 
-        # Check if external caller explicitly updated self._config["wind"]
+        # Check if external caller explicitly updated self._config["wind"] or applied observation
         wind_cfg = self._config.get("wind", {})
+        is_observation = (
+            self._current_weather is not None
+            and self._current_weather.source in ("observation_update", "external_override")
+        )
         ext_speed = float(wind_cfg.get("speed_ms", self._current_weather.wind_speed_ms))
         prev_raw = (
             self._current_weather.raw_wind_direction_deg
@@ -672,7 +676,7 @@ class WildfireCAEngine:
         )
         ext_dir = float(wind_cfg.get("direction_deg", prev_raw))
 
-        externally_overridden = not (
+        externally_overridden = is_observation or not (
             math.isclose(ext_speed, self._current_weather.wind_speed_ms, abs_tol=1e-6)
             and math.isclose(ext_dir, prev_raw, abs_tol=1e-6)
         )
@@ -680,11 +684,16 @@ class WildfireCAEngine:
         if externally_overridden:
             conv = self._config.get("weather", {}).get("wind_direction_convention", "from")
             towards_dir = to_toward_direction(ext_dir, conv)
+            source = (
+                self._current_weather.source
+                if is_observation
+                else "external_override"
+            )
             self._current_weather = WeatherState(
                 wind_speed_ms=ext_speed,
                 wind_direction_deg=towards_dir,
                 humidity_percent=self._current_weather.humidity_percent,
-                source="external_override",
+                source=source,
                 raw_wind_direction_deg=ext_dir,
                 wind_direction_convention=conv,
             )
@@ -770,8 +779,8 @@ class WildfireCAEngine:
         self._simulation_time += self._timestep
         self._step_count += 1
 
-        # Synchronize active weather state for the new simulation time
-        if not self.simulation_finished:
+        # Synchronize active weather state for the new simulation time if not overridden
+        if not self.simulation_finished and not externally_overridden:
             self._current_weather = self._weather_provider.get_weather(
                 self._simulation_time, self._timestep
             )
