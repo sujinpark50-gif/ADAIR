@@ -69,7 +69,10 @@ source "$GZ_ENV"
 export GZ_SIM_RESOURCE_PATH="$LOG_DIR/models:$REPO/ugv/gazebo/models:$REPO/uav/gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"   # fire_truck, model://kangwon_ugv, model://kangwon
 # 월드 사본 (항상): 텍스처 자리표시(@UAV_TEX@ — 산불 파티클) → 절대 경로, 물리 스텝(STEP_MS),
 # 지형 충돌 끄기(TERRAIN_COLLISION=0). model:// 경로라 사본 위치가 달라도 된다
-OUT="$LOG_DIR/$WORLD_NAME${STEP_MS:+-step${STEP_MS}ms}$([ "${TERRAIN_COLLISION:-1}" = 0 ] && echo -noterrain).sdf"
+NOTERRAIN=""
+if [ "${TERRAIN_COLLISION:-1}" = "0" ]; then NOTERRAIN="-noterrain"; fi
+# (주의) set -e 에서 OUT="$( [ ... ] && echo ...)" 는 조건이 거짓일 때 스크립트가 조용히 끝난다 — if 로 쓴다
+OUT="$LOG_DIR/$WORLD_NAME${STEP_MS:+-step${STEP_MS}ms}$NOTERRAIN.sdf"
 python3 - "$WORLD_SDF" "$OUT" "${STEP_MS:-}" "${TERRAIN_COLLISION:-1}" "$REPO/uav/gazebo/models/kangwon/materials/textures" <<'PY'
 import re, sys
 src, out, step_ms, terrain, uav_tex = sys.argv[1:]
