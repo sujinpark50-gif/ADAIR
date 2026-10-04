@@ -87,9 +87,9 @@ V2_TAPER = _os.getenv("UGV_V2_TAPER", "0") == "1"      # 기본 끔: 넓힌 띠�
 V2_SHOULDER = _os.getenv("UGV_V2_SHOULDER", "1") == "1"
 JUNCTION_PAD_R = float(_os.getenv("UGV_V2_PAD_R", JUNCTION_PAD_R))
 V2_DRY = _os.getenv("UGV_V2_DRY", "0") == "1"
-# v2 산불 표시 — UAV 월드(uav/gazebo/add_fire.py)와 같은 자리·같은 배치(시드)·같은 텍스처. 파티클이라 GUI 에서만 보인다.
+# v2 산불 표시 — 자리는 CA 발화점(남전약수터), 배치(시드)·텍스처는 UAV 월드(uav/gazebo/add_fire.py)와 같다. 파티클이라 GUI 에서만 보인다.
 # 텍스처 경로는 @UAV_TEX@ 자리표시 — px4-start.sh 가 띄울 때 절대 경로로 바꾼다.
-FIRE_LAT, FIRE_LON = 38.0425, 128.2541
+FIRE_LAT, FIRE_LON = 38.0277, 128.1303   # 남전약수터 — 환경 2019 트윈 발화점(tools/inje2019_whatif.py NAMJEON_SPRING)과 같은 값
 FIRE_N, FIRE_R, SMOKE_N = 8, 300.0, 3
 RIBBON_STRIPS = int(_os.getenv("UGV_V2_STRIPS", RIBBON_STRIPS))
 COLLISION_STRIPS = int(_os.getenv("UGV_V2_COLL_STRIPS", COLLISION_STRIPS))

@@ -1,6 +1,6 @@
 # ugv/tools/build_road_network.py — 실제 도로망(gpkg) → UGV 그래프 JSON 변환 (개발용, 1회 실행)
 #
-# 입력: environment/data/processed/roads_reprojected.gpkg (도로 링크 756개, EPSG:5186, 환경 격자와 같은 좌표계)
+# 입력: data/inje2019/roads/roads_clipped_2019.gpkg (도로 링크 901개, 환경 2019 트윈과 같은 파일, EPSG:5186, 환경 격자와 같은 좌표계)
 #       uav/gazebo/kangwon.sdf + models/kangwon/heightmap.png (Gazebo 지형 — 스폰 높이 계산용)
 # 출력: ugv/data/road_network.json
 #       {"nodes": [...], "roads": [...], "bases": {...}, "spawn": {...}, "world": {...}}
@@ -26,6 +26,7 @@
 
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -42,9 +43,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from ugv.config import RESOURCES  # noqa: E402  (스폰 자세를 자원별로 뽑는다)
 
-SRC = ROOT / "environment/data/processed/roads_reprojected.gpkg"
+# 도로 원본: 환경 2019 트윈과 같은 파일 (901 링크, 2019 표준노드링크). 예전 756 링크로 돌리려면
+#   UGV_ROADS_SRC=environment/data/processed/roads_reprojected.gpkg UGV_ROADS_GRID=environment/data/processed/roads_raster.tif
+SRC = ROOT / os.getenv("UGV_ROADS_SRC", "data/inje2019/roads/roads_clipped_2019.gpkg")
 DST = ROOT / "ugv/data/road_network.json"
-GRID = ROOT / "environment/data/processed/roads_raster.tif"   # 환경 격자 기준 (화재 CA 와 같은 격자, 308x236, 90 m)
+GRID = ROOT / os.getenv("UGV_ROADS_GRID", "data/inje2019/roads/roads_raster_2019.tif")   # 환경 격자 기준 (화재 CA 와 같은 격자, 308x236, 90 m)
 WORLD_SDF = ROOT / "uav/gazebo/kangwon.sdf"
 HEIGHTMAP = ROOT / "uav/gazebo/models/kangwon/heightmap.png"
 CELL_SAMPLE_M = 30.0        # 선형을 이 간격으로 찍어 칸을 구한다 (격자 90 m)
