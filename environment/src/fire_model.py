@@ -328,8 +328,10 @@ class WildfireCAEngine:
 
         spread_map: Dict[int, float] = {}
         for cell in cells:
-            if cell.fire_state == FireState.UNBURNED and not (
-                self._roads_block_spread and cell.is_road
+            if (
+                cell.fire_state == FireState.UNBURNED
+                and not getattr(cell, "is_water", False)
+                and not (self._roads_block_spread and cell.is_road)
             ):
                 s_slope = (
                     min(1.0, max(0.0, cell.slope / max_slope_deg))
@@ -432,6 +434,7 @@ class WildfireCAEngine:
                             nid not in sim_burning
                             and nid not in sim_burned
                             and neighbor.fuel_amount > 0.0
+                            and not getattr(neighbor, "is_water", False)
                             and not (self._roads_block_spread and neighbor.is_road)
                         ):
                             candidate_sources.setdefault(nid, []).append(bc)
@@ -457,7 +460,7 @@ class WildfireCAEngine:
 
         spread_map: Dict[int, float] = {}
         for cell in self._grid.cells:
-            if cell.fire_state == FireState.UNBURNED:
+            if cell.fire_state == FireState.UNBURNED and not getattr(cell, "is_water", False):
                 p_burn = burn_occurrences.get(cell.cell_id, 0) / float(runs)
                 spread_map[cell.cell_id] = max(0.0, min(1.0, float(p_burn)))
             else:
@@ -491,9 +494,14 @@ class WildfireCAEngine:
         """Ignite cell at grid position (col *x*, row *y*).
 
         Transitions cell state from `UNBURNED` to `BURNING`.
+        Raises `ValueError` if cell is classified as water.
         Raises `IndexError` if coordinates are out of bounds.
         """
         cell = self._grid.get_cell(x, y)
+        if getattr(cell, "is_water", False):
+            raise ValueError(
+                f"Cannot ignite cell at ({x}, {y}) (cell_id={cell.cell_id}): cell is classified as water."
+            )
         cell.fire_state = FireState.BURNING
         self._burn_counters[cell.cell_id] = 0
         spread_scores = self.predict_spread()
@@ -504,9 +512,14 @@ class WildfireCAEngine:
         """Ignite cell with unique *cell_id*.
 
         Transitions cell state from `UNBURNED` to `BURNING`.
+        Raises `ValueError` if cell is classified as water.
         Raises `KeyError` if cell_id is not found.
         """
         cell = self._grid.get_cell_by_id(cell_id)
+        if getattr(cell, "is_water", False):
+            raise ValueError(
+                f"Cannot ignite cell {cell_id} at ({cell.x}, {cell.y}): cell is classified as water."
+            )
         cell.fire_state = FireState.BURNING
         self._burn_counters[cell.cell_id] = 0
         spread_scores = self.predict_spread()
@@ -534,17 +547,27 @@ class WildfireCAEngine:
             nodata / non-fuel pixel), snap the ignition to the nearest
             fuel-bearing cell within *snap_max_radius*. A fire cannot start or
             spread on a non-fuel cell, so this makes ignition robust to points
-            that land on water, roads, barren ground, or unclassified nodata.
+            that land on roads, barren ground, or unclassified nodata.
+            NOTE: If the point falls on a confirmed water cell, ignition is rejected
+            immediately and is NOT snapped to another cell.
         snap_max_radius : int, default 12
             Maximum search radius (in cells) used when *snap_to_fuel* is True.
 
         Raises
         ------
+        ValueError
+            If the resolved cell is classified as water (is_water == True).
         IndexError
             If the point lies outside the grid bounds.
         """
         row, col = self._grid.latlon_to_rowcol(lat, lon)
-        if snap_to_fuel and self._grid.get_cell(col, row).fuel_amount <= 0.0:
+        cell = self._grid.get_cell(col, row)
+        if getattr(cell, "is_water", False):
+            raise ValueError(
+                f"Ignition coordinate ({lat}, {lon}) resolved to cell (col={col}, row={row}, "
+                f"cell_id={cell.cell_id}) which is classified as water. Ignition rejected."
+            )
+        if snap_to_fuel and cell.fuel_amount <= 0.0:
             snapped = self._grid.nearest_fuel_rowcol(row, col, max_radius=snap_max_radius)
             if snapped is not None:
                 row, col = snapped
@@ -593,6 +616,10 @@ class WildfireCAEngine:
             direction vector (source -> target) with wind vector
         """
         if target.fuel_amount <= 0.0 or target.fire_state != FireState.UNBURNED:
+            return 0.0
+
+        # Confirmed water cells are physical non-burnable barriers: fire can never spread into them.
+        if getattr(target, "is_water", False):
             return 0.0
 
         # Roads are firebreaks: fire cannot spread into a road cell.
@@ -750,6 +777,7 @@ class WildfireCAEngine:
                 if (
                     neighbor.fire_state == FireState.UNBURNED
                     and neighbor.fuel_amount > 0.0
+                    and not getattr(neighbor, "is_water", False)
                     and not (getattr(self, "_roads_block_spread", False) and getattr(neighbor, "is_road", False))
                 ):
                     cid = neighbor.cell_id

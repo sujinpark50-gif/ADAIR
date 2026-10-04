@@ -12,6 +12,7 @@ raster_paths:
 #  fuel_path: "data/processed/fuel_type.tif"
 #  roads_path: "data/processed/roads_raster.tif"
   buildings_path: "data/processed/buildings_inje.tif"
+  water_path: "../data/inje2019/water/inje_2019_water_mask_5186.tif"
 
 # --- Grid spatial settings --------------------------------------------------
 # These values are derived from the actual raster metadata (EPSG:5186, 90 m).

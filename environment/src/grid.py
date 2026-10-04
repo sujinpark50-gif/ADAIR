@@ -131,6 +131,28 @@ def _read_fuel_raster(path: str | Path, nodata_strategy: str = "barrier") -> Tup
     return data, meta
 
 
+def _read_water_raster(path: str | Path) -> Tuple[np.ndarray, dict]:
+    """Read the categorical water-mask raster, preserving raw integer codes (0, 1, 255).
+
+    Raster values:
+      - 0: confirmed non-water within historical water-mask coverage
+      - 1: confirmed water
+      - 255: NoData / outside historical water-mask coverage (unknown)
+
+    Note: Value 255 must NOT be converted to 0 or 1; only value 1 is water.
+    """
+    with rasterio.open(path) as ds:
+        raw = ds.read(1)
+        meta = {
+            "shape": raw.shape,
+            "crs": ds.crs,
+            "transform": ds.transform,
+            "bounds": ds.bounds,
+            "resolution": (abs(ds.transform.a), abs(ds.transform.e)),
+        }
+    return raw, meta
+
+
 class EnvironmentGrid:
     """2D spatial grid of :class:`Cell` objects backed by GIS rasters.
 
@@ -205,7 +227,17 @@ class EnvironmentGrid:
             self._buildings = None
             buildings_meta = None
 
-        # --- validate raster alignment (shape, CRS, transform) -------------------
+        # Water mask raster is optional / configurable (water_path or water_mask_path).
+        water_path = raster_cfg.get("water_path") or raster_cfg.get("water_mask_path")
+        if water_path:
+            self._water_mask, water_meta = _read_water_raster(
+                self._project_root / water_path
+            )
+        else:
+            self._water_mask = None
+            water_meta = None
+
+        # --- validate raster alignment (shape, CRS, transform, resolution, extent) ---
         metas = {
             "dem": dem_meta,
             "slope": slope_meta,
@@ -215,8 +247,10 @@ class EnvironmentGrid:
         }
         if buildings_meta is not None:
             metas["buildings"] = buildings_meta
+        if water_meta is not None:
+            metas["water"] = water_meta
 
-        # 1. Shape validation
+        # 1. Shape validation (width and height)
         shapes = {name: meta["shape"] for name, meta in metas.items()}
         if len(set(shapes.values())) != 1:
             raise ValueError(
@@ -251,6 +285,26 @@ class EnvironmentGrid:
                 raise ValueError(
                     f"Raster transform mismatch in '{name}': {t} vs {first_transform}"
                 )
+
+        # 4. Resolution validation
+        resolutions = {name: meta["resolution"] for name, meta in metas.items() if "resolution" in meta}
+        if resolutions:
+            first_res = list(resolutions.values())[0]
+            for name, res in resolutions.items():
+                if not np.allclose(res, first_res):
+                    raise ValueError(
+                        f"Raster resolution mismatch in '{name}': {res} vs {first_res}"
+                    )
+
+        # 5. Extent / bounds validation
+        bounds_dict = {name: meta["bounds"] for name, meta in metas.items() if "bounds" in meta}
+        if bounds_dict:
+            first_bounds = list(bounds_dict.values())[0]
+            for name, b in bounds_dict.items():
+                if not np.allclose(list(b), list(first_bounds)):
+                    raise ValueError(
+                        f"Raster bounds mismatch in '{name}': {b} vs {first_bounds}"
+                    )
 
         self._rows, self._cols = self._dem.shape
 
@@ -293,6 +347,7 @@ class EnvironmentGrid:
     def _build_grid(self) -> None:
         """Populate ``self._grid`` with Cell objects from raster data."""
         has_buildings = self._buildings is not None
+        has_water = self._water_mask is not None
         cell_id = 0
         for row in range(self._rows):
             row_cells: List[Cell] = []
@@ -301,6 +356,8 @@ class EnvironmentGrid:
                 fa = self._fuel_type_to_amount.get(ft, self._default_fuel_amount)
                 bt = int(self._buildings[row, col]) if has_buildings else 0
                 is_road = bool(self._roads[row, col] > 0.0)  # roads_raster: 1 = road, 0 = none
+                # ONLY raster value 1 is water; 0 is non-water; 255 is NoData/unknown (is_water=False)
+                is_water = bool(self._water_mask[row, col] == 1) if has_water else False
 
                 cell = Cell(
                     cell_id=cell_id,
@@ -315,6 +372,7 @@ class EnvironmentGrid:
                     fire_state=FireState.UNBURNED,
                     risk_score=0.0,
                     is_road=is_road,
+                    is_water=is_water,
                 )
                 row_cells.append(cell)
                 self._id_map[cell_id] = cell
@@ -353,6 +411,11 @@ class EnvironmentGrid:
     def bounds(self) -> Tuple[float, float, float, float]:
         """Bounding box (left, bottom, right, top)."""
         return self._bounds
+
+    @property
+    def water_mask(self) -> Optional[np.ndarray]:
+        """Raw water mask raster array, if loaded."""
+        return self._water_mask
 
     @property
     def cell_resolution(self) -> float:
@@ -466,7 +529,7 @@ class EnvironmentGrid:
             such cell exists within *max_radius*.
         """
         if 0 <= row < self._rows and 0 <= col < self._cols:
-            if self._grid[row][col].fuel_amount > 0.0:
+            if self._grid[row][col].fuel_amount > 0.0 and not getattr(self._grid[row][col], "is_water", False):
                 return (row, col)
 
         for radius in range(1, max_radius + 1):
@@ -479,7 +542,7 @@ class EnvironmentGrid:
                     # only cells on the current ring boundary are new this radius
                     if max(abs(rr - row), abs(cc - col)) != radius:
                         continue
-                    if self._grid[rr][cc].fuel_amount > 0.0:
+                    if self._grid[rr][cc].fuel_amount > 0.0 and not getattr(self._grid[rr][cc], "is_water", False):
                         d2 = (rr - row) ** 2 + (cc - col) ** 2
                         if d2 < best_d2:
                             best_d2, best = d2, (rr, cc)
