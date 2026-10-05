@@ -93,6 +93,9 @@ class RoadGraph:
         except KeyError:
             raise KeyError(f"존재하지 않는 road_id: {road_id}") from None
 
+    def roads(self) -> list[Road]:
+        return list(self._roads.values())
+
     def neighbors(self, node_id: str) -> list[tuple[str, Road]]:
         return self._adj[node_id]
 

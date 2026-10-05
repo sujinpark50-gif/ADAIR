@@ -176,7 +176,9 @@ class GroundResourceAgent:
         if distance_m(here, (node.lat, node.lon)) <= MIDROAD_M:
             return []
         best = None
-        for _, road in self.graph.neighbors(node.node_id):
+        # 가장 가까운 노드에 닿은 도로만 보면 안 된다 — 노드는 직선거리로 가까운 다른 도로의 것일 수 있다
+        # (FIRE7, 2026-10-05: 차는 682502604 위, 가장 가까운 노드 494882 는 그 도로의 끝이 아님)
+        for road in self.graph.roads():
             if road.blocked:
                 continue
             pts = self.graph.legs([road.node_a, road.node_b], self.max_speed_mps)[0]["points"]
