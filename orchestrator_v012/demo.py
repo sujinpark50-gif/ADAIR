@@ -72,23 +72,7 @@ def mock_servers(log_dir):
         http.close()
 
 
-async def wait_uav_landed(uav, timeout=120):
-    """앞 시나리오 UAV가 착륙할 때까지 기다린다. 복귀 중에는 BUSY로 거절한다(UAV-06)."""
-    deadline = time.monotonic() + timeout
-    for rid, url in uav.endpoints.items():
-        while True:
-            response = uav.http.get(f'{url}/uav/{rid}/state', timeout=5)
-            response.raise_for_status()
-            state = response.json()
-            if not state.get('current_task_id') and not state.get('returning_task_id'):
-                break
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f'{rid} 착륙 대기 시간초과')
-            await asyncio.sleep(.2)
-
-
 async def scenario(name, uav, environment, output_dir):
-    await wait_uav_landed(uav)
     # 시연 입력: Raster 내부 지정 셀과 기존 도로망 F1을 명시적으로 제공한다.
     # (37,2)는 fuel_amount=0인 통신/경로 검증용 강제 발화이며 산불 재현 사례가 아니다.
     x, y = (19, 142) if name == 'distant' else (37, 2)
