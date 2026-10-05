@@ -227,6 +227,9 @@ class PX4Driver(MotionDriver):
         try:
             await self._drone.mission.upload_mission(plan)
             log.info("미션 업로드 성공 (%d 개)", len(waypoints))
+            # PX4 는 이전 미션의 진행 번호를 dataman 에 남겨 새 미션도 그 번호부터 시작할 수 있다
+            # (FIRE4, 2026-10-05: FIRE3 가 멈춘 26 번부터 시작 → 도로를 벗어나 26 번 점으로 직진). 0 번으로 되돌린다.
+            await self._drone.mission.set_current_mission_item(0)
             try:    # 첫 구간 속도. 실패해도 미션은 기본 순항속도로 간다
                 await self._drone.action.set_current_speed(self._first_speed)
             except Exception as e:
