@@ -31,9 +31,13 @@ class ConnectedTests(unittest.TestCase):
                         self.assertLess(events.index('EXECUTION'), events.index('OBSERVATION'))
                         self.assertIn('ENVIRONMENT_UPDATE', events)
                         if name == 'moderate':
-                            self.assertEqual(local[0]['result'], 'COUNTER')
-                            self.assertEqual(local[0]['reason'], 'MODERATE_WIND')
-                            self.assertTrue(any(r['reason']=='V012_MODERATE_WIND_ACCEPTED' for r in records))
+                            # UAV-02 이후 주의 풍속은 ACCEPT + constraints.warnings로 오고, 이전 UAV는 COUNTER로 온다.
+                            if local[0]['result'] == 'COUNTER':
+                                self.assertEqual(local[0]['reason'], 'MODERATE_WIND')
+                                self.assertTrue(any(r['reason']=='V012_MODERATE_WIND_ACCEPTED' for r in records))
+                            else:
+                                self.assertEqual(local[0]['result'], 'ACCEPT')
+                                self.assertIn('MODERATE_WIND', local[0]['detail']['raw']['counter_constraint']['warnings'])
                     elif name in ('strong','uav_rejected'):
                         self.assertEqual(result['status'], 'ARRIVED_OBSERVATION_PENDING')
                         self.assertEqual(result['environment_version_after'], result['environment_version_before'])
