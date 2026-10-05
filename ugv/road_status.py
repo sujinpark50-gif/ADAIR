@@ -1,13 +1,14 @@
-# ugv/road_status.py — 외부 사정(화재·혼잡)을 도로 그래프 상태로 반영
+# ugv/road_status.py — 도로 환경(차단·혼잡) 상태
 #
-# 환경은 "어디가 타는가"(화재 셀)만 알고, 도로 통행 가능 여부는 모른다.
-# 통행 가능 여부는 차량 기준 판단이므로 UGV 가 여기서 해석한다.
+# 도로 환경은 UGV 쪽 것이다. 환경 모듈(화재 CA)과 별개이며, 화재는 도로를 막지 않는다 (팀 결정).
+# 도로 환경을 바꾸는 길은 셋이다. 차단은 출처별로 따로 기록하고, 출처가 하나라도 있으면 막힌다.
+#   scenario : 시나리오 파일의 시간대 (ugv/scenario.py) — 기본
+#   manual   : API 로 직접 (도로·노드 하나씩)
+#   cells    : API 로 격자 칸 묶음을 넘겨 그 칸을 지나는 도로를 한꺼번에 차단 (구역 통제용)
+#              — 예전 '화재 셀 → 도로 차단' 기능을 이름만 바꿔 남긴 것
+# 노드 차단 = 그 노드에 닿은 도로 전부 차단 (출처 태그 "<출처>-node:<노드id>" 로 도로 차단과 구분).
 #
-# 화재 → 차단 규칙: 도로가 지나는 칸, 또는 그 8방향 이웃 칸이 BURNING 이면 그 도로는 차단.
-#   이웃까지 보는 이유: 환경 CA 에서 도로 칸은 대부분 연료 0 이라 직접 타지 않는다
-#   (도로 칸 2,297개 중 1,634개). 옆 칸이 타면 실제로도 통행이 불가능하다.
-#
-# 혼잡: 환경에 혼잡 정보가 없으므로 시나리오용으로 직접 준다 (고정값 또는 시드 고정 랜덤).
+# 혼잡은 도로별 통과시간 배율(1.0 = 정상). 시나리오가 건드린 도로만 시나리오가 되돌린다.
 
 import random
 
@@ -18,25 +19,63 @@ class RoadStatus:
     def __init__(self, graph: RoadGraph, road_cells: dict[str, list[list[int]]]):
         self.graph = graph
         self.road_cells = road_cells
-        self._fire_blocked: set[str] = set()     # 화재로 막은 도로 (다음 갱신 때 해제 대상)
-        self.burning_cells = 0
+        self._cell_blocked: set[str] = set()     # 칸 묶음으로 막은 도로 (다음 호출 때 교체)
+        self._by: dict[str, set[str]] = {}       # road_id → 차단 출처 태그
+        self.closed_cells = 0
 
-    # --- 화재 ---------------------------------------------------------------
+    # --- 차단 (출처별) ------------------------------------------------------
 
-    def apply_fire(self, burning: list[tuple[int, int]]) -> dict:
-        """현재 화재 셀 전체(스냅샷)를 받아 차단 상태를 다시 계산한다. 이전 화재 차단은 해제한다."""
-        hot = {(x + dx, y + dy) for x, y in burning for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
-        now = {rid for rid, cells in self.road_cells.items() if any((x, y) in hot for x, y in cells)}
+    def set_blocked(self, road_id: str, blocked: bool, source: str) -> None:
+        self.graph.get_road(road_id)             # 없는 도로면 KeyError
+        srcs = self._by.setdefault(road_id, set())
+        (srcs.add if blocked else srcs.discard)(source)
+        self.graph.set_blocked(road_id, bool(srcs))
 
-        for rid in self._fire_blocked - now:
-            self.graph.set_blocked(rid, False)
-        for rid in now - self._fire_blocked:
-            self.graph.set_blocked(rid, True)
+    def incident_roads(self, node_id: str) -> list[str]:
+        self.graph.node(node_id)                 # 없는 노드면 KeyError
+        return sorted({road.road_id for _, road in self.graph.neighbors(node_id)})
 
-        added, cleared = sorted(now - self._fire_blocked), sorted(self._fire_blocked - now)
-        self._fire_blocked, self.burning_cells = now, len(burning)
-        return {"burning_cells": len(burning), "blocked_roads": len(now),
-                "newly_blocked": added, "cleared": cleared}
+    def set_node_blocked(self, node_id: str, blocked: bool, source: str) -> list[str]:
+        """노드를 경유 불가로. 닿은 도로를 모두 막는다. 막은/푼 도로 id 를 돌려준다."""
+        roads = self.incident_roads(node_id)
+        for rid in roads:
+            self.set_blocked(rid, blocked, f"{source}-node:{node_id}")
+        return roads
+
+    def clear_source(self, prefix: str) -> None:
+        """출처 태그가 prefix 로 시작하는 차단을 모두 푼다 ("scenario" 면 scenario-node:* 도 포함)."""
+        for rid, srcs in list(self._by.items()):
+            for s in [s for s in srcs if s == prefix or s.startswith(prefix + "-")]:
+                self.set_blocked(rid, False, s)
+
+    def blocked_by(self) -> dict[str, list[str]]:
+        return {rid: sorted(srcs) for rid, srcs in sorted(self._by.items()) if srcs}
+
+    def blocked_nodes(self) -> dict[str, list[str]]:
+        """경유 불가 노드 → 출처."""
+        out: dict[str, set[str]] = {}
+        for srcs in self._by.values():
+            for s in srcs:
+                if "-node:" in s:
+                    src, nid = s.split("-node:", 1)
+                    out.setdefault(nid, set()).add(src)
+        return {n: sorted(v) for n, v in sorted(out.items())}
+
+    # --- 구역(격자 칸) 차단 ---------------------------------------------------
+
+    def apply_cells(self, cells: list[tuple[int, int]], margin: int = 1) -> dict:
+        """격자 칸 묶음(스냅샷)을 받아 그 칸(과 margin 칸 이웃)을 지나는 도로를 막는다.
+        이전 호출로 막은 도로는 풀고 새로 계산한다. 빈 목록이면 전부 해제."""
+        near = {(x + dx, y + dy) for x, y in cells
+                for dx in range(-margin, margin + 1) for dy in range(-margin, margin + 1)}
+        now = {rid for rid, rc in self.road_cells.items() if any((x, y) in near for x, y in rc)}
+        for rid in self._cell_blocked - now:
+            self.set_blocked(rid, False, "cells")
+        for rid in now - self._cell_blocked:
+            self.set_blocked(rid, True, "cells")
+        added, cleared = sorted(now - self._cell_blocked), sorted(self._cell_blocked - now)
+        self._cell_blocked, self.closed_cells = now, len(cells)
+        return {"cells": len(cells), "blocked_roads": len(now), "newly_blocked": added, "cleared": cleared}
 
     # --- 혼잡 ---------------------------------------------------------------
 
