@@ -65,14 +65,34 @@ class UavState(BaseModel):
     wind_ms: Optional[float] = None   # 실연동 시 PX4 가 풍속을 주지 않아 None
     link_quality: str
     current_task_id: Optional[str] = None
+    returning_task_id: Optional[str] = None   # 관측을 마치고 복귀 중인 Task (UAV-06)
+
+
+Measurement = str   # "THERMAL" | "RGB" | "WEATHER". 지원 여부는 evaluator 가 본다 (모르면 REJECT)
+
+_OBSERVE_FIELD = Field(
+    default=None, ge=config.OBSERVE_DURATION_MIN_S, le=config.OBSERVE_DURATION_MAX_S,
+    description="관측 체류시간(s). 없으면 config.OBSERVE_DURATION_S. "
+                "RETURN_MARGIN_INSUFFICIENT COUNTER 가 제안한 값을 그대로 실어 재평가·실행한다 (UAV-02)",
+)
+_MEASUREMENTS_FIELD = Field(
+    default=None, min_length=1,
+    description='한 방문에서 할 측정 목록. 예) ["THERMAL","WEATHER"]. 결과도 측정별로 돌려준다 (UAV-07). '
+                "observation_type 도 주면 둘을 합친다. 둘 다 없으면 이동만 평가·수행한다",
+)
 
 
 class EvaluateRequest(BaseModel):
     task_id: str
     decision_id: str
     target: Target
-    observation_type: str = "THERMAL"
-    deadline: Optional[str] = None
+    # 없으면 이동 가능성만 평가한다 (기상 전용 임무 — 측정은 총괄 모의 센서, UAV-07 ②)
+    observation_type: Optional[str] = None
+    measurements: Optional[list[Measurement]] = _MEASUREMENTS_FIELD
+    observe_duration_s: Optional[int] = _OBSERVE_FIELD
+    # 기한: 남은 시뮬레이션 시간(s). 실제 시계(UTC)와 비교하지 않는다 (UAV-04). 이전 deadline(ISO 문자열)은 받지 않는다
+    remaining_time_s: Optional[float] = Field(
+        default=None, description="기한까지 남은 시뮬레이션 시간(s). eta_sec 보다 작으면 REJECT")
     # 풍속 주입. PX4 는 풍속을 발행하지 않으므로(실측 확인) 외부 제공이 유일한 출처다.
     # 팀 스키마의 EnvironmentState.wind_speed (m/s) 값을 그대로 실어 보내면 된다.
     # 미지정 시 REJECT / WIND_UNKNOWN. (NOTE.md 6-4)
@@ -90,16 +110,29 @@ class EvaluateResponse(BaseModel):
     eta_sec: Optional[int] = None
     reason: Optional[str] = None
     detail: Optional[str] = None
-    counter_offer: Optional[dict] = None
+    counter_offer: Optional[dict] = None   # 재평가 요청에 그대로 실을 수 있는 필드만 담는다 (UAV-02)
     constraints: dict = {}
+    # ACCEPT 일 때만. 실행 요청에 같은 route_id·route_hash 를 실으면 평가한 경로 그대로 난다 (UAV-03)
+    route_id: Optional[str] = None
+    route_version: Optional[str] = None
+    route_hash: Optional[str] = None
+    route: Optional[dict] = None           # 순항고도·경유점·지형 확인 결과
 
 
 class ExecuteRequest(BaseModel):
     task_id: str                # 실행 키 (총괄은 실행시도 ID 를 넣는다). 같은 키 = 같은 실행
     decision_id: str
     target: Target
-    observation_type: str = "THERMAL"
+    observation_type: Optional[str] = None
+    measurements: Optional[list[Measurement]] = _MEASUREMENTS_FIELD
+    observe_duration_s: Optional[int] = _OBSERVE_FIELD
     execution_attempt_id: Optional[str] = None   # 주면 task_id 와 같아야 한다 (UAV-01 ① 명시용)
+    route_id: Optional[str] = None     # 평가 응답의 값. 주면 그 경로로만 실행한다 (UAV-03)
+    route_hash: Optional[str] = None
+
+
+class AbortRequest(BaseModel):
+    reason: Optional[str] = None
 
 
 class ExecuteResponse(BaseModel):
@@ -108,14 +141,33 @@ class ExecuteResponse(BaseModel):
     tracking_url: str
     uav_id: Optional[str] = None
     duplicate: bool = False     # 같은 키·같은 내용 재요청이면 True (새로 출동하지 않음)
+    route_id: Optional[str] = None
+    route_hash: Optional[str] = None
 
 
 class TaskStatus(BaseModel):
+    """실행 상태.
+
+    status 와 mission_result 는 같은 규칙이다 (UAV-10):
+      COMPLETED ⇔ mission_result=OBSERVED     관측(도착+체류)을 마쳤다. 이후 복귀에 실패해도 COMPLETED 와
+                                              관측(observation_id·내용·시각)은 바뀌지 않는다
+      FAILED    ⇔ mission_result=NOT_OBSERVED 관측 전에 끝났다. observation 은 비어 있다
+      STARTED·IN_PROGRESS ⇔ PENDING
+    물리 진행은 physical_state 로 따로 본다: PREPARING → ENROUTE → OBSERVING → RETURNING → LANDED,
+    실패·불명은 RETURN_FAILED / RETASKED / UNKNOWN (+ physical_failure_reason).
+    progress.phase 는 기존 값 그대로 둔다 (LANDED = phase DONE).
+    """
     task_id: str
     uav_id: Optional[str] = None   # UAV-01 ④
     status: Literal["STARTED", "IN_PROGRESS", "COMPLETED", "FAILED"]
     progress: Optional[dict] = None
     observation: Optional[dict] = None
-    reason: Optional[str] = None   # FAILED 사유 코드 (예: RETURN_MARGIN_INSUFFICIENT)
+    reason: Optional[str] = None   # FAILED 사유 코드 (예: RETURN_MARGIN_INSUFFICIENT, ABORTED)
     error: Optional[str] = None
     agent_restart: Optional[dict] = None   # 재시작으로 끊긴 실행이면 근거 (physical_basis)
+    mission_result: Optional[Literal["OBSERVED", "NOT_OBSERVED", "PENDING"]] = None   # UAV-10
+    physical_state: Optional[str] = None
+    physical_failure_reason: Optional[str] = None
+    abort: Optional[dict] = None           # 중단 요청을 받았으면 그 기록 (UAV-09)
+    route_id: Optional[str] = None
+    route_hash: Optional[str] = None

@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from .equipment import Equipment
+
 
 @dataclass
 class GroundResource:
@@ -19,3 +21,4 @@ class GroundResource:
     current_node: str | None = None       # 노드에 정지 중일 때
     current_road_id: str | None = None    # 주행 중일 때
     road_progress: float = 0.0            # 0.0~1.0
+    equipment: Equipment | None = None    # 물탱크·적재·경광등·작업 (ugv/equipment.py)

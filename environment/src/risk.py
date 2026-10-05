@@ -23,7 +23,16 @@ It does NOT compute fire propagation physics, wind vectors, slope gradients, or 
 spread hazard scores (S_spread ∈ [0, 1]) are computed externally by the fire spread prediction layer
 (e.g., WildfireCAEngine.predict_spread_geometric or predict_spread_ensemble).
 
-Top-Level Composite Risk Score (risk_score ∈ [0, 1] for UNBURNED cells):
+Top-Level Composite Risk Score (risk_score ∈ [min_risk, max_risk]):
+1) BURNING cells (Active fire with exposure scaling):
+    risk_score = B + (max_risk - B) * E
+    where B = burning_risk_floor (from config, default 0.70)
+    and E = (W_human * S_human + W_infra * S_infra + W_property * S_property + W_secondary * S_secondary) / Σ W_exposure
+
+2) BURNED cells:
+    risk_score = burned_risk (from config, default 0.20)
+
+3) UNBURNED cells (WLC Composite Risk):
     risk_score = W_spread * S_spread
                + W_human * S_human
                + W_infra * S_infra
@@ -147,12 +156,12 @@ def calculate_risk_scores(
         config = getattr(grid, "_config", {})
 
     cfg = config.get("risk_scoring", {})
-    burning_risk = float(cfg.get("burning_cell_risk", 1.0))
+    burning_risk_floor = float(cfg.get("burning_risk_floor", cfg.get("burning_cell_risk", 0.70)))
     burned_risk = float(cfg.get("burned_cell_risk", 0.2))
     min_risk = float(cfg.get("min_risk_score", 0.0))
     max_risk = float(cfg.get("max_risk_score", 1.0))
 
-    # Top-Level Composite Risk Weights (normalized so sum(W_i) = 1.0)
+    # Top-Level Composite Risk Weights
     comp_weights_cfg = cfg.get("composite_weights")
     if comp_weights_cfg and isinstance(comp_weights_cfg, dict):
         raw_W_spread = float(comp_weights_cfg.get("spread", 1.0))
@@ -185,6 +194,14 @@ def calculate_risk_scores(
         W_spread = 1.0
         W_human = W_infra = W_property = W_secondary = 0.0
 
+    # Total exposure weight for re-normalization in active BURNING cells
+    raw_W_exposure_total = (
+        raw_W_human
+        + raw_W_infra
+        + raw_W_property
+        + raw_W_secondary
+    )
+
     # Building type → exposure value mapping
     building_cfg = cfg.get("building_risk_values", {})
 
@@ -193,7 +210,24 @@ def calculate_risk_scores(
 
     for cell in cells:
         if cell.fire_state == FireState.BURNING:
-            score = burning_risk
+            # Compute exposure components S_i ∈ [0, 1] for cell asset type
+            s_human, s_infra, s_property, s_secondary = _compute_building_risk_components(
+                cell.building_type, building_cfg
+            )
+
+            # Re-normalized exposure score E ∈ [0, 1] among exposure criteria
+            if raw_W_exposure_total > 0.0:
+                exposure_score = (
+                    raw_W_human * s_human
+                    + raw_W_infra * s_infra
+                    + raw_W_property * s_property
+                    + raw_W_secondary * s_secondary
+                ) / raw_W_exposure_total
+            else:
+                exposure_score = 0.0
+
+            # Active fire risk formula: Risk_burning = B + (max_risk - B) * E
+            score = burning_risk_floor + (max_risk - burning_risk_floor) * exposure_score
         elif cell.fire_state == FireState.BURNED:
             score = burned_risk
         else:

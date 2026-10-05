@@ -137,7 +137,7 @@ def get_ugv_observation(resource_id: str, sim_time_s: float, task_id: str = None
 def demo() -> list[str]:
     """Dijkstra + 도로차단 재탐색을 실제 도로망에서 보여준다. 로그 라인 리스트 반환.
 
-    거점 A(원통119) → B(기린119) 최단경로 위 도로를 하나씩 막아 보고
+    거점 A(인제119) → B(기린119) 최단경로 위 도로를 하나씩 막아 보고
     ① 우회로가 있는 도로  ② 막히면 도달 불가인 도로(산간 단일 도로) 를 하나씩 보여준다.
     """
     g = _g()

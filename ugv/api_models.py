@@ -25,6 +25,15 @@ class UgvState(BaseModel):
     driver_status: str                 # SimDriver: IDLE/MISSION/ARRIVED, PX4: flight mode
     updated_at: float                  # 마지막 텔레메트리 반영 시각 (epoch s, 0 이면 미수신)
     fault: str | None = None           # state=UNAVAILABLE 일 때 이상 내용 'CODE: 설명'. /stop 으로 해제
+    current_road_id: str | None = None # 주행 중 지금 달리는 도로
+    sim_time_s: float | None = None    # 응답 시점 시뮬레이션 초 (ugv/sim_clock.py)
+    activity: str | None = None        # IDLE | LOADING | SUPPRESSING | UNLOADING (state=WORKING 이면 도착 뒤 작업 중)
+    equipment: dict | None = None      # 물탱크·펌프·적재·경광등 (ugv/equipment.py Equipment.to_dict)
+
+
+class CargoSpec(BaseModel):
+    name: str                          # 예: "구호물자", "호스 릴"
+    kg: float
 
 
 class EvaluateRequest(BaseModel):
@@ -32,6 +41,8 @@ class EvaluateRequest(BaseModel):
     decision_id: str
     target: LatLon | None = None       # 화재 좌표 (권장). 반경 안 도로 노드 중 도달 가능한 가장 가까운 곳으로 판단
     target_node: str | None = None     # 도로 노드 id 를 이미 알 때 (target 대신)
+    cargo: CargoSpec | None = None     # 실을 짐 (UGV). 적재 한도를 넘으면 REJECT
+    via_node: str | None = None        # 짐 싣는 곳(도로 노드). 없으면 지금 자리에서 싣고 출발
 
 
 class TargetNode(BaseModel):
@@ -46,7 +57,7 @@ class EvaluateResponse(BaseModel):
     decision_id: str
     resource_id: str
     verdict: Literal["ACCEPT", "REJECT"]
-    eta_sec: int | None                # ACCEPT 일 때만 값이 있다
+    eta_sec: int | None                # ACCEPT 일 때만 값이 있다. 시뮬레이션 초, 차량 최고속도·도로 제한속도·혼잡 반영
     reason: str | None                 # REJECT: BUSY / ROAD_BLOCKED / TARGET_UNREACHABLE
     detail: str | None
     target_node: TargetNode | None     # 실제로 향할 도로 노드 (스냅 실패 시 None)
@@ -58,6 +69,8 @@ class ExecuteRequest(BaseModel):
     decision_id: str
     target: LatLon | None = None       # 화재 좌표 (권장, UAV 와 같은 방식). evaluate 와 같은 규칙으로 목적지를 고른다
     target_node: str | None = None     # 도로 노드 id 를 직접 지정할 때 (target 대신)
+    cargo: CargoSpec | None = None     # evaluate 와 같다
+    via_node: str | None = None
 
 
 class ExecuteResponse(BaseModel):
@@ -76,19 +89,30 @@ class TaskStatus(BaseModel):
     resource_id: str
     status: Literal["STARTED", "IN_PROGRESS", "COMPLETED", "FAILED", "CANCELLED"]
     target_node: str
-    progress: dict | None              # {"phase": "ENROUTE", "waypoint": i, "total": n}
+    progress: dict | None              # {"phase": "ENROUTE", "waypoint": i, "total": n, "remaining_m", "eta_remaining_sec", "current_road_id", "sim_time_s"}
     observation: dict | None           # 도착 시 ROAD_STATUS 관측. 화재 관측이 아니다
     error: str | None = None
+    reroutes: list[dict] | None = None # 주행 중 차단으로 경로를 바꾼 기록 {sim_time_s, result, blocked_road_id, eta_s}
     agent_restart: dict | None = None  # 서버 재시작으로 끊긴 실행이면 근거
+    cargo: dict | None = None          # {"name", "kg", "via_node", "loaded_sim_s", "unloaded_sim_s"}
+    work: dict | None = None           # 도착 뒤 작업 {"activity": SUPPRESSING|UNLOADING, "status": ACTIVE|DONE|EMPTY|STOPPED, ...}
+    timing: dict | None = None         # 주행 시각 요약: 시작·끝(벽시계/서버 시뮬/PX4), eta_sec, 경과, 실제 배속, 실제/ETA
+    drive_log: str | None = None       # 정밀 주행 기록 CSV 경로 (ugv/drive_log.py)
 
 
-class FireCell(BaseModel):
-    x: int                             # 환경 격자 열 (get_fire_locations 의 x)
-    y: int                             # 환경 격자 행 (get_fire_locations 의 y)
+class SuppressRequest(BaseModel):
+    action: Literal["start", "stop"]
+    task_id: str | None = None         # start 때 기록에 남길 task (선택)
 
 
-class FireCellsRequest(BaseModel):
-    cells: list[FireCell]              # 현재 BURNING 셀 전체 (스냅샷). get_fire_locations() 결과를 그대로 넣어도 된다
+class GridCell(BaseModel):
+    x: int                             # 환경 격자 열 (308 칸, 90 m)
+    y: int                             # 환경 격자 행 (236 칸)
+
+
+class CellsRequest(BaseModel):
+    cells: list[GridCell]              # 통제할 칸 전체 (스냅샷). 빈 목록이면 구역 통제 전부 해제
+    margin: int = 1                    # 이웃 칸까지 몇 칸 더 볼지 (1 = 8방향 이웃 포함)
 
 
 class CongestionRequest(BaseModel):
@@ -98,3 +122,11 @@ class CongestionRequest(BaseModel):
     min_factor: float = 1.5            # random: 통과시간 배율 범위
     max_factor: float = 3.0
     roads: dict[str, float] | None = None   # 특정 도로 배율 직접 지정 (preset 적용 후 덮어씀)
+
+
+class BlockRequest(BaseModel):
+    blocked: bool = True
+
+
+class EnvClockRequest(BaseModel):
+    sim_step: int                      # 환경 CA 스텝 번호 (EnvironmentState.sim_step)

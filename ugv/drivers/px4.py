@@ -11,15 +11,15 @@ from mavsdk_grpc import System
 from mavsdk_grpc.mission import MissionItem, MissionPlan
 
 from .. import config
-from ..geo import distance_m
 from .base import MotionDriver
 
 log = logging.getLogger(__name__)
 
 TELEMETRY_RATE_HZ = 1.0
 ARM_SETTLE_S = 2.0   # arm 직후 곧바로 start_mission 하면 DENIED
-ACCEPT_RADIUS_M = 10.0                  # 웨이포인트 도착 반경. 2m 는 지나쳐 버린다
-MIN_WAYPOINT_GAP_M = 2 * ACCEPT_RADIUS_M
+ACCEPT_RADIUS_M = 4.0                   # 웨이포인트 도착 반경. 10 m 면 통과형 웨이포인트에서 코너를 크게 질러 도로 밖으로 나간다 (2026-10-03). 2 m 는 지나쳐 버린다
+# 웨이포인트 간격(2 × 도착 반경)은 ugv/route_plan.py 가 맞춰서 넘긴다. 여기서 다시 솎으면
+# 진행률 번호가 경로 계획과 어긋나므로 드라이버는 받은 그대로 올린다.
 
 
 @dataclass
@@ -29,8 +29,12 @@ class Snapshot:
     battery_pct: float = float("nan")   # MAVSDK remaining_percent 원값 그대로
     flight_mode: str = "UNKNOWN"
     armed: bool = False
-    rel_alt_m: float = 0.0              # 홈 기준 상대고도. 지상차량은 0 근처여야 한다
+    rel_alt_m: float = 0.0              # 홈 기준 상대고도. 지형 월드에서는 도로를 따라 수백 m 바뀐다
     updated_at: float = 0.0             # 마지막 위치 수신 시각 (monotonic)
+    descent_mps: float = 0.0            # 최근 하강 속도 (시뮬레이션 초당 m, 양수 = 내려감). 추락 판정용
+    px4_time_s: float | None = None     # PX4 부팅 후 시각 (IMU 타임스탬프). SITL lockstep 이라 = Gazebo 시뮬레이션 시간
+    speed_mps: float = float("nan")     # 지면 속도 (북·동 성분)
+    heading_deg: float = float("nan")
 
 
 class PX4Driver(MotionDriver):
@@ -39,12 +43,19 @@ class PX4Driver(MotionDriver):
         address: str = "udpin://0.0.0.0:14540",
         speed_mps: float = 3.0,
         alt_m: float = 2.0,
+        time_scale: float = 1.0,
+        grpc_port: int = 50051,
     ):
         self.address = address
+        self.grpc_port = grpc_port
+        self.time_scale = time_scale    # 하강 속도를 시뮬레이션 초 기준으로 바꿀 때 쓴다
         self.speed_mps = speed_mps
         self.alt_m = alt_m
         self.snapshot = Snapshot()
-        self._drone = System()
+        # 차량마다 자기 mavsdk_server(gRPC 포트)를 띄운다. 기본값(50051)을 같이 쓰면 두 번째 차의 서버가 포트를 못 잡고
+        # 첫 번째 차의 서버에 붙어, 소방차 명령이 UGV 로 갔다 (2026-10-03 WSL: 소방차는 arm 기록 없음, UGV 는 미션 두 번 시작 후
+        # 소방차의 OFF_ROUTE 처리(disarm)로 꺼짐). 포트는 ugv/fleet.py 가 PX4 인스턴스 번호로 정한다.
+        self._drone = System(port=grpc_port)
         self._tasks: list[asyncio.Task] = []
         self._progress_task: asyncio.Task | None = None
         self._progress = (0, 0)
@@ -52,7 +63,7 @@ class PX4Driver(MotionDriver):
     # --- 연결 / 텔레메트리 ---------------------------------------------
 
     async def connect(self) -> None:
-        log.info("PX4 연결 대기: %s (PX4 SITL 이 떠 있어야 한다)", self.address)
+        log.info("PX4 연결 대기: %s (PX4 SITL 이 떠 있어야 한다, mavsdk gRPC %d)", self.address, self.grpc_port)
         await self._drone.connect(system_address=self.address)
         async for state in self._drone.core.connection_state():
             if state.is_connected:
@@ -75,7 +86,7 @@ class PX4Driver(MotionDriver):
             except Exception as e:
                 log.warning("param %s 설정 실패: %s", name, e)
 
-        for name in ("set_rate_position", "set_rate_battery"):
+        for name in ("set_rate_position", "set_rate_battery", "set_rate_imu", "set_rate_velocity_ned"):
             try:
                 await getattr(self._drone.telemetry, name)(TELEMETRY_RATE_HZ)
             except Exception as e:
@@ -86,15 +97,22 @@ class PX4Driver(MotionDriver):
             asyncio.create_task(self._watch_battery()),
             asyncio.create_task(self._watch_flight_mode()),
             asyncio.create_task(self._watch_armed()),
+            asyncio.create_task(self._watch_imu_time()),
+            asyncio.create_task(self._watch_velocity()),
+            asyncio.create_task(self._watch_heading()),
         ]
 
     async def _watch_position(self) -> None:
         try:
             async for p in self._drone.telemetry.position():
-                self.snapshot.lat = p.latitude_deg
-                self.snapshot.lon = p.longitude_deg
-                self.snapshot.rel_alt_m = p.relative_altitude_m
-                self.snapshot.updated_at = time.monotonic()
+                now, s = time.monotonic(), self.snapshot
+                if s.updated_at and now > s.updated_at:
+                    wall = now - s.updated_at
+                    s.descent_mps = (s.rel_alt_m - p.relative_altitude_m) / (wall * self.time_scale)
+                s.lat = p.latitude_deg
+                s.lon = p.longitude_deg
+                s.rel_alt_m = p.relative_altitude_m
+                s.updated_at = now
         except Exception:
             log.exception("position 구독 종료")
 
@@ -111,6 +129,33 @@ class PX4Driver(MotionDriver):
                 self.snapshot.flight_mode = str(m)
         except Exception:
             log.exception("flight_mode 구독 종료")
+
+    async def _watch_imu_time(self) -> None:
+        """IMU 타임스탬프 = PX4 시각. lockstep SITL 에서는 Gazebo 시뮬레이션 시간과 같아 실제 배속을 잴 수 있다."""
+        try:
+            async for imu in self._drone.telemetry.imu():
+                if imu.timestamp_us:
+                    self.snapshot.px4_time_s = imu.timestamp_us / 1e6
+        except Exception:
+            log.exception("imu 구독 종료")
+
+    async def _watch_velocity(self) -> None:
+        try:
+            async for v in self._drone.telemetry.velocity_ned():
+                self.snapshot.speed_mps = (v.north_m_s ** 2 + v.east_m_s ** 2) ** 0.5
+        except Exception:
+            log.exception("velocity 구독 종료")
+
+    async def _watch_heading(self) -> None:
+        try:
+            async for h in self._drone.telemetry.heading():
+                self.snapshot.heading_deg = h.heading_deg
+        except Exception:
+            log.exception("heading 구독 종료")
+
+    def telemetry(self) -> dict:
+        s = self.snapshot
+        return {"px4_time_s": s.px4_time_s, "speed_mps": s.speed_mps, "heading_deg": s.heading_deg}
 
     async def _watch_armed(self) -> None:
         try:
@@ -147,8 +192,8 @@ class PX4Driver(MotionDriver):
         s, (cur, total) = self.snapshot, self._progress
         if s.updated_at and time.monotonic() - s.updated_at > config.STALE_AFTER_S:
             return f"TELEMETRY_LOST: 위치 수신 {time.monotonic() - s.updated_at:.0f}초 없음"
-        if s.rel_alt_m < config.FALL_ALT_M:
-            return f"VEHICLE_FAULT: 상대고도 {s.rel_alt_m:.1f} m (추락)"
+        if s.descent_mps > config.FALL_RATE_MPS:
+            return f"VEHICLE_FAULT: 초당 {s.descent_mps:.1f} m 하강 (추락, 상대고도 {s.rel_alt_m:.0f} m)"
         if total and cur < total:
             if not s.armed:
                 return "VEHICLE_FAULT: 미션 중 disarm"
@@ -156,7 +201,9 @@ class PX4Driver(MotionDriver):
                 return f"VEHICLE_FAULT: 미션 중 모드 이탈 ({s.flight_mode})"
         return None
 
-    async def goto(self, waypoints: list[tuple[float, float]]) -> bool:
+    async def goto(self, waypoints: list[tuple[float, float]],
+                   speeds: list[float] | None = None) -> bool:
+        """주행 중 다시 부르면 새 미션으로 바꾼다 (경로 재탐색). 미션은 처음 항목부터 시작한다."""
         if not waypoints:
             return False
 
@@ -165,12 +212,28 @@ class PX4Driver(MotionDriver):
             self._progress_task = None
         self._progress = (0, len(waypoints))
 
-        waypoints = self._thin(waypoints)
-        self._progress = (0, len(waypoints))
-        plan = MissionPlan([self._waypoint(lat, lon) for lat, lon in waypoints])
+        # MAVSDK 는 항목 i 의 속도를 항목 i 에 도착한 뒤(DO_CHANGE_SPEED)부터 적용한다.
+        # speeds[i] 는 'i 로 가는 구간' 속도이므로 항목 i 에는 speeds[i+1](다음 구간)을 싣고,
+        # 첫 구간 속도는 기본 순항속도(self.speed_mps)를 그 구간 속도로 바꿔 쓴다.
+        speeds = list(speeds) if speeds else [self.speed_mps] * len(waypoints)
+        nxt = speeds[1:] + speeds[-1:]
+        self._first_speed = speeds[0]
+        # 중간 웨이포인트는 통과형(is_fly_through=True): 멈추지 않고 지나가며 다음 점으로 꺾는다.
+        # 멈춤형이면 점마다 정지 → 제자리 회전을 하는데, 경사진 지형에서 회전을 못 끝내 멈춘 채로
+        # 남는 일이 있었다 (2026-10-02 WSL 시험, 61° 꺾임·경사 7.5° 지점에서 STALLED). 마지막 점만 멈춤형.
+        last = len(waypoints) - 1
+        plan = MissionPlan([self._waypoint(lat, lon, v, fly_through=(i < last))
+                            for i, ((lat, lon), v) in enumerate(zip(waypoints, nxt))])
         try:
             await self._drone.mission.upload_mission(plan)
             log.info("미션 업로드 성공 (%d 개)", len(waypoints))
+            # PX4 는 이전 미션의 진행 번호를 dataman 에 남겨 새 미션도 그 번호부터 시작할 수 있다
+            # (FIRE4, 2026-10-05: FIRE3 가 멈춘 26 번부터 시작 → 도로를 벗어나 26 번 점으로 직진). 0 번으로 되돌린다.
+            await self._drone.mission.set_current_mission_item(0)
+            try:    # 첫 구간 속도. 실패해도 미션은 기본 순항속도로 간다
+                await self._drone.action.set_current_speed(self._first_speed)
+            except Exception as e:
+                log.warning("set_current_speed 실패: %s", e)
             await self._drone.action.arm()
             log.info("arm 성공")
             await asyncio.sleep(ARM_SETTLE_S)
@@ -197,27 +260,13 @@ class PX4Driver(MotionDriver):
             except Exception as e:
                 log.warning("stop: %s 실패: %s", name, e)
 
-    @staticmethod
-    def _thin(waypoints: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        """직전 점과 MIN_WAYPOINT_GAP_M 보다 가까운 중간점을 뺀다. 마지막 점은 항상 남긴다.
-        도로망 교차로 노드는 수 m 간격으로 몰려 있어, 도착 반경(ACCEPT_RADIUS_M) 안에
-        다음 점이 들어가 있으면 rover 가 점을 건너뛰거나 도착 판정이 꼬인다."""
-        kept = [waypoints[0]]
-        for p in waypoints[1:-1]:
-            if distance_m(kept[-1], p) >= MIN_WAYPOINT_GAP_M:
-                kept.append(p)
-        if len(waypoints) > 1:
-            if distance_m(kept[-1], waypoints[-1]) < MIN_WAYPOINT_GAP_M and len(kept) > 1:
-                kept.pop()
-            kept.append(waypoints[-1])
-        return kept
-
-    def _waypoint(self, lat: float, lon: float) -> MissionItem:
+    def _waypoint(self, lat: float, lon: float, speed_mps: float | None = None,
+                  fly_through: bool = False) -> MissionItem:
         nan = float("nan")
         return MissionItem(
             lat, lon, self.alt_m,
-            self.speed_mps,
-            False,                 # is_fly_through
+            speed_mps or self.speed_mps,
+            fly_through,           # is_fly_through — True 면 이 점에서 멈추지 않는다
             nan, nan,
             MissionItem.CameraAction.NONE,
             nan, nan,
