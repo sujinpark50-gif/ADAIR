@@ -15,18 +15,28 @@ AUTHORITY & SPECIFICATION COMPLIANCE:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+import logging
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, Union, TYPE_CHECKING
 
 import numpy as np
 import yaml
 
 from src.cell import Cell, FireState
 from src.risk import update_grid_risk_scores
+from src.weather import (
+    WeatherProvider,
+    WeatherState,
+    create_weather_provider,
+    to_toward_direction,
+)
 
 if TYPE_CHECKING:
     from src.grid import EnvironmentGrid
+
+logger = logging.getLogger(__name__)
 
 
 def _load_config(config_input: Union[str, Path, dict]) -> dict:
@@ -38,11 +48,18 @@ def _load_config(config_input: Union[str, Path, dict]) -> dict:
         return yaml.safe_load(fh)
 
 
-def _compute_wind_vector(config: dict) -> Tuple[float, float]:
-    """Return wind direction unit vector in grid coordinates."""
-    wind_cfg = config.get("wind", {})
-    wind_deg = float(wind_cfg.get("direction_deg", 270.0))
-    towards_deg = (wind_deg + 180.0) % 360.0
+def _compute_wind_vector(
+    config: dict, weather: Optional[WeatherState] = None
+) -> Tuple[float, float]:
+    """Return wind direction unit vector in grid coordinates (pointing TOWARD spread direction)."""
+    if weather is not None:
+        towards_deg = float(weather.wind_direction_deg)
+    else:
+        wind_cfg = config.get("wind", {})
+        raw_deg = float(wind_cfg.get("direction_deg", 270.0))
+        conv = config.get("weather", {}).get("wind_direction_convention", "from")
+        towards_deg = to_toward_direction(raw_deg, conv)
+
     towards_rad = math.radians(towards_deg)
     wind_dx = math.sin(towards_rad)
     wind_dy = -math.cos(towards_rad)
@@ -124,13 +141,47 @@ class WildfireCAEngine:
         self._grid: EnvironmentGrid = grid
         self._config: dict = _load_config(config_path)
 
-        # Establish random seed from argument or grid property
+        # Establish random seed from argument, grid property, or config
         effective_seed: Optional[int] = seed if seed is not None else grid.seed
+        if effective_seed is None:
+            cfg_seed = (
+                self._config.get("simulation", {}).get("random_seed")
+                if isinstance(self._config.get("simulation"), dict)
+                else None
+            )
+            if cfg_seed is None and isinstance(self._config.get("simulation"), dict):
+                cfg_seed = self._config.get("simulation", {}).get("seed")
+            if cfg_seed is None:
+                cfg_seed = self._config.get("random_seed", self._config.get("seed"))
+            effective_seed = int(cfg_seed) if cfg_seed is not None else None
+
         self._seed: Optional[int] = effective_seed
         self._rng: np.random.Generator = np.random.default_rng(effective_seed)
 
         # Track steps spent in BURNING state for each burning cell
         self._burn_counters: Dict[int, int] = {}
+
+        # Simulation clock configuration
+        sim_cfg = self._config.get("simulation", {})
+        start_time_str = sim_cfg.get("start_time", "2019-04-04T14:45:00")
+        end_time_str = sim_cfg.get("end_time", "2019-04-06T12:05:00")
+        timestep_min = float(sim_cfg.get("timestep_minutes", 10.0))
+
+        self._start_time: datetime = datetime.fromisoformat(str(start_time_str))
+        self._end_time: datetime = datetime.fromisoformat(str(end_time_str))
+        self._timestep: timedelta = timedelta(minutes=timestep_min)
+        self._simulation_time: datetime = self._start_time
+        self._step_count: int = 0
+
+        # Initialize WeatherProvider and active weather state
+        base_dir = getattr(grid, "_project_root", None)
+        self._weather_provider: WeatherProvider = create_weather_provider(
+            self._config, base_dir=base_dir
+        )
+        self._current_weather: WeatherState = self._weather_provider.get_weather(
+            self._simulation_time, self._timestep
+        )
+        self._sync_config_weather()
 
         # Load CA parameters from config (no hardcoded scientific constants)
         ca_cfg = self._config.get("fire_ca", {})
@@ -140,10 +191,23 @@ class WildfireCAEngine:
         self._wind_weight: float = float(ca_cfg.get("wind_factor_weight", 0.1))
         self._moisture_weight: float = float(ca_cfg.get("moisture_dampening_weight", 1.0))
         self._neighbor_mode: str = str(ca_cfg.get("neighbor_mode", "8-neighbor"))
+        # Roads act as a firebreak: when enabled, fire cannot spread into a road
+        # cell, so it cannot cross a road. See config fire_ca.roads_block_spread.
+        self._roads_block_spread: bool = bool(ca_cfg.get("roads_block_spread", True))
 
         # Initialize risk scores across the grid using selected spread mode
         spread_scores = self.predict_spread()
         update_grid_risk_scores(self._grid, self._config, spread_scores=spread_scores)
+
+    def _sync_config_weather(self) -> None:
+        """Synchronize active weather parameters into self._config['wind'] for backward compatibility."""
+        wind_cfg = self._config.setdefault("wind", {})
+        wind_cfg["speed_ms"] = self._current_weather.wind_speed_ms
+        wind_cfg["direction_deg"] = (
+            self._current_weather.raw_wind_direction_deg
+            if self._current_weather.raw_wind_direction_deg is not None
+            else self._current_weather.wind_direction_deg
+        )
 
     @property
     def grid(self) -> EnvironmentGrid:
@@ -154,6 +218,76 @@ class WildfireCAEngine:
     def seed(self) -> Optional[int]:
         """Return the simulation random seed."""
         return self._seed
+
+    @property
+    def start_time(self) -> datetime:
+        """Return the configured simulation start time."""
+        return self._start_time
+
+    @property
+    def end_time(self) -> datetime:
+        """Return the configured simulation end time."""
+        return self._end_time
+
+    @property
+    def current_simulation_time(self) -> datetime:
+        """Return current physical simulation datetime."""
+        return self._simulation_time
+
+    @property
+    def simulation_time(self) -> datetime:
+        """Alias for current_simulation_time."""
+        return self._simulation_time
+
+    @property
+    def timestep(self) -> timedelta:
+        """Return duration of a single simulation timestep."""
+        return self._timestep
+
+    @property
+    def timestep_minutes(self) -> float:
+        """Return timestep duration in minutes."""
+        return self._timestep.total_seconds() / 60.0
+
+    @property
+    def step_count(self) -> int:
+        """Return the number of simulation steps completed."""
+        return self._step_count
+
+    @property
+    def simulation_step(self) -> int:
+        """Alias for step_count."""
+        return self._step_count
+
+    @property
+    def weather_provider(self) -> WeatherProvider:
+        """Return active weather provider instance."""
+        return self._weather_provider
+
+    @property
+    def current_weather(self) -> WeatherState:
+        """Return the current active weather state."""
+        return self._current_weather
+
+    @property
+    def simulation_finished(self) -> bool:
+        """True if current simulation start time exceeds configured end time."""
+        return self._simulation_time > self._end_time
+
+    def get_weather_diagnostics(self) -> Dict[str, Any]:
+        """Return diagnostic metadata regarding current simulation time and active weather state."""
+        return {
+            "step": self._step_count,
+            "simulation_time": self._simulation_time.isoformat(),
+            "weather_mode": self._config.get("weather", {}).get("mode", "fixed"),
+            "wind_direction_convention": self._current_weather.wind_direction_convention,
+            "raw_wind_direction_deg": self._current_weather.raw_wind_direction_deg,
+            "effective_toward_direction_deg": self._current_weather.wind_direction_deg,
+            "wind_speed_ms": self._current_weather.wind_speed_ms,
+            "wind_direction_deg": self._current_weather.wind_direction_deg,
+            "humidity_percent": self._current_weather.humidity_percent,
+            "weather_source": self._current_weather.source,
+        }
 
     def predict_spread_geometric(self) -> Dict[int, float]:
         """Calculate baseline spatial spread hazard score (S_spread ∈ [0, 1]) for all cells.
@@ -181,7 +315,7 @@ class WildfireCAEngine:
 
         cells = self._grid.cells
         burning_cells = [c for c in cells if c.fire_state == FireState.BURNING]
-        wind_dx, wind_dy = _compute_wind_vector(self._config)
+        wind_dx, wind_dy = _compute_wind_vector(self._config, weather=self._current_weather)
 
         downwind_coords = _collect_downwind_cells(
             grid=self._grid,
@@ -194,7 +328,11 @@ class WildfireCAEngine:
 
         spread_map: Dict[int, float] = {}
         for cell in cells:
-            if cell.fire_state == FireState.UNBURNED:
+            if (
+                cell.fire_state == FireState.UNBURNED
+                and not getattr(cell, "is_water", False)
+                and not (self._roads_block_spread and cell.is_road)
+            ):
                 s_slope = (
                     min(1.0, max(0.0, cell.slope / max_slope_deg))
                     if max_slope_deg > 0
@@ -222,7 +360,8 @@ class WildfireCAEngine:
 
         NON-MUTATING GUARANTEE:
         This prediction executes forward simulations on an isolated state copy.
-        The live grid, cell fire_states, burn counters, and main RNG are left untouched.
+        The live grid, cell fire_states, burn counters, main RNG, and simulation clock
+        are left completely untouched.
 
         Parameters
         ----------
@@ -246,6 +385,14 @@ class WildfireCAEngine:
         # Base seed for ensemble execution
         base_seed = seed if seed is not None else (self._seed if self._seed is not None else 42)
 
+        # Pre-retrieve forecast weather for each future horizon step without mutating live state
+        forecast_weathers = [
+            self._weather_provider.get_weather(
+                self._simulation_time + k * self._timestep, self._timestep
+            )
+            for k in range(steps)
+        ]
+
         # Track how many runs each unburned cell caught fire
         burn_occurrences: Dict[int, int] = {}
 
@@ -263,9 +410,11 @@ class WildfireCAEngine:
             sim_counters = dict(init_counters)
             ever_ignited: Set[int] = set()
 
-            for _ in range(steps):
+            for step_idx in range(steps):
                 if not sim_burning:
                     break  # No active flames left in this run
+
+                step_weather = forecast_weathers[step_idx]
 
                 # 1. Age burning cells
                 for cid in list(sim_burning):
@@ -281,7 +430,13 @@ class WildfireCAEngine:
                     neighbors = self._grid.get_neighbors(bc.x, bc.y, mode=self._neighbor_mode)  # type: ignore
                     for neighbor in neighbors:
                         nid = neighbor.cell_id
-                        if nid not in sim_burning and nid not in sim_burned and neighbor.fuel_amount > 0.0:
+                        if (
+                            nid not in sim_burning
+                            and nid not in sim_burned
+                            and neighbor.fuel_amount > 0.0
+                            and not getattr(neighbor, "is_water", False)
+                            and not (self._roads_block_spread and neighbor.is_road)
+                        ):
                             candidate_sources.setdefault(nid, []).append(bc)
 
                 # 3. Evaluate combined probability and roll RNG
@@ -289,7 +444,9 @@ class WildfireCAEngine:
                     target = self._grid.get_cell_by_id(nid)
                     prob_not = 1.0
                     for src in candidate_sources[nid]:
-                        p_spread = self._calculate_spread_probability(src, target)
+                        p_spread = self._calculate_spread_probability(
+                            src, target, weather=step_weather
+                        )
                         prob_not *= (1.0 - p_spread)
 
                     p_comb = 1.0 - prob_not
@@ -303,7 +460,7 @@ class WildfireCAEngine:
 
         spread_map: Dict[int, float] = {}
         for cell in self._grid.cells:
-            if cell.fire_state == FireState.UNBURNED:
+            if cell.fire_state == FireState.UNBURNED and not getattr(cell, "is_water", False):
                 p_burn = burn_occurrences.get(cell.cell_id, 0) / float(runs)
                 spread_map[cell.cell_id] = max(0.0, min(1.0, float(p_burn)))
             else:
@@ -337,9 +494,14 @@ class WildfireCAEngine:
         """Ignite cell at grid position (col *x*, row *y*).
 
         Transitions cell state from `UNBURNED` to `BURNING`.
+        Raises `ValueError` if cell is classified as water.
         Raises `IndexError` if coordinates are out of bounds.
         """
         cell = self._grid.get_cell(x, y)
+        if getattr(cell, "is_water", False):
+            raise ValueError(
+                f"Cannot ignite cell at ({x}, {y}) (cell_id={cell.cell_id}): cell is classified as water."
+            )
         cell.fire_state = FireState.BURNING
         self._burn_counters[cell.cell_id] = 0
         spread_scores = self.predict_spread()
@@ -350,16 +512,100 @@ class WildfireCAEngine:
         """Ignite cell with unique *cell_id*.
 
         Transitions cell state from `UNBURNED` to `BURNING`.
+        Raises `ValueError` if cell is classified as water.
         Raises `KeyError` if cell_id is not found.
         """
         cell = self._grid.get_cell_by_id(cell_id)
+        if getattr(cell, "is_water", False):
+            raise ValueError(
+                f"Cannot ignite cell {cell_id} at ({cell.x}, {cell.y}): cell is classified as water."
+            )
         cell.fire_state = FireState.BURNING
         self._burn_counters[cell.cell_id] = 0
         spread_scores = self.predict_spread()
         update_grid_risk_scores(self._grid, self._config, spread_scores=spread_scores)
         return cell
 
-    def _calculate_spread_probability(self, source: Cell, target: Cell) -> float:
+    def ignite_at_latlon(
+        self,
+        lat: float,
+        lon: float,
+        snap_to_fuel: bool = False,
+        snap_max_radius: int = 12,
+    ) -> Cell:
+        """Ignite the grid cell containing geographic point (*lat*, *lon*) in WGS84.
+
+        Converts the lat/lon ignition point to grid row/col via the grid CRS
+        (:meth:`EnvironmentGrid.latlon_to_rowcol`) and ignites that cell.
+
+        Parameters
+        ----------
+        lat, lon : float
+            Ignition point in WGS84 decimal degrees.
+        snap_to_fuel : bool, default False
+            If True and the target cell has no fuel (``fuel_amount == 0``, e.g. a
+            nodata / non-fuel pixel), snap the ignition to the nearest
+            fuel-bearing cell within *snap_max_radius*. A fire cannot start or
+            spread on a non-fuel cell, so this makes ignition robust to points
+            that land on roads, barren ground, or unclassified nodata.
+            NOTE: If the point falls on a confirmed water cell, ignition is rejected
+            immediately and is NOT snapped to another cell.
+        snap_max_radius : int, default 12
+            Maximum search radius (in cells) used when *snap_to_fuel* is True.
+
+        Raises
+        ------
+        ValueError
+            If the resolved cell is classified as water (is_water == True).
+        IndexError
+            If the point lies outside the grid bounds.
+        """
+        row, col = self._grid.latlon_to_rowcol(lat, lon)
+        cell = self._grid.get_cell(col, row)
+        if getattr(cell, "is_water", False):
+            raise ValueError(
+                f"Ignition coordinate ({lat}, {lon}) resolved to cell (col={col}, row={row}, "
+                f"cell_id={cell.cell_id}) which is classified as water. Ignition rejected."
+            )
+        if snap_to_fuel and cell.fuel_amount <= 0.0:
+            snapped = self._grid.nearest_fuel_rowcol(row, col, max_radius=snap_max_radius)
+            if snapped is not None:
+                row, col = snapped
+        # ignite_at takes (x=col, y=row)
+        return self.ignite_at(col, row)
+
+    def ignite_from_config(self) -> Cell:
+        """Ignite the cell at the ignition point defined in config (``ignition.lat/lon``).
+
+        Reads ``ignition.lat`` and ``ignition.lon`` from the configuration and
+        ignites the corresponding grid cell. Honours the optional ignition keys:
+
+        * ``ignition.snap_to_fuel`` (bool, default True) — snap to the nearest
+          fuel-bearing cell when the ignition point lands on a non-fuel/nodata cell.
+        * ``ignition.snap_max_radius`` (int, default 12) — snap search radius.
+
+        Raises
+        ------
+        KeyError
+            If ``ignition.lat`` or ``ignition.lon`` is missing from the config.
+        IndexError
+            If the ignition point lies outside the grid bounds.
+        """
+        ign_cfg = self._config.get("ignition", {})
+        if "lat" not in ign_cfg or "lon" not in ign_cfg:
+            raise KeyError(
+                "Config is missing 'ignition.lat' / 'ignition.lon' for ignition point."
+            )
+        return self.ignite_at_latlon(
+            float(ign_cfg["lat"]),
+            float(ign_cfg["lon"]),
+            snap_to_fuel=bool(ign_cfg.get("snap_to_fuel", True)),
+            snap_max_radius=int(ign_cfg.get("snap_max_radius", 12)),
+        )
+
+    def _calculate_spread_probability(
+        self, source: Cell, target: Cell, weather: Optional[WeatherState] = None
+    ) -> float:
         """Calculate fire spread probability from *source* (BURNING) to *target* (UNBURNED).
 
         Modifiers:
@@ -370,6 +616,15 @@ class WildfireCAEngine:
             direction vector (source -> target) with wind vector
         """
         if target.fuel_amount <= 0.0 or target.fire_state != FireState.UNBURNED:
+            return 0.0
+
+        # Confirmed water cells are physical non-burnable barriers: fire can never spread into them.
+        if getattr(target, "is_water", False):
+            return 0.0
+
+        # Roads are firebreaks: fire cannot spread into a road cell.
+        roads_block = getattr(self, "_roads_block_spread", False)
+        if roads_block and getattr(target, "is_road", False):
             return 0.0
 
         fuel_factor = target.fuel_amount
@@ -384,11 +639,21 @@ class WildfireCAEngine:
         gradient = (dz / cell_dist_m) if cell_dist_m > 0 else 0.0
         slope_factor = math.exp(self._slope_weight * gradient)
 
-        wind_cfg = self._config.get("wind", {})
-        wind_speed = float(wind_cfg.get("speed_ms", 0.0))
-        wind_deg = float(wind_cfg.get("direction_deg", 270.0))
+        if weather is not None:
+            wind_speed = float(weather.wind_speed_ms)
+            towards_deg = float(weather.wind_direction_deg)
+        else:
+            wind_cfg = self._config.get("wind", {})
+            curr_w = getattr(self, "_current_weather", None)
+            curr_speed = curr_w.wind_speed_ms if curr_w is not None else 0.0
+            wind_speed = float(wind_cfg.get("speed_ms", curr_speed))
+            if curr_w is not None and "direction_deg" not in wind_cfg:
+                towards_deg = float(curr_w.wind_direction_deg)
+            else:
+                wind_deg = float(wind_cfg.get("direction_deg", 270.0))
+                conv = self._config.get("weather", {}).get("wind_direction_convention", "from")
+                towards_deg = to_toward_direction(wind_deg, conv)
 
-        towards_deg = (wind_deg + 180.0) % 360.0
         towards_rad = math.radians(towards_deg)
         wind_dx = math.sin(towards_rad)
         wind_dy = -math.cos(towards_rad)
@@ -409,18 +674,91 @@ class WildfireCAEngine:
         """Execute one discrete simulation step.
 
         Process:
-          1. Age currently BURNING cells; transition cells exceeding `burn_duration_steps` from `BURNING -> BURNED`.
-          2. For each active `BURNING` cell, identify `UNBURNED` neighbors.
-          3. Compute combined spread probability for candidate `UNBURNED` cells.
-          4. Evaluate stochastic ignition using seeded RNG (`self._rng`).
-          5. Update states of newly ignited cells to `BURNING`.
-          6. Recalculate risk scores across the grid using predicted spread scores.
+          1. Check if simulation is finished (end_time hard upper bound reached).
+          2. Obtain active weather for the current CA interval.
+          3. Age currently BURNING cells; transition cells exceeding `burn_duration_steps` from `BURNING -> BURNED`.
+          4. For each active `BURNING` cell, identify `UNBURNED` neighbors.
+          5. Compute combined spread probability for candidate `UNBURNED` cells using active weather.
+          6. Evaluate stochastic ignition using seeded RNG (`self._rng`).
+          7. Update states of newly ignited cells to `BURNING`.
+          8. Recalculate risk scores across the grid using predicted spread scores.
+          9. Advance physical simulation time by `timestep_minutes`.
 
         Returns
         -------
         List[Cell]
             List of cells that newly ignited during this step.
         """
+        if self.simulation_finished:
+            logger.warning(
+                "Simulation finished: current simulation time %s exceeds end time %s. Step not executed.",
+                self._simulation_time,
+                self._end_time,
+            )
+            return []
+
+        # Check if external caller explicitly updated self._config["wind"] or applied observation
+        wind_cfg = self._config.get("wind", {})
+        is_observation = (
+            self._current_weather is not None
+            and self._current_weather.source in ("observation_update", "external_override")
+        )
+        ext_speed = float(wind_cfg.get("speed_ms", self._current_weather.wind_speed_ms))
+        prev_raw = (
+            self._current_weather.raw_wind_direction_deg
+            if self._current_weather.raw_wind_direction_deg is not None
+            else self._current_weather.wind_direction_deg
+        )
+        ext_dir = float(wind_cfg.get("direction_deg", prev_raw))
+
+        externally_overridden = is_observation or not (
+            math.isclose(ext_speed, self._current_weather.wind_speed_ms, abs_tol=1e-6)
+            and math.isclose(ext_dir, prev_raw, abs_tol=1e-6)
+        )
+
+        if externally_overridden:
+            conv = self._config.get("weather", {}).get("wind_direction_convention", "from")
+            towards_dir = to_toward_direction(ext_dir, conv)
+            source = (
+                self._current_weather.source
+                if is_observation
+                else "external_override"
+            )
+            self._current_weather = WeatherState(
+                wind_speed_ms=ext_speed,
+                wind_direction_deg=towards_dir,
+                humidity_percent=self._current_weather.humidity_percent,
+                source=source,
+                raw_wind_direction_deg=ext_dir,
+                wind_direction_convention=conv,
+            )
+        else:
+            self._current_weather = self._weather_provider.get_weather(
+                self._simulation_time, self._timestep
+            )
+            self._sync_config_weather()
+
+        # Diagnostics logging (Section 24 & prompt2 Section 8)
+        raw_str = (
+            f"{self._current_weather.raw_wind_direction_deg:.2f}"
+            if self._current_weather.raw_wind_direction_deg is not None
+            else "None"
+        )
+        logger.debug(
+            "step=%d simulation_time=%s weather_mode=%s wind_direction_convention=%s "
+            "raw_wind_direction_deg=%s effective_toward_direction_deg=%.2f "
+            "wind_speed_ms=%.2f humidity_percent=%.2f weather_source=%s",
+            self._step_count,
+            self._simulation_time.isoformat(),
+            self._config.get("weather", {}).get("mode", "fixed"),
+            self._current_weather.wind_direction_convention,
+            raw_str,
+            self._current_weather.wind_direction_deg,
+            self._current_weather.wind_speed_ms,
+            self._current_weather.humidity_percent,
+            self._current_weather.source,
+        )
+
         currently_burning = [c for c in self._grid.cells if c.fire_state == FireState.BURNING]
         for cell in currently_burning:
             cell_id = cell.cell_id
@@ -436,7 +774,12 @@ class WildfireCAEngine:
                 burning_cell.x, burning_cell.y, mode=self._neighbor_mode  # type: ignore
             )
             for neighbor in neighbors:
-                if neighbor.fire_state == FireState.UNBURNED and neighbor.fuel_amount > 0.0:
+                if (
+                    neighbor.fire_state == FireState.UNBURNED
+                    and neighbor.fuel_amount > 0.0
+                    and not getattr(neighbor, "is_water", False)
+                    and not (getattr(self, "_roads_block_spread", False) and getattr(neighbor, "is_road", False))
+                ):
                     cid = neighbor.cell_id
                     if cid not in candidate_sources:
                         candidate_sources[cid] = []
@@ -467,5 +810,16 @@ class WildfireCAEngine:
         # Recalculate risk scores across the grid
         spread_scores = self.predict_spread()
         update_grid_risk_scores(self._grid, self._config, spread_scores=spread_scores)
+
+        # Advance simulation time and step count
+        self._simulation_time += self._timestep
+        self._step_count += 1
+
+        # Synchronize active weather state for the new simulation time if not overridden
+        if not self.simulation_finished and not externally_overridden:
+            self._current_weather = self._weather_provider.get_weather(
+                self._simulation_time, self._timestep
+            )
+            self._sync_config_weather()
 
         return newly_ignited

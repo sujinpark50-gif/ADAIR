@@ -75,6 +75,14 @@ def create_visualization(
     show_perimeter : bool
         Whether to display active fire perimeter boundary overlay markers.
     """
+    cfg_p = Path(config_path)
+    if not cfg_p.exists():
+        alt_p = Path(__file__).parent / "config" / "environment_config.yaml"
+        if alt_p.exists():
+            config_path = str(alt_p)
+        elif (Path("environment") / config_path).exists():
+            config_path = str(Path("environment") / config_path)
+
     # 1. Instantiate grid, cellular automaton engine, and API wrapper
     grid = EnvironmentGrid(config_path=config_path, seed=seed)
     ca_engine = WildfireCAEngine(grid=grid, config_path=config_path, seed=seed)
@@ -82,14 +90,35 @@ def create_visualization(
 
     rows, cols = grid.rows, grid.cols
 
-    # Default ignition point at grid center if omitted
-    if ignition_x is None:
-        ignition_x = cols // 2
-    if ignition_y is None:
-        ignition_y = rows // 2
-
-    # Ignite specified cell
-    ca_engine.ignite_at(ignition_x, ignition_y)
+    # Ignition point resolution priority:
+    #   1. Explicit --x / --y grid indices (if provided).
+    #   2. Config ignition point in lat/lon (ignition.lat / ignition.lon),
+    #      reprojected to grid row/col.
+    #   3. Fallback to grid center.
+    if ignition_x is None and ignition_y is None:
+        try:
+            ignited_cell = ca_engine.ignite_from_config()
+            ignition_x, ignition_y = ignited_cell.x, ignited_cell.y
+            ign_cfg = grid._config.get("ignition", {})
+            print(
+                f"Ignition from config lat/lon "
+                f"({ign_cfg.get('lat')}, {ign_cfg.get('lon')}) "
+                f"-> grid (col={ignition_x}, row={ignition_y})"
+            )
+        except (KeyError, IndexError) as exc:
+            ignition_x, ignition_y = cols // 2, rows // 2
+            print(
+                f"Config ignition point unavailable ({exc}); "
+                f"falling back to grid center (col={ignition_x}, row={ignition_y})"
+            )
+            ca_engine.ignite_at(ignition_x, ignition_y)
+    else:
+        # Partial override: fill any missing axis with the grid center.
+        if ignition_x is None:
+            ignition_x = cols // 2
+        if ignition_y is None:
+            ignition_y = rows // 2
+        ca_engine.ignite_at(ignition_x, ignition_y)
 
     # Initialize figure and axes
     fig, ax = plt.subplots(figsize=(11, 8.5), dpi=100)
@@ -234,7 +263,7 @@ def create_visualization(
         fire_rgba.fill(0.0)
         for cell in grid.cells:
             if cell.fire_state == FireState.BURNING:
-                # Vibrant glowing red-orange (#FF2600)
+                # Vibrant glowing red-orange (#FF0000)
                 fire_rgba[cell.y, cell.x] = [1.0, 0.15, 0.0, 0.95]  # red, green, blue, alpha
             elif cell.fire_state == FireState.BURNED:
                 # Deep charcoal black (#141414)
@@ -265,18 +294,18 @@ def create_visualization(
         label="Fire Perimeter",
     )
 
-    # Wind Vector Indicator Arrow
+    # Wind Vector Indicator Arrow (Invert dy for matplotlib display space where +V is Up)
     spread_info = api.get_spread_direction()
     wind_dx = spread_info["dx"]
     wind_dy = spread_info["dy"]
 
     wind_x = cols * 0.92
     wind_y = rows * 0.08
-    ax.quiver(
+    quiver_wind = ax.quiver(
         [wind_x],
         [wind_y],
         [wind_dx],
-        [wind_dy],
+        [-wind_dy],
         color="#00FFFF",
         scale=12,
         width=0.008,
@@ -286,7 +315,7 @@ def create_visualization(
     )
 
     # Multi-Layer Legend
-    patch_burning = mpatches.Patch(color="#FF2600", label="BURNING (#FF2600)")
+    patch_burning = mpatches.Patch(color="#FF0000", label="BURNING (#FF0000)")
     patch_burned = mpatches.Patch(color="#141414", label="BURNED (#141414)")
     marker_station = plt.Line2D(
         [0],
@@ -334,22 +363,26 @@ def create_visualization(
     ax.set_ylabel("Grid Row (Y)", fontsize=10)
 
     # Real-Time HUD Update
-    def update_hud(step_num: int) -> None:
+    def update_hud(step_num: int, current_spread: dict) -> None:
         env_state = api.get_environment_state()
         b_cnt = env_state["burning_cell_count"]
         bd_cnt = env_state["burned_cell_count"]
         ver = env_state["state_version"]
-        w_spd = spread_info["wind_speed_ms"]
-        w_deg = spread_info["wind_direction_deg"]
-        cardinal = spread_info["primary_cardinal"]
+        w_spd = current_spread["wind_speed_ms"]
+        w_deg = current_spread["wind_direction_deg"]
+        cardinal = current_spread["primary_cardinal"]
+
+        time_str = ""
+        if hasattr(ca_engine, "current_simulation_time"):
+            time_str = f" | {ca_engine.current_simulation_time.strftime('%Y-%m-%d %H:%M')}"
 
         title_str = (
-            f"Integrated GIS Wildfire Simulation | Step {step_num}/{steps} (State v{ver})\n"
-            f"Burning: {b_cnt} cells | Burned: {bd_cnt} cells | Wind: {w_spd:.1f} m/s ({w_deg:.0f}°, {cardinal})"
+            f"Integrated GIS Wildfire Simulation | Step {step_num}/{steps}{time_str} (State v{ver})\n"
+            f"Burning: {b_cnt} cells | Burned: {bd_cnt} cells | Wind: {w_spd:.1f} m/s ({w_deg:.1f}°, {cardinal})"
         )
         ax.set_title(title_str, fontsize=11, fontweight="bold", pad=10)
 
-    update_hud(0)
+    update_hud(0, spread_info)
 
     # Animation Frame Update
     def animate(frame: int) -> None:
@@ -367,7 +400,9 @@ def create_visualization(
             else:
                 scat_perim.set_offsets(np.empty((0, 2)))
 
-        update_hud(frame)
+        curr_spread = api.get_spread_direction()
+        quiver_wind.set_UVC([curr_spread["dx"]], [-curr_spread["dy"]])
+        update_hud(frame, curr_spread)
 
     anim = animation.FuncAnimation(
         fig,

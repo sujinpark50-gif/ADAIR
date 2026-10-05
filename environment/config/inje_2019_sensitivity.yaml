@@ -1,0 +1,103 @@
+# ============================================================================
+# 2019 Inje Wildfire CA Sensitivity & Grid-Search Experiment Configuration
+# ============================================================================
+# This configuration defines parameter sensitivity (Stage A: One-At-A-Time)
+# and calibration grid search (Stage B) suites for the 2019 Inje wildfire case.
+#
+# IMPORTANT:
+# - Historical inputs (DEM, fuel, roads, ASOS weather CSV, start/end time, ignition)
+#   remain fixed in environment_config.yaml.
+# - Weather mode remains "timeseries" with wind_direction_convention: "toward".
+# - Runs are stochastic; a deterministic common seed list is evaluated for every
+#   parameter point to ensure fair paired comparisons.
+
+metadata:
+  case_name: "2019 Inje Wildfire CA Sensitivity Analysis"
+  case_id: "inje_2019"
+  description: "CA fire spread parameter sensitivity analysis and case calibration"
+
+# --- Seed Configuration ----------------------------------------------------
+seeds:
+  - 42
+  - 43
+  - 44
+
+# --- Output Paths (relative to environment/ directory or absolute) ----------
+output:
+  results_dir: "results"
+  oat_raw_csv: "results/inje_2019_sensitivity_oat.csv"
+  oat_summary_csv: "results/inje_2019_sensitivity_oat_summary.csv"
+  temporal_raw_csv: "results/inje_2019_sensitivity_temporal.csv"
+  temporal_summary_csv: "results/inje_2019_temporal_summary.csv"
+  grid_raw_csv: "results/inje_2019_sensitivity_grid.csv"
+  grid_summary_csv: "results/inje_2019_sensitivity_grid_summary.csv"
+  grid_temporal_raw_csv: "results/inje_2019_sensitivity_grid_temporal.csv"
+  grid_temporal_summary_csv: "results/inje_2019_sensitivity_grid_temporal_summary.csv"
+  calibrated_yaml: "results/inje_2019_calibrated_parameters.yaml"
+
+# --- Stage A: One-At-A-Time (OAT) Sensitivity Parameters -------------------
+# Baseline values are read directly from config/environment_config.yaml.
+# For each parameter listed below, only that parameter is varied across its
+# candidate values while all other parameters remain at baseline.
+oat:
+  # Base probability of fire propagation per time step
+  base_spread_probability:
+    - 0.40
+    - 0.50
+    - 0.60
+    - 0.70
+    - 0.80
+
+  # Multiplier on (wind_speed * alignment) in exponential wind factor
+  wind_factor_weight:
+    - 0.05
+    - 0.10
+    - 0.15
+    - 0.20
+    - 0.25
+    - 0.30
+
+  # Multiplier on terrain gradient (dz / dist) in exponential slope factor
+  slope_factor_weight:
+    - 0.00
+    - 0.025
+    - 0.05
+    - 0.075
+    - 0.10
+
+  # Number of steps a cell remains actively BURNING before transitioning to BURNED
+  burn_duration_steps:
+    - 2
+    - 3
+    - 4
+    - 5
+
+# --- Parameters Explicitly Held Fixed in Stage A & B -----------------------
+# moisture_dampening_weight: 1.0 (Fixed: Cell.moisture is distinct from ASOS RH)
+# neighbor_mode: "8-neighbor" (Fixed: 8-connected grid neighborhood)
+# roads_block_spread: true (Fixed: roads act as firebreaks)
+# weather.mode: "timeseries" (Fixed: ASOS historical observations)
+# weather.wind_direction_convention: "toward" (Fixed: physical TOWARD direction)
+
+# --- Stage B: Multi-Parameter Calibration Grid Search Space ----------------
+# 4 x 4 x 3 x 1 = 48 parameter combinations x 3 seeds = 144 runs
+grid_search:
+  base_spread_probability:
+    - 0.45
+    - 0.50
+    - 0.55
+    - 0.60
+
+  wind_factor_weight:
+    - 0.10
+    - 0.15
+    - 0.20
+    - 0.25
+
+  slope_factor_weight:
+    - 0.025
+    - 0.050
+    - 0.075
+
+  burn_duration_steps:
+    - 3

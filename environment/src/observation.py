@@ -179,6 +179,33 @@ class ObservationUpdateHandler:
             except (ValueError, TypeError):
                 pass
 
+        if wind_updated and hasattr(self._ca_engine, "_current_weather"):
+            from src.weather import (
+                FixedWeatherProvider,
+                WeatherState,
+                to_toward_direction,
+            )
+
+            speed = float(wind_cfg.get("speed_ms", 0.0))
+            raw_direction = float(wind_cfg.get("direction_deg", 0.0))
+            conv = self._ca_engine._config.get("weather", {}).get("wind_direction_convention", "from")
+            towards_dir = to_toward_direction(raw_direction, conv)
+            current_hum = self._ca_engine.current_weather.humidity_percent
+            self._ca_engine._current_weather = WeatherState(
+                wind_speed_ms=speed,
+                wind_direction_deg=towards_dir,
+                humidity_percent=current_hum,
+                source="observation_update",
+                raw_wind_direction_deg=raw_direction,
+                wind_direction_convention=conv,
+            )
+            if hasattr(self._ca_engine, "_weather_provider") and isinstance(
+                self._ca_engine._weather_provider, FixedWeatherProvider
+            ):
+                self._ca_engine._weather_provider.wind_speed_ms = speed
+                self._ca_engine._weather_provider.raw_wind_direction_deg = raw_direction
+                self._ca_engine._weather_provider.wind_direction_deg = towards_dir
+
         # Require at least one valid cell coordinate or global update
         if cell is None and not wind_updated:
             return {

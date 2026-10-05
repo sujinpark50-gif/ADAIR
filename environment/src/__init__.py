@@ -11,6 +11,25 @@ from src.fire_model import WildfireCAEngine
 from src.grid import EnvironmentGrid, TerrainGrid
 from src.observation import ObservationReport, ObservationUpdateHandler
 from src.risk import calculate_risk_scores, update_grid_risk_scores
+from src.evaluation import (
+    FireEvaluationResult,
+    create_simulated_burn_mask,
+    evaluate_fire_footprint,
+    generate_overlap_classification_mask,
+    load_reference_burn_mask,
+    resolve_reference_raster_path,
+    save_geotiff,
+)
+from src.weather import (
+    FixedWeatherProvider,
+    TimeSeriesWeatherProvider,
+    WeatherProvider,
+    WeatherState,
+    compute_vector_mean_wind,
+    create_weather_provider,
+    to_toward_direction,
+    validate_convention,
+)
 
 __all__ = [
     "CRITERIA",
@@ -28,5 +47,20 @@ __all__ = [
     "ObservationReport",
     "ObservationUpdateHandler",
     "EnvironmentModelAPI",
+    "WeatherState",
+    "WeatherProvider",
+    "FixedWeatherProvider",
+    "TimeSeriesWeatherProvider",
+    "compute_vector_mean_wind",
+    "create_weather_provider",
+    "to_toward_direction",
+    "validate_convention",
+    "FireEvaluationResult",
+    "create_simulated_burn_mask",
+    "evaluate_fire_footprint",
+    "generate_overlap_classification_mask",
+    "load_reference_burn_mask",
+    "resolve_reference_raster_path",
+    "save_geotiff",
 ]
 

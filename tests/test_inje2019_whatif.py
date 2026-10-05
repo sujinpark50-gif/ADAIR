@@ -88,8 +88,9 @@ def test_live_env_server_reproduces_replay(D, tmp_path):
     pytest.importorskip("rasterio")
     from src.contract_env import ContractEnvironment
     te = D["twin_env"]
+    legacy_cfg = ROOT / "environment" / "config" / "scenario_whatif_2019_legacy.yaml"
     col, row = map(int, te["ENV_IGNITION"].split(","))
-    env = ContractEnvironment(tmp_path, ignitions=[(col, row)], tick_s=float(te["ENV_TICK_S"]),
+    env = ContractEnvironment(tmp_path, config_path=legacy_cfg, ignitions=[(col, row)], tick_s=float(te["ENV_TICK_S"]),
                               seed=int(te["ENV_SEED"]), scenario_start_kst=te["ENV_SCENARIO_START_KST"], resume=False)
     ign = arr(D, "ign_step_i16")
     cols = D["grid"]["cols"]

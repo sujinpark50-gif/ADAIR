@@ -1,19 +1,18 @@
 # ============================================================================
 # Environment & Wildfire Model Configuration
 # ============================================================================
-# Authority: mission/environmental-modeling.txt (Section 3)
-# All spatial, fuel, and moisture parameters are externalized here.
-# Nothing in src/environment/ should hardcode these values.
-# ============================================================================
 
 # --- Raster file paths (relative to project root) --------------------------
 raster_paths:
   dem_path: "data/processed/dem_clipped.tif"
   slope_path: "data/processed/slope_5186.tif"
   aspect_path: "data/processed/aspect_5186.tif"
-  fuel_path: "data/processed/fuel_type.tif"
-  roads_path: "data/processed/roads_raster.tif"
+  fuel_path: "../data/inje2019/fuel/fuel_type_2019.tif"
+  roads_path: "../data/inje2019/roads/roads_raster_2019.tif"
+#  fuel_path: "data/processed/fuel_type.tif"
+#  roads_path: "data/processed/roads_raster.tif"
   buildings_path: "data/processed/buildings_inje.tif"
+  water_path: "../data/inje2019/water/inje_2019_water_mask_5186.tif"
 
 # --- Grid spatial settings --------------------------------------------------
 # These values are derived from the actual raster metadata (EPSG:5186, 90 m).
@@ -25,18 +24,14 @@ grid:
   origin_y: 591533.0               # bottom edge of the grid (northing, m)
 
 # --- Fuel-type → fuel_amount mapping ----------------------------------------
-# SCENARIO MODELING ASSUMPTION (see mission/environmental-modeling.txt L45-47):
-#   "토지피복 자료를 연료 유형이나 연료량으로 바꿀 경우에는 변환 기준을 기록한다."
-#   Translation: "When converting land-cover data to fuel type or fuel
-#   quantity, the conversion criteria must be recorded."
 #
 # The fuel_type raster contains categorical integer codes:
-#   0 = non-fuel / water / road / barren
-#   1 = low-density vegetation / grassland
-#   2 = moderate-density vegetation / shrubland
-#   3 = high-density vegetation / dense forest
+#   0 = non-fuel / water / road / barren 무립목지/비산림
+#   1 = low-density vegetation / grassland 침엽수림
+#   2 = moderate-density vegetation / shrubland 활엽수림
+#   3 = high-density vegetation / dense forest 혼효림
 #
-# The fuel_amount values below are *placeholder modelling assumptions* in
+# The fuel_amount values below are placeholder modelling assumptions in
 # arbitrary relative units (0.0–1.0). They must be reviewed and validated
 # by the Environment Lead before any scientific conclusions are drawn.
 # Do NOT treat these as empirically measured physical constants.
@@ -47,44 +42,119 @@ fuel_mapping:
     2: 0.6    # moderate vegetation     (assumption)
     3: 1.0    # dense forest            (assumption)
   default_fuel_amount: 0.0  # fallback for unmapped codes
+  # How to treat fuel-raster nodata (-9999 = unclassified terrain), distinct from
+  # genuine non-fuel (class 0 = water/road/barren):
+  #   "barrier" : nodata -> non-fuel (hard fire barrier). Legacy behaviour.
+  #   "nearest" : fill nodata with the nearest classified fuel class (nearest-
+  #               neighbour interpolation). Repairs data holes that would otherwise
+  #               artificially fragment the fire front. Requires SciPy.
+  # The inje2019 fuel raster has ~7,463 nodata cells scattered through the burn
+  # origin zone; treating them as barriers caused the fire to die out. See calib_report.md.
+  nodata_strategy: "nearest"
+
+# --- Simulation Clock Settings ----------------------------------------------
+# 1. simulation.timestep_minutes: Physical simulation time represented by ONE CA step.
+#    This is NOT the weather observation interval and remains fully configurable.
+# 2. ASOS observation interval: Temporal resolution of historical weather observations (1 minute).
+# 3. fire_ca.burn_duration_steps: Number of CA steps a cell remains BURNING.
+#    With timestep_minutes=10 and burn_duration_steps=5, the modeled active burning duration
+#    is 5 * 10 = 50 simulation minutes (configurable modeling assumption, not a validated physical constant).
+simulation:
+  start_time: "2019-04-04T14:45:00"
+  end_time: "2019-04-06T12:05:00"
+  timestep_minutes: 10
+  random_seed: 43
 
 # --- Default environmental parameters --------------------------------------
 # SCENARIO MODELING ASSUMPTION:
-#   "실제 자료로 확인하기 어려운 습도 … 는 시나리오 설정값으로 둔다."
-#   Translation: "Moisture … that is hard to verify from real data is set
-#   as a scenario configuration value."
-defaults:
-  moisture: 0.2   # initial uniform moisture (0.0–1.0, assumption)
+# 2019년 인제 산불 당시 일자별 기상상황:
+# 주소: 강원도 인제군 남면 남전리 503-2
+# 4월4일(목): 맑음, 16.2 oC, 북동 6.5m/s, 습도 29%
+# 4월5일(금): 맑음, 7oC, 남서 3.8m/s, 습도 68%
+# 4월6일(토): 맑음, 2oC, 남동 3.1m/s, 습도 65%
+# 4월4일(목) 14h45: 15.5oC, 습도 25.5%, 풍향 158.6 degree (SSE), 풍속 8.3 m/s;
+#                  10분 평균 풍향 157.1 degree (SSE), 10분 평균 풍속 6.6m/s
+# 158.6: 남동풍(135도)과 남풍(180도) 사이에서 남남동풍(157.5도)에 가까움
+# 정확한 발화지점:   lat: 38.028450; lon: 128.130900 (강원도 인제군 남면 남전리 503-2)
+ignition:
+  lat: 38.0275
+  lon: 128.132
+  # The lat/lon above reprojects to grid cell (row=100, col=13), which is a nodata
+  # pixel in the fuel raster. A fire cannot start on a non-fuel cell, so:
+  snap_to_fuel: true       # snap ignition to the nearest fuel-bearing cell if needed
+  snap_max_radius: 12      # max snap search radius (cells)
 
-# --- Wind vector (global, uniform across grid) ------------------------------
-# mission/environmental-modeling.txt L72: wind can initially be a single
-# global value; per-cell wind fields are a future extension.
+# --- Weather Configuration --------------------------------------------------
+# Supported modes:
+#   - "timeseries": Read historical ASOS minute-level CSV and dynamically derive
+#                   vector-mean wind and mean relative humidity per CA timestep interval.
+#   - "fixed": Use fixed constant wind and humidity parameters for controlled experiments.
+#
+# Supported wind direction conventions:
+#   - "from": wind_direction_deg represents meteorological direction wind comes FROM (default/legacy).
+#   - "toward": wind_direction_deg represents direction wind blows TOWARD.
+weather:
+  mode: "timeseries"       # supported: "fixed", "timeseries"
+  wind_direction_convention: "from"  # supported: "from", "toward"
+
+  fixed:
+    wind_speed_ms: 6.6
+    wind_direction_deg: 157.1
+    humidity_percent: 25.5
+
+  timeseries:
+    path: "data/inje2019/weather/Inje_ASOS_190404_min.csv"
+    aggregation: "interval"
+
+# --- Fuel / Soil Moisture (uniform across grid) ------------------------------
+# MODELING DISTINCTION: Cell.moisture is an initial fuel/soil moisture parameter (0.0-1.0),
+# distinct from atmospheric relative humidity (humidity_percent) from ASOS observations.
+# Atmospheric RH does NOT automatically overwrite Cell.moisture without an explicit empirical model.
+defaults:
+  moisture: 0.255   # initial uniform fuel moisture (0.0–1.0, modeling assumption)
+
+# --- Wind vector fallback (global, uniform across grid) ---------------------
+# Retained for backward compatibility with legacy consumers accessing config["wind"].
 wind:
-  speed_ms: 5.0       # m/s (assumption — scenario parameter)
-  direction_deg: 270  # degrees from north, clockwise (west wind); (north: 0, east: 90, south: 180, west: 270)
+  speed_ms: 6.6         # m/s (default)
+  direction_deg: 157.1  # degrees from north, clockwise; (north: 0 ↓, east: 90 ←, south: 180 ↑, west: 270 →)
+                        
+  # ── Previous fixed-wind calibration experiment (wind direction vs. 2019 burn footprint) ──────────────
+  # direction_deg=158.6 is the OBSERVED instantaneous reading (4/4 14h45, SSE).
+  # It drives the fire NNW, AWAY from the actual burn footprint (which extends
+  # EAST of the ignition point), so spatial agreement with the reference is low
+  # (IoU ≈ 0.00–0.03). A WESTERLY wind (~240–270°) reproduces the observed
+  # eastward spread and raises IoU ~7× (≈ 0.12–0.22). The single instantaneous
+  # reading is not necessarily the effective multi-hour spread wind. Choosing
+  # between observed-fidelity (158.6°) and footprint-match (~270°) is a domain
+  # decision for the Environment Lead. See calib_report.md for the full sweep.
 
 # --- Wildfire CA Simulation Parameters --------------------------------------
-# SCENARIO MODELING ASSUMPTIONS (see mission/environmental-modeling.txt L80):
-#   "구체적인 확산식과 알고리즘은 환경 담당이 제안한다."
-#   Translation: "The specific spread formula and algorithm are proposed by the Environment Lead."
 # All scientific parameters below are explicit modeling assumptions exposed for configuration.
+# Values below were calibrated against inje_2019_burn_reference_binary.tif
+# (grid IoU/Dice, averaged over seeds). They maximise footprint overlap; note the
+# CA has no suppression term, so it over-predicts burned area ~2× at convergence.
+# Spatial match is ultimately gated by wind direction (see wind: note above).
 fire_ca:
-  base_spread_probability: 0.40    # Base ignition probability per step
-  burn_duration_steps: 5         # Steps a cell remains BURNING before becoming BURNED
+  base_spread_probability: 0.60    # Base ignition probability per step (calibrated; was 0.40)
+  burn_duration_steps: 3         # Steps a cell remains BURNING before becoming BURNED
   slope_factor_weight: 0.05      # Exponential slope factor per unit gradient (uphill boost / downhill dampening)
-  wind_factor_weight: 0.1        # Wind vector alignment factor multiplier
+  wind_factor_weight: 0.1        # Wind vector alignment factor multiplier (calibrated; was 0.1)
   moisture_dampening_weight: 1.0 # Moisture reduction factor: max(0.0, 1.0 - weight * moisture)
   neighbor_mode: "8-neighbor"    # Neighbor connectivity mode ("4-neighbor" or "8-neighbor")
+  roads_block_spread: true       # Roads (roads_raster code 1) act as a firebreak:
+                                 # fire cannot spread INTO a road cell, so it cannot
+                                 # cross a road. Set false to disable this behaviour.
 
 # --- Risk Scoring Configuration -------------------------------------------
 # SCENARIO MODELING ASSUMPTION (see mission/environmental-modeling.txt L72 & L43-55):
 #   "risk_score의 계산 기준과 값의 범위는 총괄·통합 담당과 합의한다."
-#   Translation: "The calculation criteria and value range of risk_score are agreed with the Orchestrator/Integration Lead."
 #   TEMPORARY SCENARIO ASSUMPTION:
 #   Risk score combines dynamic fire spread prediction (S_spread) with static building exposure proxies.
 risk_scoring:
-  burning_cell_risk: 1.0         # Risk score assigned to currently BURNING cells
-  burned_cell_risk: 0.2          # Risk score assigned to BURNED cells
+  burning_risk_floor: 0.70       # Baseline risk score floor B for active BURNING cells (Risk_burning = B + (1-B)*E)
+  burning_cell_risk: 1.0         # Legacy fallback key for BURNING cell risk upper ceiling
+  burned_cell_risk: 0.2          # Risk score in BURNED cells; reduced firefighting priority after active fire has passed, while retaining a non-zero residual risk.
   min_risk_score: 0.0            # Minimum risk score bound (numerical safety bound)
   max_risk_score: 1.0            # Maximum risk score bound (numerical safety bound)
 
@@ -92,7 +162,7 @@ risk_scoring:
   # Supported modes:
   #   - "geometric" (default baseline): spatial downwind cone + slope + fuel heuristic
   #   - "ensemble" (experimental): N-step forward CA Monte Carlo prediction P_arrival(<=N)
-  spread_mode: "geometric"
+  spread_mode: "ensemble"         # "geometric" or "ensemble"
 
   # --- N-step CA Ensemble Settings (for spread_mode: "ensemble") ---
   # Current prototype settings selected via empirical benchmarking:
@@ -118,6 +188,7 @@ risk_scoring:
   #                + W_property * S_property + W_secondary * S_secondary
   #   where sum(W_i) = 1.0. Relative weights below are normalized at runtime.
   #   S_spread is computed by the spread prediction layer (geometric or ensemble).
+  # ADAIR 적용 원칙: 대원·자원 안전 > 인명 보호 > 중요시설·재산 보호 > 화재 안정화·확산 방지 > 환경·산림 보호
   composite_weights:
     spread: 0.0384
     human: 0.6337

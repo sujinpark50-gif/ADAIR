@@ -62,6 +62,18 @@ class Cell:
     #   4 = SECONDARY_HAZARD, 5 = COMMERCIAL, 6 = INDUSTRIAL, 7 = OTHER
     building_type: int = field(default=0)
 
+    # --- road attribute (from roads raster) ---
+    # True if this cell contains a road (roads_raster code 1). Roads act as a
+    # firebreak: when fire_ca.roads_block_spread is enabled, fire cannot spread
+    # into a road cell, so it cannot cross a road.
+    is_road: bool = field(default=False)
+
+    # --- water attribute (from water mask raster) ---
+    # True only if cell is explicitly classified as water (water_mask code 1).
+    # Value 0 (confirmed non-water) and 255 (nodata / outside coverage) are False.
+    # Acts as a strict non-burnable physical barrier to fire spread and ignition.
+    is_water: bool = field(default=False)
+
     # --- simulation state ---
     fire_state: FireState = field(default=FireState.UNBURNED)
     risk_score: float = field(default=0.0)

@@ -122,12 +122,18 @@ class EnvironmentModelAPI:
             Contains dx, dy direction components, wind_speed_ms, wind_direction_deg,
             and primary cardinal direction.
         """
-        wind_cfg = self._ca_engine._config.get("wind", {})
-        wind_speed = float(wind_cfg.get("speed_ms", 0.0))
-        wind_deg = float(wind_cfg.get("direction_deg", 270.0))
+        if hasattr(self._ca_engine, "current_weather"):
+            wind_speed = float(self._ca_engine.current_weather.wind_speed_ms)
+            towards_deg = float(self._ca_engine.current_weather.wind_direction_deg)
+            raw_deg = getattr(self._ca_engine.current_weather, "raw_wind_direction_deg", towards_deg)
+        else:
+            from src.weather import to_toward_direction
+            wind_cfg = self._ca_engine._config.get("wind", {})
+            wind_speed = float(wind_cfg.get("speed_ms", 0.0))
+            raw_deg = float(wind_cfg.get("direction_deg", 270.0))
+            conv = self._ca_engine._config.get("weather", {}).get("wind_direction_convention", "from")
+            towards_deg = to_toward_direction(raw_deg, conv)
 
-        # Wind blowing towards in grid coordinates
-        towards_deg = (wind_deg + 180.0) % 360.0
         towards_rad = math.radians(towards_deg)
         wind_dx = math.sin(towards_rad)
         wind_dy = -math.cos(towards_rad)
@@ -141,7 +147,8 @@ class EnvironmentModelAPI:
             "dx": wind_dx,
             "dy": wind_dy,
             "wind_speed_ms": wind_speed,
-            "wind_direction_deg": wind_deg,
+            "wind_direction_deg": towards_deg,
+            "raw_wind_direction_deg": raw_deg,
             "primary_cardinal": cardinal_label,
         }
 
