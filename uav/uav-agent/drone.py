@@ -40,8 +40,11 @@ class DroneProvider(ABC):
         """제자리 체류 (관측)."""
 
     @abstractmethod
-    async def return_home(self) -> None:
-        """현재 고도로 기지 상공까지 간 뒤 착륙한다."""
+    async def return_home(self, alt_amsl: float | None = None) -> None:
+        """alt_amsl(없으면 현재 고도)로 기지 상공까지 간 뒤 착륙한다.
+
+        평가한 경로의 순항고도를 주면 복귀 구간도 그 고도로 지형을 넘는다 (UAV-03).
+        """
 
 
 class MockDrone(DroneProvider):
@@ -126,8 +129,8 @@ class MockDrone(DroneProvider):
     async def hold(self, seconds: float) -> None:
         await self._run(seconds, lambda f: None)
 
-    async def return_home(self) -> None:
-        await self.goto(self.home_pos[0], self.home_pos[1], self.alt_amsl)
+    async def return_home(self, alt_amsl: float | None = None) -> None:
+        await self.goto(self.home_pos[0], self.home_pos[1], self.alt_amsl if alt_amsl is None else alt_amsl)
         self.flight_mode = "LAND"
         await self._vertical(self.home_pos[2])
         self.armed, self.flight_mode = False, "HOLD"
@@ -292,6 +295,18 @@ class Px4Drone(DroneProvider):
         pos = await self._first(tel.subscribe_position)
         if pos is None:
             raise RuntimeError("PX4 위치를 읽지 못함")
+        # 고도를 제자리에서 먼저 맞춘다. goto_location 하나로 보내면 상승과 수평 이동이 함께 일어나
+        # 평가한 경로(route.py: 고도 맞춤 → 수평 이동)보다 낮게 능선에 다가갈 수 있다 (UAV-03)
+        if abs(alt_amsl - pos.absolute_altitude_m) > config.ARRIVAL_TOLERANCE_M:
+            await act.goto_location(pos.latitude_deg, pos.longitude_deg, alt_amsl, 0)
+
+            async def at_alt() -> bool:
+                p = await self._first(tel.subscribe_position)
+                return p is not None and abs(p.absolute_altitude_m - alt_amsl) <= config.ARRIVAL_TOLERANCE_M
+
+            await self._wait(at_alt, abs(alt_amsl - pos.absolute_altitude_m) / config.CLIMB_SPEED_MS * 2 + 60,
+                             "고도 맞춤")
+            pos = await self._first(tel.subscribe_position) or pos
         eta = (haversine_m(pos.latitude_deg, pos.longitude_deg, lat, lon) / config.CRUISE_SPEED_MS
                + abs(alt_amsl - pos.absolute_altitude_m) / config.CLIMB_SPEED_MS)
         await act.goto_location(lat, lon, alt_amsl, 0)
@@ -309,22 +324,23 @@ class Px4Drone(DroneProvider):
         # goto_location 목표점에서 PX4 가 스스로 제자리 비행한다.
         await asyncio.sleep(seconds)
 
-    async def return_home(self) -> None:
+    async def return_home(self, alt_amsl: float | None = None) -> None:
         # PX4 RTL 은 지형을 모르고 RTL_RETURN_ALT 로 내려와 능선에 닿을 수 있다.
-        # 지금 고도(목표 상공 비행고도)를 유지해 기지 상공까지 간 뒤 착륙한다.
+        # 경로 순항고도(없으면 지금 고도)로 기지 상공까지 간 뒤 착륙한다.
         tel, act = await self._ensure()
         h_lat, h_lon, h_alt = await self.home()
         pos = await self._first(tel.subscribe_position)
         if pos is None:
             raise RuntimeError("PX4 위치를 읽지 못함")
-        await self.goto(h_lat, h_lon, pos.absolute_altitude_m)
+        cruise = pos.absolute_altitude_m if alt_amsl is None else alt_amsl
+        await self.goto(h_lat, h_lon, cruise)
         await act.land()
 
         async def landed() -> bool:
             return not await self._in_air()
 
         # 착륙은 MPC_Z_VEL_MAX_DN(1.5 m/s)보다 느리게 내려온다. 넉넉히 잡는다.
-        await self._wait(landed, (pos.absolute_altitude_m - h_alt) / 0.5 + 120, "착륙")
+        await self._wait(landed, (cruise - h_alt) / 0.5 + 120, "착륙")
 
 
 def get_provider(uav_id: str) -> DroneProvider:
