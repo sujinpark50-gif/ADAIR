@@ -9,6 +9,8 @@ from .route_plan import RoutePlan
 
 # 이상 코드 → evaluate 거절 사유 (공통 계약 RejectReason 에 있는 값만 쓴다)
 FAULT_REASON = {"TELEMETRY_LOST": "COMMUNICATION_FAILURE"}   # 나머지(STALLED·OFF_ROUTE·VEHICLE_FAULT)는 FAILSAFE_ACTIVE
+MIDROAD_M = 20.0     # 선 자리가 노드에서 이보다 멀면 도로 중간에서 출발하는 것으로 본다
+ON_ROAD_M = 30.0     # 선 자리에서 도로 선형까지 이 안이면 그 도로 위에 있는 것으로 본다
 
 
 class GroundResourceAgent:
@@ -151,6 +153,14 @@ class GroundResourceAgent:
 
         start = self.graph.node(self.resource.current_node)
         plan = self._plan(self.resource.current_node, target_node, (start.lat, start.lon))
+        # 도로 중간에 선 차(멈춤 뒤 /stop)는 가장 가까운 노드에서 출발한다고 보면 경로가 차에서 수백 m 떨어져
+        # 곧바로 OFF_ROUTE 가 난다 (FIRE6, 2026-10-05: 294 m). 선 도로를 따라 양 끝 노드로 가는 앞 구간을 붙여
+        # 둘 중 빠른 쪽으로 출발한다.
+        here = (self.resource.lat, self.resource.lon)
+        options = [self._plan(end, target_node, here, [leg]) for end, leg in self._leads_from_here(here)]
+        options = [p for p in options if p is not None]
+        if options:
+            plan = min(options, key=lambda p: p.eta_s)
         started = await self.driver.goto(plan.waypoints, self._speeds(plan))
         if started:
             self.plan = plan
@@ -159,6 +169,33 @@ class GroundResourceAgent:
             self.resource.current_node = None   # 주행 중 — 노드에 정지해 있지 않음
             self._target_node = target_node
         return started
+
+    def _leads_from_here(self, here: tuple[float, float]) -> list[tuple[str, dict]]:
+        """도로 중간에 서 있으면 [(끝 노드, 그 노드까지 도로를 따라가는 앞 구간)] 두 개, 노드 위면 []."""
+        node = self.graph.node(self.resource.current_node)
+        if distance_m(here, (node.lat, node.lon)) <= MIDROAD_M:
+            return []
+        best = None
+        for _, road in self.graph.neighbors(node.node_id):
+            if road.blocked:
+                continue
+            pts = self.graph.legs([road.node_a, road.node_b], self.max_speed_mps)[0]["points"]
+            d = route_plan.distance_to_polyline_m(here, pts)
+            if best is None or d < best[0]:
+                best = (d, road, pts)
+        if best is None or best[0] > ON_ROAD_M:
+            return []
+        _, road, pts = best
+        k = min(range(len(pts)), key=lambda i: distance_m(here, pts[i]))   # 선 자리에 가장 가까운 선형 점
+        speed = road.speed_mps(self.max_speed_mps)
+        out = []
+        for end, line in ((road.node_b, pts[k + 1:]), (road.node_a, pts[:k][::-1])):
+            end_node = self.graph.node(end)
+            line = [p for p in line] or [(end_node.lat, end_node.lon)]
+            seg = [here] + line
+            out.append((end, {"road_id": road.road_id, "from": None, "to": end, "points": seg, "speed_mps": speed,
+                              "distance_m": sum(distance_m(a, b) for a, b in zip(seg, seg[1:]))}))
+        return out
 
     def blocked_ahead(self) -> str | None:
         """주행 중 남은 경로(지금 달리는 도로 제외)에 막힌 도로가 있으면 그 id."""
