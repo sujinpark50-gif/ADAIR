@@ -184,6 +184,19 @@ while read -r RID INST MODEL X Y Z YAW RTYPE; do
       exec "$BUILD/bin/px4" -i "$INST" -d "$BUILD/etc" > "$LOG_DIR/px4-$INST.log" 2>&1 ) &
     echo "$! $INST" >> "$LOG_DIR/pids"
 
+    # 2-1) 웨이포인트 정지 완화. PX4 1.16 differential rover 는 웨이포인트에서 꺾이는 각이 RD_TRANS_DRV_TRN(기본 10°)
+    #      보다 크면 그 점에서 완전히 멈춘 뒤 제자리 회전한다. 오르막에서는 이 정지·제자리 회전에서 미끄러져 STALLED 가 났다
+    #      (FIRE3, 2026-10-05: 8.5% 오르막을 2 m/s 로 500 m 오르다가 15~25° 꺾이는 웨이포인트 17·23·24·26 에서만 멈춤).
+    #      100° 미만으로 꺾이는 곳은 서지 않고 감속하며 돈다 (RD_MISS_SPD_GAIN: 꺾임 각/180° 만큼 감속, 96° 면 약 1 m/s).
+    #      100° 넘는 꺾임(유턴급)만 멈춰서 제자리 회전. 파라미터는 rootfs/N 에 남는다
+    for _ in $(seq 60); do
+        "$BUILD/bin/px4-param" --instance "$INST" set RD_TRANS_DRV_TRN "${RD_TRANS_DRV_TRN:-1.75}" >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && "$BUILD/bin/px4-param" --instance "$INST" set RD_TRANS_TRN_DRV "${RD_TRANS_TRN_DRV:-0.26}" >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && "$BUILD/bin/px4-param" --instance "$INST" set RD_MISS_SPD_GAIN "${RD_MISS_SPD_GAIN:-1.0}" >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && { echo "  RD_TRANS_DRV_TRN=${RD_TRANS_DRV_TRN:-1.75} RD_TRANS_TRN_DRV=${RD_TRANS_TRN_DRV:-0.26} RD_MISS_SPD_GAIN=${RD_MISS_SPD_GAIN:-1.0} (웨이포인트 정지 대신 감속)"; break; }
+        sleep 1
+    done
+
     # 3) Mac(UGV 서버)으로 가는 MAVLink 링크 추가. PX4 가 부팅을 마칠 때까지 재시도
     if [ -n "$UGV_HOST" ]; then
         ok=0
