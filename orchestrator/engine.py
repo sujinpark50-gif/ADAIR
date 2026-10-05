@@ -1277,7 +1277,8 @@ class Orchestrator:
             return {"attempt_id": aid, "substatus": "OBSERVED", "reason": "RUN_MISMATCH"}
         if sensor not in ("WEATHER", "THERMAL") and att["command"]["resource_type"] == "UAV":
             return None
-        if sensor != "WEATHER" and att["command"]["resource_type"] != "UAV":
+        ground = att["command"]["resource_type"] != "UAV"
+        if sensor not in ("WEATHER", "THERMAL") and ground:
             return self._ground_observation(att, task, data, detail, closed)
 
         # 1) 관측 확정 (복구면 원본 재사용)
@@ -1290,7 +1291,8 @@ class Orchestrator:
                                                    position=pos, provider_raw=data.get("observation"))
             else:
                 obs = observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
-                                           position=pos, uav_raw_observation=data.get("observation"))
+                                           position=pos, uav_raw_observation=data.get("observation"),
+                                           profile_id=config.GROUND_SENSOR_PROFILE_ID if ground else None)
             if closed:
                 obs["received_after_purpose"] = after_label
                 obs["used_for_completion"] = False
