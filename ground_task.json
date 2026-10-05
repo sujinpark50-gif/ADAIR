@@ -1,0 +1,15 @@
+{
+  "request_id": "DEMO-SMOKE-UGV-002",
+  "incident_id": "INC-INJE-2019",
+  "kind": "GROUND_SUPPORT",
+  "target": {
+    "lat": 38.02845,
+    "lon": 128.1309,
+    "ground_amsl_m": 230.0,
+    "cell_id": "IGN"
+  },
+  "requirements": {
+    "resource_types": ["UGV"],
+    "sensor": null
+  }
+}

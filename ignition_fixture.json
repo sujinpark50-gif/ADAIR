@@ -1,0 +1,21 @@
+{
+  "run_id": "RUN-SMOKE-DEMO",
+  "scenario_start_kst": "2019-04-04T14:00:00+09:00",
+  "fire_cells": [
+    {
+      "cell_id": "IGN",
+      "lat": 38.02845,
+      "lon": 128.1309,
+      "cell_size_m": 90.0,
+      "ground_amsl_m": 230.0,
+      "fire_state": "BURNING"
+    }
+  ],
+  "reports": [
+    {
+      "cell_id": "IGN",
+      "sim_time_s": 0.0,
+      "source": "119_CALL"
+    }
+  ]
+}
