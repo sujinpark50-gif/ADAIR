@@ -189,11 +189,18 @@ while read -r RID INST MODEL X Y Z YAW RTYPE; do
     #      (FIRE3, 2026-10-05: 8.5% 오르막을 2 m/s 로 500 m 오르다가 15~25° 꺾이는 웨이포인트 17·23·24·26 에서만 멈춤).
     #      100° 미만으로 꺾이는 곳은 서지 않고 감속하며 돈다 (RD_MISS_SPD_GAIN: 꺾임 각/180° 만큼 감속, 96° 면 약 1 m/s).
     #      100° 넘는 꺾임(유턴급)만 멈춰서 제자리 회전. 파라미터는 rootfs/N 에 남는다
+    #      바퀴 속도 범위 ±30 → ±60 rad/s (SIM_GZ_WH_*, RO_MAX_THR_SPEED 2.1 → 4.1): 2 m/s 가 스로틀 95% 라
+    #      꺾을 때·오르막에서 여유가 없었다. 50% 로 내려 8% 오르막도 2 m/s 유지 (FIRE8). 최고속도는 RO_SPEED_LIM 2 그대로
     for _ in $(seq 60); do
         "$BUILD/bin/px4-param" --instance "$INST" set RD_TRANS_DRV_TRN "${RD_TRANS_DRV_TRN:-1.75}" >> "$LOG_DIR/px4-$INST.log" 2>&1 \
           && "$BUILD/bin/px4-param" --instance "$INST" set RD_TRANS_TRN_DRV "${RD_TRANS_TRN_DRV:-0.26}" >> "$LOG_DIR/px4-$INST.log" 2>&1 \
           && "$BUILD/bin/px4-param" --instance "$INST" set RD_MISS_SPD_GAIN "${RD_MISS_SPD_GAIN:-1.0}" >> "$LOG_DIR/px4-$INST.log" 2>&1 \
-          && { echo "  RD_TRANS_DRV_TRN=${RD_TRANS_DRV_TRN:-1.75} RD_TRANS_TRN_DRV=${RD_TRANS_TRN_DRV:-0.26} RD_MISS_SPD_GAIN=${RD_MISS_SPD_GAIN:-1.0} (웨이포인트 정지 대신 감속)"; break; }
+          && "$BUILD/bin/px4-param" --instance "$INST" set SIM_GZ_WH_MAX1 160 >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && "$BUILD/bin/px4-param" --instance "$INST" set SIM_GZ_WH_MAX2 160 >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && "$BUILD/bin/px4-param" --instance "$INST" set SIM_GZ_WH_MIN1 40 >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && "$BUILD/bin/px4-param" --instance "$INST" set SIM_GZ_WH_MIN2 40 >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && "$BUILD/bin/px4-param" --instance "$INST" set RO_MAX_THR_SPEED 4.1 >> "$LOG_DIR/px4-$INST.log" 2>&1 \
+          && { echo "  RD_TRANS_DRV_TRN=${RD_TRANS_DRV_TRN:-1.75} RD_TRANS_TRN_DRV=${RD_TRANS_TRN_DRV:-0.26} RD_MISS_SPD_GAIN=${RD_MISS_SPD_GAIN:-1.0} (웨이포인트 정지 대신 감속), 바퀴 ±60 rad/s"; break; }
         sleep 1
     done
 

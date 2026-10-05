@@ -36,6 +36,11 @@ def make(base_sdf: str, base_name: str, rid: str) -> tuple[str, str]:
         return f"<{tag}>model://{base_name}/{val}</{tag}>"
     sdf = re.sub(r"<(%s)>([^<]*)</\1>" % "|".join(ASSET_TAGS), absolutize, sdf)
 
+    # 바퀴 진행 방향 마찰(mu, fdir1 방향)만 올린다. 바퀴 반지름이 6.9 cm 라 mu 1 이면 2 cm 넘는 턱도 못 넘는다
+    # (넘으려면 mu ≥ tan θ, cos θ = (r - 턱)/r). 도로 면이 겹치는 교차로에 4~5 cm 턱이 있어 평지에서 멈췄다
+    # (FIRE8, 2026-10-05, 웨이포인트 26). mu 4 면 약 5 cm 까지. 옆 방향(mu2)은 그대로 — 제자리 회전이 미끄러져야 한다.
+    sdf = re.sub(r"<mu>[^<]*</mu>", f"<mu>{os.getenv('FIRE_TRUCK_WHEEL_MU', '4.0')}</mu>", sdf)
+
     parts = open(os.path.join(FX_DIR, "fx_parts.sdf.in"), encoding="utf-8").read()
     parts = parts.replace("@BASE_LINK@", base_link).replace("@RID@", rid).replace("@FX@", FX_DIR)
     i = sdf.rindex("</model>")
