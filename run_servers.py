@@ -14,6 +14,7 @@ ADAIR 서버 일괄 실행·중지·상태 확인 (통합 담당)
     python run_servers.py start --uav-url http://<EC2 IP>:8000   # 원격(real) UAV 에 연결, 로컬 UAV 는 띄우지 않음
     python run_servers.py start --twin          # 2019 인제 디지털 트윈 (멘토 패치, tools/run_twin.sh 와 같은 구성)
                                                 #   환경 계약 서버(8300) + UAV 2대 + UGV + 총괄(팀 환경) + 관제판 + 트윈 시계 + 야간 순찰
+                                                #   + 지상 출동 요청(불 확인 → 소방차 마을회관 방어, TWIN_DISPATCH_ARGS 로 옵션)
                                                 #   관제판은 환경 서버를 읽기만 하고 출동은 총괄 경유. 3D 화면: /inje3d
     python run_servers.py status                # 켜진 서버와 응답 여부
     python run_servers.py stop                  # 이 스크립트로 켠 서버 모두 끄기
@@ -65,6 +66,10 @@ def twin_uav_home(opts: dict) -> str:
     return f"{lat:.6f},{lon:.6f},{gb.terrain_elev(round(p[0]), round(p[1])):.1f}"
 
 
+# 지상 출동 운용자 옵션 (예: TWIN_DISPATCH_ARGS="--trigger sunset --site NAMJEON1_HALL,INJE_REST_AREA")
+DISPATCH_ARGS = os.environ.get("TWIN_DISPATCH_ARGS", "").split()
+
+
 def server_defs(opts: dict) -> dict:
     """서버별 실행 방법. opts 는 start 할 때 받은 설정 (restart 때 그대로 재사용)."""
     uav_url = opts.get("uav_url") or "http://127.0.0.1:8000"
@@ -93,7 +98,9 @@ def server_defs(opts: dict) -> dict:
                  "env": {"UAV_ID": "A-uav2", "UAV_MODE": "mock", **uav_extra}, "desc": "UAV A-uav2 (mock)"},
         "ugv":  {"cwd": ROOT, "port": 8100, "health": "/health",
                  "cmd": uv + ["ugv.server:app", "--host", "127.0.0.1", "--port", "8100"],
-                 "env": {"UGV_DRIVER": "sim", **({"UGV_STATE_DIR": str(run / "ugv")} if tw else {})},
+                 "env": {"UGV_DRIVER": "sim", **({"UGV_STATE_DIR": str(run / "ugv")} if tw else {}),
+                         # 트윈: 차량 배속 = 트윈 시계 배속 (밖에서 UGV_TIME_SCALE 을 주면 그 값을 쓴다)
+                         **({"UGV_TIME_SCALE": os.environ.get("UGV_TIME_SCALE", speed)} if tw else {})},
                  "desc": "UGV 서버 (sim)"},
         "orch": {"cwd": ROOT, "port": 8200, "health": "/health",
                  "cmd": [PY, "-m", "orchestrator.api"], "env": orch_env,
@@ -106,10 +113,13 @@ def server_defs(opts: dict) -> dict:
                   "desc": f"트윈 시계 ({speed}배속, /advance 유일 호출)"},
         "operator": {"cwd": ROOT, "port": None, "health": None,
                      "cmd": [PY, "tools/twin_operator.py"], "env": tw, "desc": "야간 순찰 요청"},
+        "dispatch": {"cwd": ROOT, "port": None, "health": None,
+                     "cmd": [PY, "tools/twin_ground_dispatch.py"] + DISPATCH_ARGS, "env": tw,
+                     "desc": "지상 출동 요청 (불 확인 → 소방차 마을회관 방어)"},
     }
 
 
-ORDER = ["env", "uav1", "uav2", "ugv", "orch", "web", "clock", "operator"]   # 켜는 순서
+ORDER = ["env", "uav1", "uav2", "ugv", "orch", "web", "clock", "operator", "dispatch"]   # 켜는 순서
 TWIN_SET = ORDER                                   # --twin 일 때 전부
 BASIC = ["env", "uav1", "uav2", "ugv", "orch", "web"]   # 포트가 있는 서버
 
