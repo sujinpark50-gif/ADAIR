@@ -84,7 +84,9 @@ def union_fraction(rects, cell_size_m: float) -> float:
 
 def simulate(*, snapshot, task, attempt_id: str, resource_id: str, position: dict,
              uav_raw_observation: Optional[dict] = None,
-             profile_id: Optional[str] = None) -> dict:
+             profile_id: Optional[str] = None, cells: Optional[list] = None) -> dict:
+    """cells 를 주면 (정답 상태를 붙인 정적 지도 칸, with_truth_state) 그 칸들로 범위를 계산한다.
+    없으면 기존처럼 환경이 준 불·위험·예측 칸만 본다."""
     profile_id = profile_id or config.DEFAULT_SENSOR_PROFILE_ID
     profile = config.SENSOR_PROFILES[profile_id]
     base = {
@@ -116,7 +118,7 @@ def simulate(*, snapshot, task, attempt_id: str, resource_id: str, position: dic
     # covered_cells  칸 전체가 프레임 안에 들어온 칸 (그 칸에 대해 '불 없음'을 말할 수 있다)
     # partial_cells  일부만 겹친 칸 (본 부분의 사실만 남긴다. 칸 전체 관측으로 세지 않는다)
     covered, partial, coverage, detections, seen = [], [], [], [], set()
-    for cell in snapshot.fire_cells + snapshot.risk_cells + snapshot.spread_forecast:
+    for cell in (cells if cells is not None else snapshot.fire_cells + snapshot.risk_cells + snapshot.spread_forecast):
         if cell.get("lat") is None or cell.get("lon") is None or not cell.get("cell_size_m"):
             continue
         if cell["cell_id"] in seen:
@@ -138,7 +140,180 @@ def simulate(*, snapshot, task, attempt_id: str, resource_id: str, position: dic
             "cell_coverage": coverage, "coverage_method": "AXIS_ALIGNED_FRAME_CELL_INTERSECTION",
             "detections": detections, "target_covered": target_covered,
             "target_point": {"lat": goal.lat, "lon": goal.lon, "cell_id": goal.cell_id},
-            "footprint_center": {"lat": lat, "lon": lon}}
+            "footprint_center": {"lat": lat, "lon": lon},
+            "fire_points": [{"lat": c["lat"], "lon": c["lon"], "cell_id": c["cell_id"]}
+                            for c in (cells if cells is not None else snapshot.fire_cells)
+                            if c.get("fire_state") == "BURNING" and c["cell_id"] in seen]}
+
+
+# ---------------------------------------------------------------------------
+# 관측 계획용: 지도 전체 칸으로 범위 계산 (사용자 결정 2026-10-07)
+#   기존 simulate 는 환경이 준 불·위험 칸만 훑어 그 밖의 칸은 '불 없음'으로도 남지 않는다.
+#   관측 계획은 미관측과 '불 없음'을 구분해야 하므로 정적 지도 칸(위치·크기)에 범위 안의 정답 상태만 붙인다.
+# ---------------------------------------------------------------------------
+
+def parse_cell_key(cid):
+    """'{col}_{row}' → (col, row). 형식이 다르면 None (시험 지도 등)"""
+    if not isinstance(cid, str) or "_" not in cid:
+        return None
+    a, _, b = cid.partition("_")
+    try:
+        return int(a), int(b)
+    except ValueError:
+        return None
+
+
+def cells_near(map_cells, lat: float, lon: float, radius_m: float) -> list:
+    """정적 지도 칸 중 (lat, lon) 에서 radius_m 사각형 안 (위경도 상자로 먼저 거른다)"""
+    dlat = radius_m / _M_PER_DEG_LAT
+    dlon = radius_m / (_M_PER_DEG_LAT * max(0.01, math.cos(math.radians(lat))))
+    return [c for c in map_cells if c.get("lat") is not None and c.get("lon") is not None
+            and abs(c["lat"] - lat) <= dlat and abs(c["lon"] - lon) <= dlon]
+
+
+def with_truth_state(cells, snapshot) -> list:
+    """정적 칸에 정답 화재 상태를 붙인다 (모의 센서 내부 전용 — 범위 밖 칸에는 쓰지 않는다)"""
+    truth = {c["cell_id"]: c.get("fire_state") for c in snapshot.fire_cells + snapshot.risk_cells}
+    return [{**c, "fire_state": truth.get(c["cell_id"]) or "UNBURNED"} for c in cells]
+
+
+def _seg_dist(px, py, ax, ay, bx, by) -> float:
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _path_dist(px, py, path) -> float:
+    if len(path) == 1:
+        return math.hypot(px - path[0][0], py - path[0][1])
+    return min(_seg_dist(px, py, *path[i], *path[i + 1]) for i in range(len(path) - 1))
+
+
+def _truncate(path, length):
+    out, used = [path[0]], 0.0
+    for a, b in zip(path, path[1:]):
+        d = math.hypot(b[0] - a[0], b[1] - a[1])
+        if used + d >= length:
+            t = 0.0 if d == 0 else (length - used) / d
+            out.append((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])))
+            return out, length
+        out.append(b)
+        used += d
+    return out, used
+
+
+_SAMPLES = 8          # 칸 한 변을 8등분한 64 점으로 띠가 덮은 비율을 잰다 (기하 근사, 방법을 결과에 남김)
+
+
+def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_id: str, position: dict,
+                        report_point: Optional[dict]) -> dict:
+    """드론 테두리 추적 관측 (모의, TEST_ONLY — 드론 순찰 기능 UAV-08 대기).
+
+    도착 위치의 카메라 범위(띠 폭의 절반 반경) 안에 불 테두리 칸(불타는 칸 중 옆에 안 탄 칸이 있는 칸)이 있으면
+    그 테두리를 따라 신고 지점에서 멀어지는 쪽으로 speed×duration 만큼 난다. 테두리가 없으면 신고 지점 쪽으로
+    같은 길이를 직선으로 난다. 지나간 경로 양옆 swath/2 안이 관측 범위다.
+    정답(불 상태)은 이 범위 안의 칸에만 쓴다. 결과의 fire_points 는 불이 보인 칸 중심 좌표뿐이다 (드론 보고 계약)."""
+    prof = config.EDGE_SWEEP_PROFILE
+    base = {
+        "observation_id": f"OBS-{uuid.uuid4().hex[:12]}", "run_id": snapshot.run_id,
+        "state_version_seen": snapshot.state_version, "simulation_time_s": snapshot.simulation_time_s,
+        "observed_wall": datetime.now(timezone.utc).isoformat(), "task_id": task.task_id,
+        "attempt_id": attempt_id, "resource_id": resource_id, "source": prof["source"],
+        "sensor_profile_id": prof["sensor_profile_id"], "sensor_status": prof["status"],
+        "sensor_type": "THERMAL", "position": position, "footprint_basis": prof["basis"],
+    }
+    lat0, lon0 = position.get("lat"), position.get("lon")
+    empty = {"footprint": None, "covered_cells": [], "partial_cells": [], "cell_coverage": [], "detections": [],
+             "fire_points": [], "target_covered": False}
+    if lat0 is None or lon0 is None:
+        return {**base, "result": "FAILED", "failure_reason": "POSITION_UNKNOWN", **empty}
+    length, half = prof["speed_ms"] * prof["duration_s"], prof["swath_m"] / 2
+    cell_size = max((c.get("cell_size_m") or 0) for c in map_cells) if map_cells else 0
+    near = with_truth_state(cells_near(map_cells, lat0, lon0, length + half + cell_size), snapshot)
+    by_id = {c["cell_id"]: c for c in near}
+    by_cr = {parse_cell_key(c["cell_id"]): c for c in near if parse_cell_key(c["cell_id"])}
+    xy = {cid: _to_local_m(lat0, lon0, c["lat"], c["lon"]) for cid, c in by_id.items()}
+
+    def nbrs(cid):
+        p = parse_cell_key(cid)
+        if p is None:
+            return []
+        return [by_cr[(p[0] + dc, p[1] + dr)]["cell_id"] for dc in (-1, 0, 1) for dr in (-1, 0, 1)
+                if (dc or dr) and (p[0] + dc, p[1] + dr) in by_cr]
+
+    edge = {cid for cid, c in by_id.items() if c["fire_state"] == "BURNING"
+            and any(by_id[n]["fire_state"] == "UNBURNED" for n in nbrs(cid))}
+    rep = None if not report_point else _to_local_m(lat0, lon0, report_point["lat"], report_point["lon"])
+
+    def to_square(cid):                      # 도착점에서 칸(정사각형)까지 거리
+        x, y = xy[cid]
+        h = (by_id[cid].get("cell_size_m") or 0) / 2
+        return math.hypot(max(abs(x) - h, 0.0), max(abs(y) - h, 0.0))
+    start = sorted((to_square(c), c) for c in edge if to_square(c) <= half)
+    path = [(0.0, 0.0)]
+    if start:
+        mode, cur, seen = "EDGE_FOLLOW", start[0][1], {start[0][1]}
+        path.append(xy[cur])
+        walked = math.hypot(*xy[cur])
+        while walked < length:
+            cand = [n for n in nbrs(cur) if n in edge and n not in seen]
+            if not cand:
+                break
+            # 신고 지점에서 더 먼 쪽으로 (같으면 칸 ID 순 — 결정론)
+            far = (lambda n: math.hypot(xy[n][0] - rep[0], xy[n][1] - rep[1])) if rep else (lambda n: 0.0)
+            nxt = sorted(cand, key=lambda n: (-far(n), n))[0]
+            walked += math.hypot(xy[nxt][0] - xy[cur][0], xy[nxt][1] - xy[cur][1])
+            path.append(xy[nxt])
+            seen.add(nxt)
+            cur = nxt
+    elif rep is not None and math.hypot(*rep) > 1e-6:
+        mode = "STRAIGHT_TO_REPORT"
+        d = math.hypot(*rep)
+        path.append((rep[0] / d * length, rep[1] / d * length))
+    else:
+        mode = "HOLD_AT_ARRIVAL"
+    path, flown = _truncate(path, length) if len(path) > 1 else (path, 0.0)
+
+    covered, partial, coverage, detections, points = [], [], [], [], []
+    for cid in sorted(by_id):
+        c, (cx, cy) = by_id[cid], xy[cid]
+        size = c.get("cell_size_m")
+        if not size:
+            continue
+        step, hit = size / _SAMPLES, 0
+        for i in range(_SAMPLES):
+            for j in range(_SAMPLES):
+                px, py = cx - size / 2 + (i + 0.5) * step, cy - size / 2 + (j + 0.5) * step
+                if _path_dist(px, py, path) <= half:
+                    hit += 1
+        if not hit:
+            continue
+        full = hit == _SAMPLES * _SAMPLES
+        (covered if full else partial).append(cid)
+        coverage.append({"cell_id": cid, "cell_size_m": size, "full": full,
+                         "fraction": round(hit / (_SAMPLES * _SAMPLES), 6), "rect": None})
+        if c["fire_state"] in ("BURNING", "BURNED"):
+            detections.append({"cell_id": cid, "fire_state": c["fire_state"]})
+            if c["fire_state"] == "BURNING":
+                points.append({"lat": c["lat"], "lon": c["lon"], "cell_id": cid})
+    goal = task.nav_target
+    target_covered = (goal.lat is not None and goal.lon is not None
+                      and _path_dist(*_to_local_m(lat0, lon0, goal.lat, goal.lon), path) <= half)
+
+    def back(p):
+        return {"lat": round(lat0 + p[1] / _M_PER_DEG_LAT, 7),
+                "lon": round(lon0 + p[0] / (_M_PER_DEG_LAT * math.cos(math.radians(lat0))), 7)}
+    fp = {"shape": "SWATH_ALONG_PATH", "mode": mode, "path": [back(p) for p in path], "length_m": round(flown, 1),
+          "swath_m": prof["swath_m"], "speed_ms": prof["speed_ms"], "duration_s": prof["duration_s"],
+          "width_m": prof["swath_m"], "height_m": round(flown, 1), "agl_m": None,
+          "method": "CAPSULE_BUFFER_8x8_CELL_SAMPLING"}
+    result = "DETECTED" if detections else ("NOT_DETECTED" if coverage else "NO_COVERAGE")
+    return {**base, "result": result, "footprint": fp, "covered_cells": covered, "partial_cells": partial,
+            "cell_coverage": coverage, "coverage_method": fp["method"], "detections": detections,
+            "fire_points": points, "target_covered": target_covered,
+            "target_point": {"lat": goal.lat, "lon": goal.lon, "cell_id": goal.cell_id},
+            "footprint_center": {"lat": lat0, "lon": lon0}, "report_point": report_point}
 
 
 def simulate_weather(*, snapshot, task, attempt_id: str, resource_id: str, position: dict,

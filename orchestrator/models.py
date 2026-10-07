@@ -134,6 +134,9 @@ class Task:
     coverage: dict = field(default_factory=dict)
     visited_cell_ids: List[str] = field(default_factory=list)   # 기체가 관측 프레임 중심을 둔 필수 셀
     visit_target: Optional[Target] = None      # 구역 임무의 다음 방문 지점 (없으면 target)
+    # 관측 계획이 고른 자원·계획. 있으면 배정은 이 자원만 평가한다 (다른 자원으로 조용히 바꾸지 않는다)
+    assigned_resource_id: Optional[str] = None
+    plan_id: Optional[str] = None
 
     @property
     def common_state(self) -> str:
@@ -183,6 +186,8 @@ class Task:
             coverage=dict(d.get("coverage") or {}),
             visited_cell_ids=list(d.get("visited_cell_ids") or []),
             visit_target=Target(**d["visit_target"]) if d.get("visit_target") else None,
+            assigned_resource_id=d.get("assigned_resource_id"),
+            plan_id=d.get("plan_id"),
         )
 
 

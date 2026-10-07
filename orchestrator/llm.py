@@ -16,7 +16,7 @@ LLM 이 하는 일
 - 근거가 인용한 ID(input_refs)는 입력에 있던 ID 만
 - 근거 문장 길이 제한
 
-모델·timeout·호출 한도는 설정값이다 (사용자 결정 2026-09-30: gpt-5.6-luna, 30초, 서버 1회 실행당 50회).
+모델·timeout·호출 한도는 설정값이다 (사용자 결정: 2026-10-07 gpt-5.5·60초, 2026-09-30 서버 1회 실행당 50회).
 timeout 이나 호출 한도가 비어 있거나 키가 없으면 LLM 을 부르지 않는다. API 키는 .env 에서 읽고 기록하지 않는다.
 """
 
@@ -243,3 +243,59 @@ class LlmPlanner:
                 "orders": {g["group_index"]: g["order"] for g in out["groups"]},
                 "rationales": {g["group_index"]: g["rationale"] for g in out["groups"]},
                 "input_refs": {g["group_index"]: g["input_refs"] for g in out["groups"]}}
+
+    # ------------------------------------------------------------------
+    # 관측 계획 (사용자 결정 2026-10-07): 예상 지역과 자원 분담을 LLM 이 고른다.
+    # 형식·참조 오류면 오류 목록을 주고 한 번 고쳐 달라고 한다 (계획서 §7). 그래도 틀리면 INVALID → 규칙 대체.
+    # 두 번째 호출도 같은 호출 한도를 쓴다.
+    # ------------------------------------------------------------------
+    def _chat(self, messages) -> str:
+        kwargs = {"model": self.model, "messages": messages, "timeout": self.timeout_s}
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        self.calls += 1
+        resp = self._get_client().chat.completions.create(**kwargs)
+        return _strip_code_fence(resp.choices[0].message.content)
+
+    def plan_observations(self, inp: dict) -> dict:
+        from . import observation_planner as op
+        base = {"provider": config.LLM_PROVIDER, "model": self.model, "timeout_s": self.timeout_s,
+                "kind": "OBSERVATION_PLAN"}
+        why = self.status()
+        if why:
+            return {**base, "status": "DISABLED", "reason": why, "attempts": []}
+        system = (op.SYSTEM + "\n답은 아래 JSON Schema 를 따르는 JSON 객체 하나만 출력한다 (설명·코드블록 없이).\n"
+                  + json.dumps(op.OUTPUT_SCHEMA, ensure_ascii=False))
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(inp, ensure_ascii=False)}]
+        attempts, t0 = [], time.monotonic()
+        for n in range(2):
+            if n and self.status():
+                attempts.append({"status": "NOT_RETRIED", "reason": self.status()})
+                break
+            t1 = time.monotonic()
+            try:
+                raw = self._chat(messages)
+            except Exception as e:  # noqa: BLE001 — 모델 실패는 규칙 대체로 회수한다
+                attempts.append({"status": "ERROR", "reason": type(e).__name__, "error": str(e)[:300]})
+                return {**base, "status": "ERROR", "reason": type(e).__name__, "attempts": attempts,
+                        "latency_s": round(time.monotonic() - t0, 3)}
+            try:
+                out = json.loads(raw)
+                violations = op.validate(out, inp)
+            except (TypeError, ValueError):
+                out, violations = None, ["NOT_JSON"]
+            except (KeyError, AttributeError) as e:
+                out, violations = None, [f"VALIDATOR_ERROR:{type(e).__name__}"]
+            attempts.append({"status": "INVALID" if violations else "OK", "violations": violations,
+                             "raw_output": out if out is not None else str(raw)[:2000],
+                             "latency_s": round(time.monotonic() - t1, 3)})
+            if not violations:
+                return {**base, "status": "OK", "plan": out, "attempts": attempts, "repaired": n == 1,
+                        "latency_s": round(time.monotonic() - t0, 3)}
+            messages = messages + [{"role": "assistant", "content": str(raw)[:8000]},
+                                   {"role": "user", "content": "검증 실패. 다음 오류를 고쳐 같은 형식의 JSON 하나만 다시 "
+                                                               "출력하라: " + json.dumps(violations, ensure_ascii=False)}]
+        last = [a for a in attempts if a["status"] == "INVALID"][-1]
+        return {**base, "status": "INVALID", "violations": last["violations"], "attempts": attempts,
+                "latency_s": round(time.monotonic() - t0, 3)}

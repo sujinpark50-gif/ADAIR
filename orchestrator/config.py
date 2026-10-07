@@ -169,7 +169,7 @@ GROUND_SENSOR_PROFILE_ID = os.getenv("ORCH_GROUND_SENSOR_PROFILE", "ASSUMED_GROU
 # ---------------------------------------------------------------------------
 # UGV 지상 열화상 (모의, 2026-10-05): ORCH_UGV_THERMAL=1 일 때만 UGV 에 THERMAL 을 붙인다. 기본은 꺼짐 —
 # 켜면 UAV·UGV 를 함께 허용한 열화상 임무에서 직선거리가 가까운 UGV 가 먼저 평가된다.
-UGV_THERMAL_ENABLED = os.getenv("ORCH_UGV_THERMAL", "0") == "1"
+UGV_THERMAL_ENABLED = os.getenv("ORCH_UGV_THERMAL", "1") == "1"   # 사용자 결정 2026-10-07: 관측 계획 시연용으로 켬
 SIMULATED_CAPABILITIES = {"UAV": ("WEATHER",), "UGV": ("WEATHER",) + (("THERMAL",) if UGV_THERMAL_ENABLED else ()),
                           "FIRE_ENGINE": ("WEATHER",)}
 WEATHER_SENSOR_PROFILE = {
@@ -253,13 +253,35 @@ KMA_ASOS_CSV = Path(os.getenv("ORCH_KMA_ASOS_CSV", str(ROOT / "data/weather/kma_
 KMA_ASOS_STATIONS = Path(os.getenv("ORCH_KMA_ASOS_STATIONS", str(ROOT / "data/weather/kma_asos_stations.json")))
 
 # ---------------------------------------------------------------------------
+# 관측 계획 (사용자 결정 2026-10-07, docs/common/총괄_관측계획_개편_계획서_완성본.md)
+#   신고 → 드론이 불 테두리를 따라 날며 불 좌표 보고 → LLM 이 다음 예상 지역(구역)과 보낼 자원을 고름 → 반복.
+#   켜져 있으면 신고가 와도 최초 정찰 Task 를 바로 만들지 않고 관측 계획이 자원을 배정한다.
+# ---------------------------------------------------------------------------
+OBS_PLANNER_ENABLED = os.getenv("ORCH_OBS_PLANNER", "1") == "1"
+OBS_REPORT_DELAY_S = 120.0            # 점화 후 신고 시각 (시뮬레이션 초)
+# 시연 종료: 2019-04-05 06:00 KST = 시작(04-04 14:45) 후 15시간 15분. 이후 새 관측 계획을 세우지 않는다
+OBS_DEMO_END_SIM_S = float(os.getenv("ORCH_OBS_DEMO_END_SIM_S", str(15 * 3600 + 15 * 60)))
+OBS_CANDIDATE_RADIUS_M = 1000.0       # 알려진 불에서 이 거리 안의 칸만 후보 (LLM 입력)
+OBS_BLOCK_CELLS = 3                   # 후보 칸을 3×3 칸 구역으로 묶어 LLM 에 준다
+OBS_STALE_S = None                    # 오래된 관측 기준 — 미정. 관측 시각만 넘기고 오래됨 표시는 하지 않는다
+OBS_RATIONALE_MAX_CHARS = 400
+# 드론 테두리 추적 관측 (모의, TEST_ONLY). 드론팀 순찰 기능(UAV-08) 전까지 총괄 모의 센서로 만든다.
+#   도착 지점에서 불 테두리를 찾아 신고 지점에서 멀어지는 쪽으로 따라 난다. 테두리가 없으면 신고 지점 쪽으로 직선.
+#   카메라 한 장 52×42 m(지면 위 90 m) 중 진행 방향에 수직인 52 m 를 띠 폭으로 쓴다.
+EDGE_SWEEP_PROFILE = {
+    "sensor_profile_id": "ASSUMED_EDGE_SWEEP_V1", "source": "SIMULATED", "status": "TEST_ONLY",
+    "sensor_type": "THERMAL", "speed_ms": 7.0, "duration_s": 20.0, "swath_m": 52.0,
+    "basis": "ASSUMED_EDGE_FOLLOWING_SWEEP (드론 순찰 코드 대기, UAV-08)",
+}
+
+# ---------------------------------------------------------------------------
 # LLM (요청서 §9: 모델·timeout·호출/비용 한도는 설정값. 임의 기본값 금지)
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = "openai"
 LLM_MODEL = os.getenv("ORCH_LLM_MODEL", "gpt-5.5")   # 사용자 결정 2026-10-07 (copa 게이트웨이에 gpt-5.6-luna 없음)
 LLM_API_KEY_ENV = "OPENAI_API_KEY"                         # 키 값은 코드·로그에 남기지 않는다
 LLM_BASE_URL = os.getenv("OPENAI_BASE_URL") or "https://copa.codyssey.kr/v1"  # 사용자 결정 2026-10-07
-LLM_TIMEOUT_S = float(os.getenv("ORCH_LLM_TIMEOUT_S", "30"))     # 사용자 결정 2026-09-30 (실제 초)
+LLM_TIMEOUT_S = float(os.getenv("ORCH_LLM_TIMEOUT_S", "60"))     # 사용자 결정 2026-10-07: 30→60 (gpt-5.5 관측 계획 응답 20~42초 실측)
 LLM_MAX_CALLS_PER_RUN = int(os.getenv("ORCH_LLM_MAX_CALLS", "50"))  # 사용자 결정 2026-09-30 (서버 1회 실행당)
 LLM_TEMPERATURE = None           # TBD — 모델이 지원하는 경우에만 전달
 

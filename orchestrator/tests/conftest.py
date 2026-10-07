@@ -35,6 +35,17 @@ def single_frame_sensor(monkeypatch):
     monkeypatch.setattr(config, "DEFAULT_SENSOR_PROFILE_ID", "TEST_THERMAL_90M_V1")
 
 
+@pytest.fixture(autouse=True)
+def legacy_dispatch_mode(monkeypatch):
+    """기존 시험은 관측 계획 이전 동작(신고 → 최초 정찰 Task, UGV 열화상 꺼짐)을 기준으로 쓴다.
+    관측 계획(2026-10-07 기본 켜짐)은 test_observation_planner 에서 obs_planner 픽스처로 켠다."""
+    from orchestrator import config
+    monkeypatch.setattr(config, "OBS_PLANNER_ENABLED", False)
+    caps = dict(config.SIMULATED_CAPABILITIES)
+    caps["UGV"] = tuple(c for c in caps["UGV"] if c != "THERMAL")
+    monkeypatch.setattr(config, "SIMULATED_CAPABILITIES", caps)
+
+
 @pytest.fixture
 def field_policy(monkeypatch):
     """현장 측정 유효시간을 시험 안에서만 설정한다 (TEST_ONLY — 운영 기본값은 미설정).
