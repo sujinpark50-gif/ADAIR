@@ -207,12 +207,20 @@ _SAMPLES = 8          # 칸 한 변을 8등분한 64 점으로 띠가 덮은 비
 
 
 def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_id: str, position: dict,
-                        report_point: Optional[dict]) -> dict:
+                        report_point: Optional[dict], fallback_point: Optional[dict] = None,
+                        burned_trail: Optional[list] = None, advance_point: Optional[dict] = None,
+                        orbit_duration_s: Optional[float] = None) -> dict:
     """드론 테두리 추적 관측 (모의, TEST_ONLY — 드론 순찰 기능 UAV-08 대기).
 
     도착 위치의 카메라 범위(띠 폭의 절반 반경) 안에 불 테두리 칸(불타는 칸 중 옆에 안 탄 칸이 있는 칸)이 있으면
-    그 테두리를 따라 신고 지점에서 멀어지는 쪽으로 speed×duration 만큼 난다. 테두리가 없으면 신고 지점 쪽으로
-    같은 길이를 직선으로 난다. 지나간 경로 양옆 swath/2 안이 관측 범위다.
+    그 테두리를 따라 신고 지점에서 멀어지는 쪽으로 speed×duration 만큼 난다. 테두리가 없으면 fallback_point
+    (총괄이 지금 불타는 중으로 아는 가장 가까운 칸, 사용자 결정 2026-10-07) 쪽으로 직선으로 난다.
+    그것도 없으면 burned_trail(가장 마지막에 불타던 곳에서 시작해 아직 안 본 '다 타고 꺼짐(추정)' 칸을 이은 순서)을
+    따라 난다. 그것도 없으면 advance_point(진행 방향으로 1시간 앞 예상 지점) 쪽으로 직선으로 난다 — 신고 지점 쪽으로
+    가지 않는다 (사용자 결정 2026-10-07). 그것도 없으면 제자리. 모두 같은 길이(speed×duration)다.
+    orbit_duration_s 를 주면(첫 드론) 테두리를 따라가지 않고 도착 지점을 중심으로 원을 돈다: speed×orbit_duration_s 를
+    '중심 → 원 위(북쪽)로 나가기 + 한 바퀴'에 쓰므로 반지름 = 길이 / (1 + 2π). 불 전체 모양을 보기 위함 (2026-10-07).
+    결과 footprint.mode 가 NO_FIRE_REFERENCE_NEARBY 계열이면 총괄이 앞질러 보내기 출동을 만든다. 지나간 경로 양옆 swath/2 안이 관측 범위다.
     정답(불 상태)은 이 범위 안의 칸에만 쓴다. 결과의 fire_points 는 불이 보인 칸 중심 좌표뿐이다 (드론 보고 계약)."""
     prof = config.EDGE_SWEEP_PROFILE
     base = {
@@ -228,7 +236,8 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
              "fire_points": [], "target_covered": False}
     if lat0 is None or lon0 is None:
         return {**base, "result": "FAILED", "failure_reason": "POSITION_UNKNOWN", **empty}
-    length, half = prof["speed_ms"] * prof["duration_s"], prof["swath_m"] / 2
+    length = prof["speed_ms"] * (orbit_duration_s or prof["duration_s"])
+    half = prof["swath_m"] / 2
     cell_size = max((c.get("cell_size_m") or 0) for c in map_cells) if map_cells else 0
     near = with_truth_state(cells_near(map_cells, lat0, lon0, length + half + cell_size), snapshot)
     by_id = {c["cell_id"]: c for c in near}
@@ -252,7 +261,12 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
         return math.hypot(max(abs(x) - h, 0.0), max(abs(y) - h, 0.0))
     start = sorted((to_square(c), c) for c in edge if to_square(c) <= half)
     path = [(0.0, 0.0)]
-    if start:
+    if orbit_duration_s:
+        mode = "ORBIT_SURVEY"
+        r = length / (1 + 2 * math.pi)
+        path.extend([(0.0, r)] + [(r * math.sin(math.radians(a)), r * math.cos(math.radians(a)))
+                                  for a in range(10, 361, 10)])
+    elif start:
         mode, cur, seen = "EDGE_FOLLOW", start[0][1], {start[0][1]}
         path.append(xy[cur])
         walked = math.hypot(*xy[cur])
@@ -267,12 +281,20 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
             path.append(xy[nxt])
             seen.add(nxt)
             cur = nxt
-    elif rep is not None and math.hypot(*rep) > 1e-6:
-        mode = "STRAIGHT_TO_REPORT"
-        d = math.hypot(*rep)
-        path.append((rep[0] / d * length, rep[1] / d * length))
     else:
-        mode = "HOLD_AT_ARRIVAL"
+        fb = None if not fallback_point else _to_local_m(lat0, lon0, fallback_point["lat"], fallback_point["lon"])
+        trail = [_to_local_m(lat0, lon0, p["lat"], p["lon"]) for p in (burned_trail or [])]
+        if fb is None and trail:
+            mode = "FOLLOW_PRESUMED_BURNED"
+            path.extend(p for p in trail if math.hypot(p[0] - path[-1][0], p[1] - path[-1][1]) > 1e-6)
+        else:
+            adv = None if not advance_point else _to_local_m(lat0, lon0, advance_point["lat"], advance_point["lon"])
+            goal_pt, mode = ((fb, "STRAIGHT_TO_KNOWN_FIRE") if fb is not None and math.hypot(*fb) > 1e-6 else
+                             (adv, "STRAIGHT_TO_PREDICTED_FRONT") if adv is not None and math.hypot(*adv) > 1e-6 else
+                             (None, "HOLD_AT_ARRIVAL"))
+            if goal_pt is not None:
+                d = math.hypot(*goal_pt)
+                path.append((goal_pt[0] / d * length, goal_pt[1] / d * length))
     path, flown = _truncate(path, length) if len(path) > 1 else (path, 0.0)
 
     covered, partial, coverage, detections, points = [], [], [], [], []
@@ -305,7 +327,9 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
         return {"lat": round(lat0 + p[1] / _M_PER_DEG_LAT, 7),
                 "lon": round(lon0 + p[0] / (_M_PER_DEG_LAT * math.cos(math.radians(lat0))), 7)}
     fp = {"shape": "SWATH_ALONG_PATH", "mode": mode, "path": [back(p) for p in path], "length_m": round(flown, 1),
-          "swath_m": prof["swath_m"], "speed_ms": prof["speed_ms"], "duration_s": prof["duration_s"],
+          "orbit_radius_m": round(length / (1 + 2 * math.pi), 1) if orbit_duration_s else None,
+          "swath_m": prof["swath_m"], "speed_ms": prof["speed_ms"],
+          "duration_s": orbit_duration_s or prof["duration_s"],
           "width_m": prof["swath_m"], "height_m": round(flown, 1), "agl_m": None,
           "method": "CAPSULE_BUFFER_8x8_CELL_SAMPLING"}
     result = "DETECTED" if detections else ("NOT_DETECTED" if coverage else "NO_COVERAGE")
@@ -313,7 +337,9 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
             "cell_coverage": coverage, "coverage_method": fp["method"], "detections": detections,
             "fire_points": points, "target_covered": target_covered,
             "target_point": {"lat": goal.lat, "lon": goal.lon, "cell_id": goal.cell_id},
-            "footprint_center": {"lat": lat0, "lon": lon0}, "report_point": report_point}
+            "footprint_center": {"lat": lat0, "lon": lon0}, "report_point": report_point,
+            "fallback_point": fallback_point, "burned_trail": [p.get("cell_id") for p in (burned_trail or [])],
+            "advance_point": advance_point}
 
 
 def simulate_weather(*, snapshot, task, attempt_id: str, resource_id: str, position: dict,

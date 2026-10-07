@@ -119,7 +119,8 @@ class FixtureEnv:
         )
 
     # 지도(변하지 않는 정보): 칸 위치·크기·지면고도·건물 유형. 불·위험·기상 같은 진짜 상태는 뺀다.
-    STATIC_CELL_KEYS = ("cell_id", "lat", "lon", "cell_size_m", "ground_amsl_m", "building_type", "human_exposure")
+    STATIC_CELL_KEYS = ("cell_id", "lat", "lon", "cell_size_m", "ground_amsl_m", "building_type", "human_exposure",
+                        "is_road", "fuel_amount")      # 도로·연료: 관측 계획의 지형 근거 (정적 지도 정보)
 
     def map_cells(self) -> list:
         out = {}

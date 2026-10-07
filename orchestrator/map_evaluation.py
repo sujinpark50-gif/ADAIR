@@ -7,7 +7,8 @@ orchestrator/map_evaluation.py
   테두리 재현율 = |진짜 불 테두리 칸 ∩ 총괄이 관측으로 불 확인한 칸| / |진짜 불 테두리 칸|
 
 - 진짜 불 테두리 칸: 평가 시각에 BURNING 이고 8방향 이웃 중 UNBURNED 가 있는 칸 (드론 모의 센서의 테두리와 같은 정의).
-- 총괄이 아는 불: kb.fire_states 의 CONFIRMED (관측으로 확인). 신고·LLM 가설·BURNED 는 넣지 않는다.
+- 총괄이 아는 불: 인지 지도(belief_layers)의 BURNING (관측으로 확인, 다 타고 꺼짐 추정 제외).
+  신고·LLM 가설·BURNED·PRESUMED_BURNED 는 넣지 않는다.
 - 평가 범위는 지도 전체 (불타는 칸끼리만 비교하므로 범위를 따로 정하지 않는다).
 - 정답을 읽는 읽기 전용 계산이다. 결과를 관측 계획 입력으로 넘기지 않는다.
 - 진짜 테두리가 없으면(분모 0) 재현율은 None (N/A).
@@ -40,9 +41,10 @@ def truth_edge(fire_cells: List[dict], map_ids: Optional[set] = None) -> set:
     return edge
 
 
-def edge_recall(snapshot, fire_states: Dict[str, dict], map_ids: Optional[set] = None) -> dict:
+def edge_recall(snapshot, layers: Dict[str, dict], map_ids: Optional[set] = None) -> dict:
+    """layers = observation_planner.belief_layers(...) 결과 (칸 → {state, ...})"""
     edge = truth_edge(snapshot.fire_cells, map_ids)
-    known = {c for c, f in fire_states.items() if f.get("status") == "CONFIRMED"}
+    known = {c for c, f in layers.items() if f.get("state") == "BURNING"}
     hit = edge & known
     return {"metric": "EDGE_RECALL", "simulation_time_s": snapshot.simulation_time_s,
             "run_id": snapshot.run_id, "state_version": snapshot.state_version,

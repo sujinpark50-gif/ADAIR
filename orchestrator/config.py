@@ -264,17 +264,47 @@ OBS_REPORT_DELAY_S = 120.0            # 점화 후 신고 시각 (시뮬레이�
 OBS_DEMO_END_SIM_S = float(os.getenv("ORCH_OBS_DEMO_END_SIM_S", str(15 * 3600 + 15 * 60)))
 OBS_CANDIDATE_RADIUS_M = 1000.0       # 알려진 불에서 이 거리 안의 칸만 후보 (LLM 입력)
 OBS_BLOCK_CELLS = 3                   # 후보 칸을 3×3 칸 구역으로 묶어 LLM 에 준다
+# LLM 에 주는 후보 구역 상한 (사용자 결정 2026-10-07: 토큰 절약). 진행 방향 앞쪽 → 테두리 바깥 미관측 → 가까운 순.
+# 빠진 구역은 버리지 않고 다음 계획에서 다시 후보가 된다
+OBS_MAX_CANDIDATE_BLOCKS = 30
+# 환경 한 단계(트윈 35분) 안에서는 관측 계획을 한 번만 세운다 (사용자 결정 2026-10-07). 그 뒤 돌아온 자원은 다음 단계에
+# 모아서 계획한다. 같은 계획 중 자원 거절로 다시 짜는 것은 허용. 관측 반영·첫 출동·앞질러 보내기는 기다리지 않는다
+OBS_ONE_PLAN_PER_ENV_STEP = True
 OBS_STALE_S = None                    # 오래된 관측 기준 — 미정. 관측 시각만 넘기고 오래됨 표시는 하지 않는다
 OBS_RATIONALE_MAX_CHARS = 400
 # 첫 출동 (사용자 결정 2026-10-07): 신고가 오면 LLM 을 기다리지 않고 신고 칸에서 가장 가까운 드론을 바로 보낸다.
 # 그 드론의 첫 관측(불 좌표)이 들어온 뒤에 LLM 이 나머지 자원을 계획한다 (첫 관측이 LLM 입력에 들어가도록).
 OBS_INITIAL_NEAREST_UAV = True
+# 첫 드론은 테두리를 따라가지 않고 신고 지점 둘레를 원으로 돌며 불 전체를 본다 (사용자 결정 2026-10-07, 120초).
+# 7 m/s × 120 s = 840 m 를 '중심 → 원 위로 나가기 + 한 바퀴'에 쓴다 → 반지름 = 840 / (1 + 2π) ≈ 116 m
+OBS_INITIAL_ORBIT_DURATION_S = 120.0
+# 다 타고 꺼짐(추정) (사용자 결정 2026-10-07): 화재 모델에서 한 칸은 3단계 동안 타고 BURNED 가 된다
+# (environment/config/environment_config.yaml fire_ca.burn_duration_steps = 3). 그래서 '불타는 중'으로 마지막 확인한
+# 시각부터 3 × 환경 단계 길이(tick_s)가 지나면 '다 타고 꺼짐(추정)'으로 표시한다. 트윈(2,100초)이면 1시간 45분.
+# 관측으로 확인한 '탄 곳'(BURNED)과 구분한다. 환경 단계 길이를 모르면 추정하지 않는다.
+OBS_BURN_OUT_STEPS = 3
+# 예비 드론 (사용자 결정 2026-10-07): B 기지(기린119) 드론 3·4번은 대기하다가, 불이 B 쪽으로 다가온다고 판단되면 투입한다.
+#   물리 판단: 관측으로 본 불의 이동 방향(fire_progress)이 '불 → B 기지' 방향과 ±45° 이내이고 한 칸(90 m) 이상 움직였을 때
+#   LLM 판단: 계획 답변의 request_reserve_uavs=true (이유 필수)
+#   한 번 투입하면 그 run 동안 계속 쓴다. B 기지 좌표는 팀 공통 config (fire_stations.json)
+OBS_RESERVE_UAVS = ("B-uav1", "B-uav2")
+OBS_RESERVE_BASE = "B"
+OBS_RESERVE_TRIGGER_DEG = 45.0
+OBS_RESERVE_MIN_MOVE_M = 90.0
+# 앞질러 보내기 (사용자 결정 2026-10-07): 드론이 도착했는데 테두리·불타는 곳·안 본 꺼진 자리가 모두 없으면
+# (전에는 신고 지점 쪽으로 날았다 — 없앰) 처음 발화 지점(첫 신고 칸) → 가장 마지막 불 위치로 진행 방향·속도를 구해
+# 1시간·2시간 뒤 예상 지점에 드론을 새로 출동시킨다 (각 지점에 가장 가까운 가용 드론). 같은 '마지막 불 위치'로는 한 번만.
+OBS_ADVANCE_HORIZONS_S = (3600.0, 7200.0)
+# UGV 가장자리 따라가기 (사용자 결정 2026-10-07): UGV 관측에 다 탄 곳만 있고 불타는 곳이 없으면, 관측으로 본 불의
+# 진행 방향 쪽으로 450 m 떨어진 지점에 같은 UGV 를 바로 다시 보낸다. 불을 찾거나 다 탄 곳도 안 보이면 멈춘다
+OBS_UGV_FOLLOW_STEP_M = 450.0
 # 드론 테두리 추적 관측 (모의, TEST_ONLY). 드론팀 순찰 기능(UAV-08) 전까지 총괄 모의 센서로 만든다.
 #   도착 지점에서 불 테두리를 찾아 신고 지점에서 멀어지는 쪽으로 따라 난다. 테두리가 없으면 신고 지점 쪽으로 직선.
 #   카메라 한 장 52×42 m(지면 위 90 m) 중 진행 방향에 수직인 52 m 를 띠 폭으로 쓴다.
 EDGE_SWEEP_PROFILE = {
     "sensor_profile_id": "ASSUMED_EDGE_SWEEP_V1", "source": "SIMULATED", "status": "TEST_ONLY",
-    "sensor_type": "THERMAL", "speed_ms": 7.0, "duration_s": 20.0, "swath_m": 52.0,
+    # duration 60 s (사용자 결정 2026-10-07: 20 → 60, 한 번 가면 60초 둘러봄) → 7 m/s × 60 s = 420 m
+    "sensor_type": "THERMAL", "speed_ms": 7.0, "duration_s": 60.0, "swath_m": 52.0,
     "basis": "ASSUMED_EDGE_FOLLOWING_SWEEP (드론 순찰 코드 대기, UAV-08)",
 }
 
@@ -284,6 +314,9 @@ EDGE_SWEEP_PROFILE = {
 LLM_PROVIDER = "openai"
 LLM_MODEL = os.getenv("ORCH_LLM_MODEL", "gpt-5.5")   # 사용자 결정 2026-10-07 (copa 게이트웨이에 gpt-5.6-luna 없음)
 LLM_API_KEY_ENV = "OPENAI_API_KEY"                         # 키 값은 코드·로그에 남기지 않는다
+# 예비 키 (사용자 결정 2026-10-07): .env 에 OPENAI_API_KEY_2 … _9 를 더 넣으면, 쓰던 키의 예산이 떨어졌을 때
+# (게이트웨이 429 code=budget_exceeded) 다음 키로 넘어간다. 기록에는 키 순번만 남긴다
+LLM_EXTRA_KEY_ENVS = tuple(f"OPENAI_API_KEY_{i}" for i in range(2, 10))
 LLM_BASE_URL = os.getenv("OPENAI_BASE_URL") or "https://copa.codyssey.kr/v1"  # 사용자 결정 2026-10-07
 LLM_TIMEOUT_S = float(os.getenv("ORCH_LLM_TIMEOUT_S", "60"))     # 사용자 결정 2026-10-07: 30→60 (gpt-5.5 관측 계획 응답 20~42초 실측)
 LLM_MAX_CALLS_PER_RUN = int(os.getenv("ORCH_LLM_MAX_CALLS", "50"))  # 사용자 결정 2026-09-30 (서버 1회 실행당)

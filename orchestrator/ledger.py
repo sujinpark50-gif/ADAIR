@@ -242,10 +242,14 @@ class Ledger:
     def __init__(self, db_path: str):
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL" if db_path != ":memory:" else "PRAGMA journal_mode=MEMORY")
+        raw = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        raw.row_factory = sqlite3.Row
+        raw.execute("PRAGMA journal_mode=WAL" if db_path != ":memory:" else "PRAGMA journal_mode=MEMORY")
         self._lock = threading.RLock()
+        # 연결 하나를 추적·배정 스레드가 함께 쓴다. 쓰기(_tx)만 잠그고 읽기는 잠그지 않아, 관측 계획으로 읽기가 늘자
+        # 동시 읽기에서 sqlite3 InterfaceError('bad parameter or other API misuse')가 났다 (2026-10-07 실제 환경 실행).
+        # 모든 실행을 같은 잠금 안에서 하고 결과는 잠금 안에서 다 읽어 둔다.
+        self._conn = _LockedConn(raw, self._lock)
         self.migrated_from_legacy = self._init_schema()
         row = self._conn.execute("SELECT run_id FROM runs WHERE status='ACTIVE'").fetchone()
         self._active_run = row["run_id"] if row else None
@@ -745,6 +749,54 @@ class Ledger:
         r = self._conn.execute(f"SELECT * FROM knowledge WHERE {where} AND key=?", args + [key]).fetchone()
         return None if r is None else {"seq": r["seq"], "key": r["key"], "subject": r["subject"], "kind": r["kind"],
                                        "sim_time_s": r["sim_time_s"], "source": r["source"], "body": _loads(r["body"])}
+
+
+class _Result:
+    """잠금 안에서 미리 다 읽어 둔 결과 (cursor 대신). fetchone·fetchall·반복·rowcount·lastrowid 를 지원한다."""
+
+    def __init__(self, cur):
+        self._rows = cur.fetchall() if cur.description is not None else []
+        self.rowcount, self.lastrowid, self.description = cur.rowcount, cur.lastrowid, cur.description
+        self._i = 0
+
+    def fetchone(self):
+        if self._i >= len(self._rows):
+            return None
+        self._i += 1
+        return self._rows[self._i - 1]
+
+    def fetchall(self):
+        rest, self._i = self._rows[self._i:], len(self._rows)
+        return rest
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class _LockedConn:
+    """sqlite3 연결을 스레드 잠금으로 감싼다 (읽기도 잠금). RLock 이라 _Tx 안에서 다시 잡아도 된다."""
+
+    def __init__(self, raw, lock):
+        self._raw, self._lock = raw, lock
+
+    def execute(self, sql, params=()):
+        with self._lock:
+            return _Result(self._raw.execute(sql, params))
+
+    def executescript(self, script):
+        with self._lock:
+            return self._raw.executescript(script)
+
+    @property
+    def in_transaction(self):
+        return self._raw.in_transaction
+
+    def close(self):
+        with self._lock:
+            self._raw.close()
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
 
 
 class _Tx:

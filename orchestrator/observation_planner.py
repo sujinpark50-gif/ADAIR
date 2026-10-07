@@ -74,22 +74,48 @@ BELIEF_LABEL = {"REPORTED": "REPORTED", "CONFIRMED": "BURNING", "CONFIRMED_BURNE
                 "OBSERVED_CLEAR": "CLEAR", "NOT_DETECTED_PARTIAL": "PARTIAL"}
 
 
-def belief_layers(fire_states: Dict[str, dict]) -> Dict[str, dict]:
-    """칸 → {state, sim_time_s, observation_id, source}. 미관측 칸은 들어 있지 않다 (불 없음으로 보지 않는다)."""
+def burn_out_s(tick_s) -> Optional[float]:
+    """'불타는 중' 확인 후 다 타고 꺼졌다고 볼 시간 (config.OBS_BURN_OUT_STEPS × 환경 단계 길이). 모르면 None"""
+    if config.OBS_BURN_OUT_STEPS is None or not isinstance(tick_s, (int, float)) or tick_s <= 0:
+        return None
+    return config.OBS_BURN_OUT_STEPS * float(tick_s)
+
+
+def belief_layers(fire_states: Dict[str, dict], now_s: Optional[float] = None,
+                  burn_out: Optional[float] = None) -> Dict[str, dict]:
+    """칸 → {state, sim_time_s, observation_id, source}. 미관측 칸은 들어 있지 않다 (불 없음으로 보지 않는다).
+    불 확인(BURNING)·신고(REPORTED) 뒤 burn_out 초가 지나도록 다시 '불'로 확인되지 않은 칸은
+    PRESUMED_BURNED(다 타고 꺼짐, 추정)로 둔다 — 관측 사실이 아니라 화재 모델 규칙에 따른 추정이다."""
     out = {}
     for cid, f in fire_states.items():
-        out[cid] = {"state": BELIEF_LABEL.get(f.get("status"), f.get("status")), "sim_time_s": f.get("sim_time_s"),
-                    "observation_id": f.get("observation_id"), "source": f.get("source")}
+        st = BELIEF_LABEL.get(f.get("status"), f.get("status"))
+        row = {"state": st, "sim_time_s": f.get("sim_time_s"), "observation_id": f.get("observation_id"),
+               "source": f.get("source")}
+        if (st in ("BURNING", "REPORTED") and burn_out is not None and now_s is not None
+                and f.get("sim_time_s") is not None and now_s - f["sim_time_s"] > burn_out):
+            row.update({"state": "PRESUMED_BURNED", "last_state": st,
+                        "presumed_since_s": f["sim_time_s"] + burn_out, "basis": "BURN_OUT_RULE"})
+        out[cid] = row
     return out
 
 
 def known_edge(idx: MapIndex, belief: Dict[str, dict]):
     """총괄이 아는 테두리 (사용자 결정 2026-10-07: 테두리를 보고 예측하는 것이 핵심).
     known_edge: 관측으로 불 확인(BURNING)한 칸 중 8방향 이웃에 불 확인·탄 곳이 아닌 칸(미관측·불 없음·일부만 봄)이 있는 칸.
-    frontier : 아직 아무도 보지 않은 칸 중 8방향 이웃에 불 확인 칸이 있는 칸 — 번졌는지 먼저 볼 후보.
+    frontier : 아직 아무도 보지 않은 칸 중 8방향 이웃에 불 확인 칸 또는 불이 지나간 칸(다 탄 곳·꺼짐 추정)이 있는 칸 —
+               번졌는지 먼저 볼 후보. 불이 지나간 칸을 넣지 않으면 아는 불이 모두 꺼진 것으로 바뀌는 순간 '바로 바깥'
+               정보가 사라져 먼 구역부터 보게 된다 (사용자 결정 2026-10-07, 실제 환경 실행에서 확인).
     정답이 아니라 아는 세계(belief)로만 계산한다."""
     burning = {c for c, b in belief.items() if b["state"] == "BURNING" and c in idx.by_id}
+    passed = {c for c, b in belief.items() if b["state"] in ("BURNED", "PRESUMED_BURNED") and c in idx.by_id}
     edge, frontier = set(), set()
+    for cid in passed:
+        col, row = parse_cell_key(cid)
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                n = idx.by_cr.get((col + dc, row + dr))
+                if (dc or dr) and n is not None and belief.get(n["cell_id"]) is None:
+                    frontier.add(n["cell_id"])
     for cid in burning:
         col, row = parse_cell_key(cid)
         for dc in (-1, 0, 1):
@@ -98,21 +124,64 @@ def known_edge(idx: MapIndex, belief: Dict[str, dict]):
                 if not (dc or dr) or n is None:
                     continue
                 st = belief.get(n["cell_id"])
-                if st is None or st["state"] not in ("BURNING", "BURNED"):
+                if st is None or st["state"] not in ("BURNING", "BURNED", "PRESUMED_BURNED"):
                     edge.add(cid)
                 if st is None:
                     frontier.add(n["cell_id"])
     return edge, frontier
 
 
+def fire_progress(idx: MapIndex, belief: Dict[str, dict], origin_cell: Optional[str] = None) -> Optional[dict]:
+    """관측으로 본 불의 진행 방향 (사용자 결정 2026-10-07). 아는 세계만 쓴다 (정답 아님).
+    지난 불 = 다 탄 곳(관측)·다 타고 꺼짐(추정)·신고 칸, 지금 불 = 불타는 중(관측).
+    지난 불이 없으면 '불타는 중' 칸을 확인 시각으로 나눠 (가장 이른 시각 묶음 → 가장 늦은 시각 묶음) 비교한다.
+    지난 불이 없고 처음 발화 지점(origin_cell = 첫 신고 칸)을 알면 '발화 지점 → 지금 불 중심'을 쓴다 — 첫 드론이 원으로
+    돌고 오면 본 칸이 모두 같은 시각이라 시각 비교로는 방향이 안 나오기 때문 (사용자 결정 2026-10-07).
+    두 묶음의 중심을 잇는 방향·거리를 준다. 계산할 수 없으면 None."""
+    def centre(cids):
+        cs = [idx.by_id[c] for c in cids if c in idx.by_id]
+        if not cs:
+            return None
+        return sum(c["lat"] for c in cs) / len(cs), sum(c["lon"] for c in cs) / len(cs)
+    now_cells = [c for c, b in belief.items() if b["state"] == "BURNING" and c in idx.by_id]
+    past_cells = [c for c, b in belief.items() if b["state"] in ("BURNED", "PRESUMED_BURNED", "REPORTED") and c in idx.by_id]
+    basis = "PAST_FIRE_TO_BURNING"
+    if now_cells and not past_cells and origin_cell in idx.by_id:
+        past_cells, basis = [origin_cell], "IGNITION_TO_BURNING"
+    if now_cells and not past_cells:
+        times = sorted({belief[c]["sim_time_s"] for c in now_cells if belief[c]["sim_time_s"] is not None})
+        if len(times) < 2:
+            return None
+        past_cells = [c for c in now_cells if belief[c]["sim_time_s"] == times[0]]
+        now_cells = [c for c in now_cells if belief[c]["sim_time_s"] == times[-1]]
+        basis = "EARLIEST_TO_LATEST_BURNING"
+    a, b = centre(past_cells), centre(now_cells)
+    if a is None or b is None:
+        return None
+    dist = _dist_m(a[0], a[1], b[0], b[1])
+    newest = sorted(now_cells, key=lambda c: (-(belief[c]["sim_time_s"] or 0.0), c))
+    blocks = []
+    for c in newest:
+        bid = MapIndex.block_id(c)
+        if bid not in [x["block_id"] for x in blocks]:
+            blocks.append({"block_id": bid, "last_burning_sim_s": belief[c]["sim_time_s"]})
+    return {"basis": basis, "moved_toward_deg": None if dist < 1 else round(_bearing(a[0], a[1], b[0], b[1])),
+            "moved_m": round(dist), "past_cells": len(past_cells), "burning_cells": len(now_cells),
+            "newest_burning_blocks": blocks,
+            "note": "관측으로 확인한 이동이다 (예측 아님). 방향은 북 기준 시계방향, 불이 '향해 간' 쪽"}
+
+
 def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[dict], weather: dict,
                 available: List[dict], busy: List[dict], rejections: List[dict], sim_time_s: float,
-                run_id: str) -> dict:
+                run_id: str, burn_out: Optional[float] = None, reserve: Optional[dict] = None) -> dict:
     """LLM·규칙 공통 계획 입력. available/busy 는 자원 요약, reports 는 [{report_id, cell_id, sim_time_s}].
     전체 격자·관측 원문은 넣지 않는다. 결과에 input_hash 를 넣는다 (시각 제외)."""
-    belief = belief_layers(fire_states)
+    belief = belief_layers(fire_states, sim_time_s, burn_out)
     edge, frontier = known_edge(idx, belief)
-    anchors = [cid for cid, b in belief.items() if b["state"] in ("BURNING", "REPORTED") and cid in idx.by_id]
+    # 후보 구역의 기준 = 불이 있거나 최근까지 있던 곳. '다 타고 꺼짐(추정)'과 관측으로 본 '다 탄 곳'도 넣는다 — 빼면
+    # 아는 불이 모두 꺼진 것으로 바뀌는 순간 후보가 사라져 계획이 멈춘다 (2026-10-07 실제 환경 실행에서 두 번 확인)
+    anchors = [cid for cid, b in belief.items() if b["state"] in ("BURNING", "REPORTED", "PRESUMED_BURNED", "BURNED")
+               and cid in idx.by_id]
     blocks: Dict[str, dict] = {}         # LLM 이 고를 수 있는 구역
     context: Dict[str, dict] = {}        # 참고용 (고를 수 없음)
     groups: Dict[str, dict] = {}
@@ -131,6 +200,9 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
         lat_c = sum(idx.by_id[a]["lat"] for a in anchors) / len(anchors)
         lon_c = sum(idx.by_id[a]["lon"] for a in anchors) / len(anchors)
         fire_blocks = {MapIndex.block_id(a) for a in anchors if belief[a]["state"] == "BURNING"}
+        # 알려진 불(확인·신고)의 평균 지면고도 — 구역이 그보다 높으면 오르막 (불은 오르막으로 빨리 번진다)
+        fire_ground = [idx.by_id[a]["ground_amsl_m"] for a in anchors if idx.by_id[a].get("ground_amsl_m") is not None]
+        fire_ground_m = sum(fire_ground) / len(fire_ground) if fire_ground else None
         for cid, d in near.items():
             bid = MapIndex.block_id(cid)
             b = groups.setdefault(bid, {"block_id": bid, "cells": [], "dist": math.inf})
@@ -138,7 +210,8 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
             b["dist"] = min(b["dist"], d)
         rows = {}
         for bid, b in groups.items():
-            counts = {"UNOBSERVED": 0, "CLEAR": 0, "PARTIAL": 0, "BURNING": 0, "BURNED": 0, "REPORTED": 0}
+            counts = {"UNOBSERVED": 0, "CLEAR": 0, "PARTIAL": 0, "BURNING": 0, "BURNED": 0, "PRESUMED_BURNED": 0,
+                      "REPORTED": 0}
             times, last_obs = [], None
             n_edge = sum(1 for cid in b["cells"] if cid in edge)
             n_front = sum(1 for cid in b["cells"] if cid in frontier)
@@ -159,6 +232,9 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
                                                               parse_cell_key(c["cell_id"])[1] - ccy), c["cell_id"]),
                              default=None)
             grounds = [idx.by_id[c]["ground_amsl_m"] for c in b["cells"] if idx.by_id[c].get("ground_amsl_m") is not None]
+            # 정적 지도에 도로·연료가 있으면 쓴다 (환경 /map_cells 계약에 아직 없음 — 없으면 넣지 않는다)
+            roads = [bool(idx.by_id[c]["is_road"]) for c in b["cells"] if idx.by_id[c].get("is_road") is not None]
+            fuels = [idx.by_id[c]["fuel_amount"] for c in b["cells"] if idx.by_id[c].get("fuel_amount") is not None]
             neighbour_fire = any(f"B{bc + dc}_{br + dr}" in fire_blocks for dc in (-1, 0, 1) for dr in (-1, 0, 1))
             selectable = centre is not None and (counts["UNOBSERVED"] + counts["CLEAR"] + counts["PARTIAL"]
                                                  + counts["REPORTED"]) > 0
@@ -170,6 +246,8 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
                    "bearing_from_fire_centre_deg": None if not centre else round(
                        _bearing(lat_c, lon_c, centre["lat"], centre["lon"])),
                    "mean_ground_m": round(sum(grounds) / len(grounds), 1) if grounds else None,
+                   "elev_above_known_fire_m": (round(sum(grounds) / len(grounds) - fire_ground_m)
+                                               if grounds and fire_ground_m is not None else None),
                    "touches_known_fire_block": neighbour_fire,
                    "last_observed_sim_s": last_obs[0] if last_obs else None,
                    "oldest_observed_sim_s": min(times) if times else None,
@@ -181,6 +259,10 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
                     if res.get("lat") is not None:
                         row["distance_km_from"][res["resource_id"]] = round(
                             _dist_m(res["lat"], res["lon"], centre["lat"], centre["lon"]) / 1000, 2)
+            if roads:
+                row["road_cells"] = sum(roads)
+            if fuels:
+                row["mean_fuel"] = round(sum(fuels) / len(fuels), 2)
             if config.OBS_STALE_S is not None and row["oldest_observed_sim_s"] is not None:
                 row["has_stale_observation"] = sim_time_s - row["oldest_observed_sim_s"] > config.OBS_STALE_S
             rows[bid] = row
@@ -198,13 +280,41 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
                 row["distance_km_from"] = {k: v for k, v in row["distance_km_from"].items() if k in allowed}
                 row.pop("in_progress_by")
                 blocks[bid] = row
-            elif row["counts"]["BURNING"] or row["counts"]["BURNED"] or row["in_progress_by"]:
+            elif (row["counts"]["BURNING"] or row["counts"]["BURNED"] or row["counts"]["PRESUMED_BURNED"]
+                  or row["in_progress_by"]):
                 context[bid] = {k: row[k] for k in ("block_id", "counts", "known_edge_cells", "dist_to_known_fire_m",
                                                     "bearing_from_fire_centre_deg", "mean_ground_m",
+                                                    "elev_above_known_fire_m",
                                                     "last_observed_sim_s", "last_observation_id", "in_progress_by")}
+    # 후보 구역 상한 (OBS_MAX_CANDIDATE_BLOCKS): 진행 방향 앞쪽 → 테두리 바깥 미관측 → 미관측 → 가까운 순
+    progress = fire_progress(idx, belief, reports[0]["cell_id"] if reports else None)
+    ahead = None if not progress else progress.get("moved_toward_deg")
+
+    def prio(b):
+        brg = b.get("bearing_from_fire_centre_deg")
+        if ahead is None or brg is None:
+            tier, diff = 0, 0
+        else:
+            diff = abs((brg - ahead + 180) % 360 - 180)
+            tier = 0 if diff <= 45 else 1 if diff <= 90 else 2
+        b["ahead_of_progress"] = None if ahead is None or brg is None else tier == 0
+        return (tier, -b["unobserved_next_to_fire"], -b["counts"]["UNOBSERVED"], b["dist_to_known_fire_m"], diff,
+                b["block_id"])
+    ordered = sorted(blocks.values(), key=prio)
+    limit = config.OBS_MAX_CANDIDATE_BLOCKS
+    chosen = ordered if not limit else ordered[:limit]
+    for res in available:                                # 상한 때문에 고를 구역이 없어진 자원이 없게 한 개씩 보탠다
+        rid = res["resource_id"]
+        if not any(rid in b["allowed_resources"] for b in chosen):
+            extra = next((b for b in ordered if rid in b["allowed_resources"] and b not in chosen), None)
+            if extra:
+                chosen.append(extra)
+    deferred = len(ordered) - len(chosen)
     fire_summary = {
         "burning_cells": sum(1 for b in belief.values() if b["state"] == "BURNING"),
         "burned_cells": sum(1 for b in belief.values() if b["state"] == "BURNED"),
+        "presumed_burned_out_cells": sum(1 for b in belief.values() if b["state"] == "PRESUMED_BURNED"),
+        "burn_out_after_s": burn_out,
         "observed_clear_cells": sum(1 for b in belief.values() if b["state"] == "CLEAR"),
         "partial_cells": sum(1 for b in belief.values() if b["state"] == "PARTIAL"),
         "reported_cells": sum(1 for b in belief.values() if b["state"] == "REPORTED"),
@@ -217,8 +327,10 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
         "block_size_m": None if not idx.cell_size_m else idx.cell_size_m * config.OBS_BLOCK_CELLS,
         "candidate_radius_m": config.OBS_CANDIDATE_RADIUS_M,
         "reports": reports, "weather": weather, "fire_summary": fire_summary,
+        "fire_progress": progress,
+        "reserve_uavs": reserve,
         "resources_available": available, "resources_busy": busy,
-        "blocks": [blocks[k] for k in sorted(blocks)],
+        "blocks": chosen, "deferred_blocks": deferred,
         "context_blocks": [context[k] for k in sorted(context)],
         "allowed_purposes": list(PURPOSES),
     }
@@ -244,28 +356,39 @@ SYSTEM = (
     "너는 산불 관측을 지휘하는 총괄 오케스트레이터의 계획 보조다. 스타크래프트 정찰처럼, 드론(UAV)과 지상 로봇(UGV)의 "
     "부분 관측을 모아 지금 불이 어디까지 타고 있는지 알아내는 것이 목표다. 불을 끄는 일은 하지 않는다.\n"
     "입력은 총괄이 아는 사실뿐이다: 신고, 관측으로 확인한 불(BURNING)·탄 곳(BURNED)·불 없음(CLEAR)·일부만 봄(PARTIAL), "
-    "아직 아무도 보지 않은 칸(UNOBSERVED), 기상(wind_dir_deg 는 바람이 불어오는 방향, 북 기준 시계방향 — 불은 대체로 "
+    "아직 아무도 보지 않은 칸(UNOBSERVED), 다 타고 꺼졌다고 추정한 칸(PRESUMED_BURNED: 불 확인 뒤 burn_out_after_s 가 "
+    "지나도록 다시 확인되지 않음 — 관측이 아니라 추정), 기상(wind_dir_deg 는 바람이 불어오는 방향, 북 기준 시계방향 — 불은 대체로 "
     "그 반대쪽(풍하)과 오르막으로 번진다), 지형(mean_ground_m), 자원 위치와 상태.\n"
     "후보 구역(blocks)은 알려진 불 주변을 3×3 칸으로 묶은 것이다. 할 일 두 가지:\n"
     "1) predicted_blocks: 지금 불이 있을 것 같지만 아직 확인하지 않은 구역(예상 지역)을 고른다.\n"
-    "2) assignments: resources_available 의 자원마다 다음에 볼 구역 하나를 고른다. 드론은 도착하면 불 테두리를 따라 "
-    "140 m 를 날며 폭 52 m 를 보고, 테두리가 없으면 신고 지점 쪽으로 140 m 를 난다. UGV 는 가까운 도로에 서서 주변 "
-    "450 m 사각형을 본다. 자원마다 서로 다른 구역을 고르고, 그 구역의 allowed_resources 에 있는 자원만 보낸다. "
+    "2) assignments: resources_available 의 자원마다 다음에 볼 구역 하나를 고른다. 드론·UGV 가 보는 범위는 "
+    "resources_available[].observation 에 있다. 자원마다 서로 다른 구역을 고르고, 그 구역의 allowed_resources 에 있는 자원만 보낸다. "
     "blocks 는 지금 고를 수 있는 구역 전부다. context_blocks 는 불이 확인됐거나 다른 자원이 보러 가는 참고용 구역이며 "
     "assignments 와 predicted_blocks 에 쓸 수 없다.\n"
+    "fire_progress 가 있으면 관측으로 확인한 불의 실제 이동 방향(moved_toward_deg)이다. 바람·지형 추론보다 이것을 "
+    "우선해서, 그 방향 앞쪽 테두리 바깥과 newest_burning_blocks 주변을 먼저 확인하라.\n"
     "우선 원칙: 불은 테두리에서 번진다. known_edge_cells 는 지금 아는 불의 가장자리, unobserved_next_to_fire 는 "
-    "그 바로 바깥의 아직 안 본 칸 수다. 알려진 테두리 바깥, 특히 풍하 쪽과 오르막 쪽의 미관측 칸을 우선 확인하라.\n"
+    "그 바로 바깥의 아직 안 본 칸 수다. 알려진 테두리 바깥의 미관측 칸을 우선 확인하라.\n"
+    "번질 방향은 바람만으로 정하지 말라. 불은 오르막(elev_above_known_fire_m 이 양수인 쪽)으로 빨리 번지고, "
+    "도로(road_cells)는 넘지 못하며, 연료(mean_fuel)가 없는 곳으로는 번지지 않는다. 바람이 약하면 지형이 더 크게 작용한다. "
+    "road_cells·mean_fuel 이 입력에 없으면 그 정보는 모르는 것이다 (없다고 보지 말라).\n"
     "규칙: 입력에 없는 ID·좌표·수치를 만들지 않는다. evidence_refs 에는 근거로 쓴 입력 ID(구역·관측·신고·자원)만 넣는다. "
+    "reserve_uavs 는 다른 기지에서 대기 중인 예비 드론이다. active=false 인데 불이 그 기지 쪽으로 다가온다고 판단하면 "
+    "request_reserve_uavs=true 와 근거(reserve_reason)를 낸다. 아니면 false 와 빈 문자열.\n"
     "rationale 은 관제 요원이 읽는 한국어 1~2문장이다. input_hash 는 입력 값을 그대로 돌려준다."
 )
 
 OUTPUT_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["input_hash", "predicted_blocks", "prediction_rationale", "assignments"],
+    "required": ["input_hash", "predicted_blocks", "prediction_rationale", "assignments", "request_reserve_uavs",
+                 "reserve_reason"],
     "properties": {
         "input_hash": {"type": "string"},
         "predicted_blocks": {"type": "array", "items": {"type": "string"}},
         "prediction_rationale": {"type": "string"},
+        "request_reserve_uavs": {"type": "boolean",
+                                 "description": "reserve_uavs.active=false 이고 불이 그 기지 쪽으로 다가온다고 보면 true"},
+        "reserve_reason": {"type": "string", "description": "request_reserve_uavs=true 이면 근거, 아니면 빈 문자열"},
         "assignments": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["resource_id", "block_id", "purpose", "evidence_refs", "rationale"],
@@ -301,6 +424,12 @@ def validate(out, inp: dict) -> List[str]:
             v.append("PREDICTED_UNKNOWN_BLOCK:" + ",".join(bad[:5]))
     if not _text_ok(out["prediction_rationale"]):
         v.append("PREDICTION_RATIONALE_INVALID")
+    if not isinstance(out["request_reserve_uavs"], bool):
+        v.append("REQUEST_RESERVE_TYPE")
+    elif out["request_reserve_uavs"] and not _text_ok(out["reserve_reason"]):
+        v.append("RESERVE_REASON_INVALID")
+    elif not isinstance(out["reserve_reason"], str):
+        v.append("RESERVE_REASON_TYPE")
     avail = {r["resource_id"] for r in inp["resources_available"]}
     ids = known_ids(inp)
     if not isinstance(out["assignments"], list):
@@ -366,4 +495,57 @@ def rule_plan(inp: dict) -> dict:
                     "evidence_refs": [b["block_id"]],
                     "rationale": "규칙 대체: 알려진 테두리 바로 바깥 미관측이 많은 구역"})
     return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "규칙 대체 (예측 없음)",
-            "assignments": out}
+            "assignments": out, "request_reserve_uavs": False, "reserve_reason": ""}
+
+
+# ---------------------------------------------------------------------------
+# LLM 에 보내는 짧은 형태 (사용자 결정 2026-10-07: 토큰 절약). 내부 계산·검증·해시는 원래 입력(build_input)으로 한다.
+# 항목 이름을 줄이고 0·빈 값은 뺀다. 뜻은 LEGEND 로 지시문에 준다.
+# ---------------------------------------------------------------------------
+LEGEND = (
+    "입력 약어: blocks[] 고를 수 있는 구역 — id 구역ID, n 칸 수(U 미관측·C 불없음·P 일부만봄·B 불타는중·X 탄곳(관측)·"
+    "PX 꺼짐추정·R 신고, 0 은 생략), edge 알려진 테두리 칸 수, front 테두리 바로 바깥 미관측 칸 수, d 알려진 불까지 m, "
+    "brg 불 중심에서 본 방향°, ahead 진행 방향 앞쪽 여부, up 알려진 불보다 높은 m(+ 오르막), road 도로 칸 수, fuel 평균 연료, "
+    "t 마지막 관측 시각(s), obs 마지막 관측 ID, ok 보낼 수 있는 자원(없으면 가용 자원 모두), near [가장 가까운 자원, km]. "
+    "ctx[] 참고용 구역(고를 수 없음, busy 보러 가는 자원). res[] 가용 자원 [ID, 종류]. busy[] [ID, 구역]. "
+    "UAV 관측: 도착하면 불 테두리를 따라 비행하며 폭 52 m 를 본다. UGV 관측: 가까운 도로에 서서 주변 450 m 사각형을 본다."
+)
+_COUNT_KEYS = {"UNOBSERVED": "U", "CLEAR": "C", "PARTIAL": "P", "BURNING": "B", "BURNED": "X", "PRESUMED_BURNED": "PX",
+               "REPORTED": "R"}
+
+
+def _short_counts(counts: dict) -> dict:
+    return {_COUNT_KEYS.get(k, k): v for k, v in counts.items() if v}
+
+
+def llm_view(inp: dict) -> dict:
+    avail = [r["resource_id"] for r in inp["resources_available"]]
+
+    def row(b, ctx=False):
+        out = {"id": b["block_id"], "n": _short_counts(b["counts"]), "edge": b.get("known_edge_cells"),
+               "front": b.get("unobserved_next_to_fire"), "d": b.get("dist_to_known_fire_m"),
+               "brg": b.get("bearing_from_fire_centre_deg"), "ahead": b.get("ahead_of_progress"),
+               "up": b.get("elev_above_known_fire_m"), "road": b.get("road_cells"), "fuel": b.get("mean_fuel"),
+               "t": b.get("last_observed_sim_s"), "obs": b.get("last_observation_id")}
+        if ctx:
+            out["busy"] = b.get("in_progress_by") or None
+        else:
+            if sorted(b["allowed_resources"]) != sorted(avail):
+                out["ok"] = b["allowed_resources"]
+            km = b.get("distance_km_from") or {}
+            if km:
+                rid = min(km, key=lambda k: (km[k], k))
+                out["near"] = [rid, km[rid]]
+        return {k: v for k, v in out.items() if v not in (None, 0, [], {}, False) or k in ("id", "ahead") and v is not None}
+    w = inp.get("weather") or {}
+    weather = {i: [r.get("value"), r.get("unit"), r.get("basis"), r.get("observed_sim_s")]
+               for i, r in (w.get("items") or {}).items()}
+    return {"input_hash": inp["input_hash"], "t": inp["simulation_time_s"], "end": inp["demo_end_sim_s"],
+            "block_m": inp.get("block_size_m"), "reports": [[r["report_id"], r["cell_id"], r["sim_time_s"]]
+                                                            for r in inp["reports"]],
+            "weather": weather, "fire": {k: v for k, v in inp["fire_summary"].items() if v and k != "unobserved_note"},
+            "progress": inp.get("fire_progress"), "reserve": inp.get("reserve_uavs"),
+            "res": [[r["resource_id"], r["resource_type"]] for r in inp["resources_available"]],
+            "busy": [[r["resource_id"], r.get("block_id")] for r in inp["resources_busy"]],
+            "blocks": [row(b) for b in inp["blocks"]], "ctx": [row(b, True) for b in inp["context_blocks"]],
+            "deferred_blocks": inp.get("deferred_blocks"), "purposes": inp["allowed_purposes"]}

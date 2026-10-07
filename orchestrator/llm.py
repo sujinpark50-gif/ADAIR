@@ -180,12 +180,22 @@ class LlmPlanner:
         self.max_calls = config.LLM_MAX_CALLS_PER_RUN if max_calls is _DEFAULT else max_calls
         self.temperature = config.LLM_TEMPERATURE if temperature is _DEFAULT else temperature
         self._client = client
+        self._injected = client is not None
         self.calls = 0
+        self.key_index = 0                     # 지금 쓰는 키 순번 (0 = OPENAI_API_KEY)
+        self.exhausted_keys = []               # 예산이 떨어진 키 순번
+
+    @staticmethod
+    def _keys() -> List[str]:
+        names = (config.LLM_API_KEY_ENV,) + tuple(config.LLM_EXTRA_KEY_ENVS)
+        return [os.getenv(n) for n in names if os.getenv(n)]
 
     def status(self) -> Optional[str]:
         """호출할 수 없는 이유. 호출 가능하면 None."""
-        if self._client is None and not os.getenv(config.LLM_API_KEY_ENV):
+        if not self._injected and not self._keys():
             return "API_KEY_MISSING"
+        if not self._injected and self.key_index >= len(self._keys()):
+            return "ALL_KEYS_BUDGET_EXCEEDED"
         if self.timeout_s is None:
             return "TIMEOUT_NOT_CONFIGURED"
         if self.max_calls is None:
@@ -197,8 +207,18 @@ class LlmPlanner:
     def _get_client(self):
         if self._client is None:
             from openai import OpenAI
-            self._client = OpenAI(base_url=config.LLM_BASE_URL)
+            # SDK 기본은 시간 초과 시 2번 자동 재요청 → 60초 제한이 실제로 2~3배까지 늘어났다 (2026-10-07 실측 101초).
+            # 재요청은 하지 않고 바로 규칙 대체로 넘어간다. 형식 오류 수정 요청(1회)은 plan_observations 가 따로 한다
+            self._client = OpenAI(base_url=config.LLM_BASE_URL, max_retries=0,
+                                  api_key=self._keys()[self.key_index])
         return self._client
+
+    @staticmethod
+    def _is_budget_exceeded(e) -> bool:
+        body = getattr(e, "body", None)
+        code = (body.get("error") or {}).get("code") if isinstance(body, dict) and isinstance(body.get("error"), dict) \
+            else (body or {}).get("code") if isinstance(body, dict) else None
+        return code == "budget_exceeded" or "budget_exceeded" in str(e)
 
     def propose(self, snapshot, plan: dict, tasks_by_id: dict) -> dict:
         """{status: OK/DISABLED/ERROR/INVALID, orders: {group_index: [...]}, rationales, ...}"""
@@ -253,9 +273,21 @@ class LlmPlanner:
         kwargs = {"model": self.model, "messages": messages, "timeout": self.timeout_s}
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
-        self.calls += 1
-        resp = self._get_client().chat.completions.create(**kwargs)
-        return _strip_code_fence(resp.choices[0].message.content)
+        while True:
+            self.calls += 1
+            try:
+                resp = self._get_client().chat.completions.create(**kwargs)
+            except Exception as e:  # noqa: BLE001
+                # 쓰던 키의 예산이 떨어졌으면 다음 키로 한 번 더 (키가 남아 있고 호출 한도 안일 때만)
+                if self._injected or not self._is_budget_exceeded(e):
+                    raise
+                self.exhausted_keys.append(self.key_index)
+                self.key_index += 1
+                self._client = None
+                if self.status():
+                    raise
+                continue
+            return _strip_code_fence(resp.choices[0].message.content)
 
     def plan_observations(self, inp: dict) -> dict:
         from . import observation_planner as op
@@ -264,10 +296,12 @@ class LlmPlanner:
         why = self.status()
         if why:
             return {**base, "status": "DISABLED", "reason": why, "attempts": []}
-        system = (op.SYSTEM + "\n답은 아래 JSON Schema 를 따르는 JSON 객체 하나만 출력한다 (설명·코드블록 없이).\n"
+        system = (op.SYSTEM + "\n" + op.LEGEND
+                  + "\n답은 아래 JSON Schema 를 따르는 JSON 객체 하나만 출력한다 (설명·코드블록 없이).\n"
                   + json.dumps(op.OUTPUT_SCHEMA, ensure_ascii=False))
+        # 짧은 형태로 보낸다 (토큰 절약, 2026-10-07). 검증은 원래 입력(inp)으로 한다
         messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(inp, ensure_ascii=False)}]
+                    {"role": "user", "content": json.dumps(op.llm_view(inp), ensure_ascii=False, separators=(",", ":"))}]
         attempts, t0 = [], time.monotonic()
         for n in range(2):
             if n and self.status():

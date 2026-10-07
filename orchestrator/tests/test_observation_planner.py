@@ -15,7 +15,7 @@ from orchestrator.env_adapter import FixtureEnv
 from orchestrator.knowledge import EnvStationFeed, InjectedAnalysis
 from orchestrator.ledger import Ledger
 from orchestrator.llm import LlmPlanner
-from orchestrator.models import Target, Task
+from orchestrator.models import Requirements, Target, Task
 from orchestrator.observation_planner import MapIndex, rule_plan, validate
 from orchestrator.resources import UavClient, UgvClient
 
@@ -147,12 +147,21 @@ def test_plan_stops_after_demo_end(pw, monkeypatch):
 # LLM 계획
 # ---------------------------------------------------------------------------
 
+def _seen(kw):
+    """가짜 LLM 이 받은 짧은 입력(llm_view)을 시험에서 쓰기 쉬운 이름으로 펼친다"""
+    v = json.loads(kw["messages"][1]["content"])
+    return {"input_hash": v["input_hash"], "fire_summary": v["fire"],
+            "blocks": [{"block_id": b["id"], "dist_to_known_fire_m": b.get("d", 0)} for b in v["blocks"]],
+            "resources_available": [{"resource_id": r[0], "resource_type": r[1]} for r in v["res"]], "raw": v}
+
+
 def _llm_plan(pick):
     """pick(inp) → assignments. 입력 해시를 그대로 돌려준다."""
     def reply(kw):
-        inp = json.loads(kw["messages"][1]["content"])
+        inp = _seen(kw)
         return {"input_hash": inp["input_hash"], "predicted_blocks": [b["block_id"] for b in inp["blocks"]][:2],
-                "prediction_rationale": "풍하 쪽 미관측 구역에 불이 이어졌을 가능성", "assignments": pick(inp)}
+                "prediction_rationale": "풍하 쪽 미관측 구역에 불이 이어졌을 가능성", "assignments": pick(inp),
+                "request_reserve_uavs": False, "reserve_reason": ""}
     return reply
 
 
@@ -191,11 +200,12 @@ def test_invalid_llm_output_is_repaired_once(pw):
 
     def reply(kw):
         calls.append(kw)
-        inp = json.loads(kw["messages"][1]["content"])
+        inp = _seen(kw)
         if len(calls) == 1:                               # 없는 구역 + 자원 중복
             return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "x",
                     "assignments": [{"resource_id": "A-uav1", "block_id": "B99_99", "purpose": "RECHECK",
-                                     "evidence_refs": [], "rationale": "x"}]}
+                                     "evidence_refs": [], "rationale": "x"}],
+                    "request_reserve_uavs": False, "reserve_reason": ""}
         return _llm_plan(lambda i: [{"resource_id": r["resource_id"], "block_id": _far_blocks(i)[n]["block_id"],
                                      "purpose": "BOUNDARY_CHECK", "evidence_refs": [], "rationale": "수정"}
                                     for n, r in enumerate(i["resources_available"])])(kw)
@@ -249,19 +259,63 @@ def test_rejected_resource_is_not_silently_replaced_and_replanned(pw):
     assert _events(lg, "OBS_PLAN")[1]["detail"]["recent_rejections"][0]["resource_id"] == "A-uav1"
 
 
-def test_plan_discarded_when_input_changes_during_call(pw):
+def _ok_plan(inp):
+    return {"status": "OK", "attempts": [], "plan": rule_plan(inp)}
+
+
+def test_input_change_during_call_keeps_still_valid_assignments(pw):
+    """호출 동안 입력이 바뀌면 버리지 않고 지금 상태로 배정마다 다시 검증한다 (계획서 §7)"""
     orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
     _to_report_time(env)
     req = orch.obs_plan_request()
-    pw["uav"].state["A-uav2"]["current_task_id"] = "SOMETHING-ELSE"     # 호출 도중 자원 상태가 바뀜
-    out = orch.obs_plan_apply(req, {"status": "DISABLED", "attempts": []})
+    pw["uav"].state["A-uav2"]["current_task_id"] = "SOMETHING-ELSE"     # 호출 도중 A-uav2 가 다른 일을 맡음
+    out = orch.obs_plan_apply(req, _ok_plan(req["inp"]))
+    assert out["status"] == "APPLIED" and out["source"] == "LLM"
+    assert sorted(r["resource_id"] for r in out["assignments"]) == ["A-uav1", "A-ugv1"]
+    d = _events(lg, "OBS_PLAN")[-1]["detail"]
+    assert d["input_changed_during_call"] is True
+    assert [(x["resource_id"], x["dropped_reason"]) for x in d["dropped_assignments"]] == [
+        ("A-uav2", "RESOURCE_NO_LONGER_AVAILABLE")]
+    assert not [t for t in lg.list_tasks() if t.assigned_resource_id == "A-uav2"]
+
+
+def test_plan_discarded_only_when_no_assignment_is_valid_now(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    req = orch.obs_plan_request()
+    for rid in ("A-uav1", "A-uav2"):
+        pw["uav"].state[rid]["current_task_id"] = "SOMETHING-ELSE"
+    pw["ugv"].units["A-ugv1"]["current_task_id"] = "SOMETHING-ELSE"
+    out = orch.obs_plan_apply(req, _ok_plan(req["inp"]))
     assert out["status"] == "STALE" and lg.list_tasks() == []
-    assert _events(lg, "OBS_PLAN_DISCARDED")
+    assert _events(lg, "OBS_PLAN_DISCARDED")[-1]["reason"] == "NO_ASSIGNMENT_VALID_NOW"
+
+
+def test_resource_freed_during_call_gets_planned_next(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    pw["uav"].state["A-uav2"]["current_task_id"] = "SOMETHING-ELSE"     # 호출 시작 때는 사용 중
+    req = orch.obs_plan_request()
+    assert "A-uav2" not in [r["resource_id"] for r in req["inp"]["resources_available"]]
+    pw["uav"].state["A-uav2"]["current_task_id"] = None                 # 호출 도중 돌아옴
+    out = orch.obs_plan_apply(req, _ok_plan(req["inp"]))
+    assert out["replan"] is True                                         # 남은 자원은 다음 계획에서
+    assert orch.obs_plan_cycle() == []                                   # 같은 환경 단계에서는 다시 계획하지 않음
+    env.advance(1)                                                       # 다음 단계에 모아서
+    nxt = orch.obs_plan_cycle()
+    assert any(r["resource_id"] == "A-uav2" for o in nxt for r in o["assignments"])
 
 
 # ---------------------------------------------------------------------------
 # 모의 센서: 드론 테두리 추적
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _sweep_20s(monkeypatch, request):
+    """테두리 추적 기하 시험은 20초(140 m) 기준으로 쓴다. 기본값(60초)은 test_edge_sweep_default_duration_is_60s"""
+    if request.node.name != "test_edge_sweep_default_duration_is_60s":
+        monkeypatch.setattr(config, "EDGE_SWEEP_PROFILE", {**config.EDGE_SWEEP_PROFILE, "duration_s": 20.0})
+
 
 def _sweep(target_cell, burning=BURNING):
     fire, rest = grid(burning)
@@ -288,12 +342,18 @@ def test_edge_sweep_follows_edge_away_from_report():
     assert o["target_covered"] and o["result"] == "DETECTED"
 
 
-def test_edge_sweep_without_edge_flies_toward_report():
+def test_edge_sweep_without_any_reference_holds_and_never_heads_to_report():
+    """테두리·아는 불·꺼진 자리·앞 예상 지점이 모두 없으면 제자리 (신고 지점 쪽으로 가지 않는다, 2026-10-07)"""
     o = _sweep("20_12")                                  # 가장 가까운 테두리(17_12)가 270 m 밖
-    assert o["footprint"]["mode"] == "STRAIGHT_TO_REPORT"
-    seen = o["covered_cells"] + o["partial_cells"]
-    assert {"20_12", "19_12", "18_12"} <= set(seen) and "21_12" not in seen   # 신고 지점(서쪽) 쪽으로만
+    assert o["footprint"]["mode"] == "HOLD_AT_ARRIVAL"
+    seen = set(o["covered_cells"] + o["partial_cells"])
+    assert "20_12" in seen and "18_12" not in seen
     assert o["result"] == "NOT_DETECTED" and o["fire_points"] == []
+
+
+def test_edge_sweep_default_duration_is_60s():
+    assert config.EDGE_SWEEP_PROFILE["duration_s"] == 60.0
+    assert config.EDGE_SWEEP_PROFILE["speed_ms"] * config.EDGE_SWEEP_PROFILE["duration_s"] == 420.0
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +375,7 @@ def test_observation_updates_belief_and_triggers_new_plan(pw):
     assert not _events(lg, "ENV_SENSE_PLANNED")                             # 따로 측정 출동을 만들지 않음
     for r in first["assignments"]:
         assert lg.get_task(r["task_id"]).purpose_status == "COMPLETED"
+    env.advance(1)                                                       # 한 단계 안에서는 한 번만 계획
     nxt = orch.obs_plan_cycle()
     assert nxt and _events(lg, "OBS_PLAN")[-1]["detail"]["input_hash"] != h1   # 새 관측 → 새 계획
 
@@ -462,6 +523,7 @@ def test_initial_nearest_uav_goes_first_then_llm_plans_with_its_observation(pw, 
     assert out and out[0]["source"] == "LLM"
     inp = seen[0]
     assert inp["fire_summary"]["burning_cells"] > 0                      # 첫 관측의 불 좌표가 LLM 입력에 들어감
+    assert inp["raw"]["progress"]["basis"] in ("IGNITION_TO_BURNING", "PAST_FIRE_TO_BURNING")   # 첫 비행으로 진행 방향
     assert len(_events(lg, "OBS_INITIAL_DISPATCH")) == 1                 # 첫 출동은 한 번만
 
 
@@ -474,3 +536,433 @@ def test_initial_dispatch_rejected_does_not_block_planning(pw, monkeypatch):
     out = orch.obs_plan_cycle()
     assert _events(lg, "OBS_INITIAL_DISPATCH")[0]["result"] == "HOLD"     # 드론 모두 거절 → 첫 출동 보류
     assert out and out[0]["source"] == "RULE_FALLBACK"                    # 기다리지 않고 바로 계획으로 넘어감
+
+
+def test_terrain_fields_uphill_road_fuel(tmp_path):
+    """오르막·도로·연료는 정적 지도 정보라 계획 입력에 넣는다 (정답 아님). 지도에 없으면 넣지 않는다"""
+    from orchestrator.observation_planner import build_input
+    fire, rest = grid()
+    cells = []
+    for c in fire + rest:
+        col, row = map(int, c["cell_id"].split("_"))
+        c = {k: v for k, v in c.items() if k != "fire_state"}
+        c["ground_amsl_m"] = 600.0 + 10.0 * col                       # 동쪽으로 갈수록 오르막
+        if col <= 14:
+            c["is_road"], c["fuel_amount"] = (row == 9), (0.0 if row == 9 else 0.6)
+        cells.append(c)
+    idx = MapIndex(cells)
+    inp = build_input(idx=idx, fire_states={"12_12": {"status": "CONFIRMED"}}, reports=[], weather={},
+                      available=[{"resource_id": "A-uav1", "resource_type": "UAV", "lat": LAT0, "lon": LON0}],
+                      busy=[], rejections=[], sim_time_s=0.0, run_id="R")
+    rows = {b["block_id"]: b for b in inp["blocks"] + inp["context_blocks"]}
+    assert rows["B5_4"]["elev_above_known_fire_m"] > 0 > rows["B2_4"]["elev_above_known_fire_m"]
+    assert rows["B4_3"]["road_cells"] == 3 and rows["B4_3"]["mean_fuel"] == 0.4   # 9행 도로 3칸
+    assert "road_cells" not in rows["B6_4"] and "mean_fuel" not in rows["B6_4"]   # 지도에 없으면 모름
+
+
+def test_prompt_mentions_terrain():
+    from orchestrator.observation_planner import SYSTEM
+    assert "오르막" in SYSTEM and "도로" in SYSTEM and "연료" in SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# 다 타고 꺼짐(추정)과 테두리를 못 찾았을 때의 비행 (사용자 결정 2026-10-07)
+# ---------------------------------------------------------------------------
+
+def test_burning_becomes_presumed_burned_after_burn_out():
+    from orchestrator.observation_planner import belief_layers, burn_out_s
+    assert burn_out_s(2100.0) == 6300.0 and burn_out_s(None) is None      # 3단계 × 단계 길이 (트윈 1시간 45분)
+    fs = {"1_1": {"status": "CONFIRMED", "sim_time_s": 0.0}, "2_2": {"status": "CONFIRMED", "sim_time_s": 5000.0},
+          "3_3": {"status": "CONFIRMED_BURNED", "sim_time_s": 0.0}}
+    lay = belief_layers(fs, now_s=6400.0, burn_out=6300.0)
+    assert lay["1_1"]["state"] == "PRESUMED_BURNED" and lay["1_1"]["basis"] == "BURN_OUT_RULE"
+    assert lay["2_2"]["state"] == "BURNING"                                  # 다시 본 지 얼마 안 됨
+    assert lay["3_3"]["state"] == "BURNED"                                   # 관측으로 확인한 탄 곳은 그대로
+    assert belief_layers(fs, now_s=6400.0, burn_out=None)["1_1"]["state"] == "BURNING"   # 단계 길이 모르면 추정 안 함
+
+
+def _sweep2(target_cell, fallback=None, trail=None, burning=frozenset()):
+    fire, rest = grid(set(burning))
+    env = FixtureEnv(fire_cells=fire, risk_cells=rest)
+    c = next(x for x in fire + rest if x["cell_id"] == target_cell)
+    rep = cell(12, 12)
+    task = Task(task_id="T", incident_id="I", kind="OBSERVE",
+                target=Target(lat=c["lat"], lon=c["lon"], ground_amsl_m=600.0, cell_id=target_cell))
+    pt = lambda cid: {"lat": cell(*map(int, cid.split("_")))["lat"], "lon": cell(*map(int, cid.split("_")))["lon"],
+                      "cell_id": cid}
+    return observation.simulate_edge_sweep(
+        snapshot=env.read(), map_cells=env.map_cells(), task=task, attempt_id="A", resource_id="A-uav1",
+        position={"lat": c["lat"], "lon": c["lon"], "alt_m_amsl": 690.0},
+        report_point={"lat": rep["lat"], "lon": rep["lon"]},
+        fallback_point=pt(fallback) if fallback else None, burned_trail=[pt(x) for x in trail or []])
+
+
+def test_no_edge_flies_toward_nearest_known_fire_not_report():
+    o = _sweep2("20_12", fallback="20_16")                                   # 아는 불은 남쪽, 신고는 서쪽
+    assert o["footprint"]["mode"] == "STRAIGHT_TO_KNOWN_FIRE"
+    seen = set(o["covered_cells"] + o["partial_cells"])
+    assert {"20_13", "20_14"} <= seen and "19_12" not in seen
+
+
+def test_no_known_fire_follows_presumed_burned_trail():
+    o = _sweep2("20_12", trail=["20_13", "21_14", "22_15"])
+    assert o["footprint"]["mode"] == "FOLLOW_PRESUMED_BURNED"
+    seen = set(o["covered_cells"] + o["partial_cells"])
+    assert {"20_13", "21_14"} <= seen and "19_12" not in seen
+    assert o["burned_trail"] == ["20_13", "21_14", "22_15"]
+
+
+def test_burned_trail_starts_at_latest_and_skips_observed(pw, monkeypatch):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    orch.sync()                                                              # run 활성화 + 신고 반영
+    for cid, t in (("5_5", 0.0), ("6_5", 60.0), ("7_5", 100.0), ("7_6", 30.0)):
+        lg.add_knowledge("FIRE", f"T:{cid}", cid, t, "TEST", {"cell_id": cid, "status": "CONFIRMED", "observation_id": f"O{cid}"})
+    lg.add_knowledge("FIRE", "T:8_5", "8_5", 50.0, "TEST", {"cell_id": "8_5", "status": "CONFIRMED_BURNED", "observation_id": "O8"})
+    monkeypatch.setattr(env, "tick_s", 5.0)                                  # 꺼짐 추정 15초 → 120초 시점엔 모두 추정
+    trail = [p["cell_id"] for p in orch._burned_trail(env.simulation_time_s)]
+    assert trail[0] == "7_5"                                                 # 가장 마지막에 타던 곳에서 시작
+    assert "8_5" not in trail                                                # 관측으로 확인한 탄 곳은 이미 본 곳
+    assert trail == ["7_5", "6_5", "7_6"]                                    # 더 최근까지 타던 이웃 칸 순, 끊기면 멈춤
+    assert orch._nearest_known_fire({"lat": LAT0, "lon": LON0}, env.simulation_time_s) is None
+
+
+def test_planning_continues_when_all_known_fire_is_presumed_burned():
+    """아는 불이 모두 '다 타고 꺼짐(추정)'이 돼도 그 주변 후보가 남아 계획이 멈추지 않는다"""
+    from orchestrator.observation_planner import build_input
+    fire, rest = grid()
+    idx = MapIndex(fire + rest)
+    inp = build_input(idx=idx, fire_states={"12_12": {"status": "CONFIRMED", "sim_time_s": 0.0}}, reports=[],
+                      weather={}, available=[{"resource_id": "A-uav1", "resource_type": "UAV", "lat": LAT0, "lon": LON0}],
+                      busy=[], rejections=[], sim_time_s=10_000.0, run_id="R", burn_out=6300.0)
+    assert inp["fire_summary"]["presumed_burned_out_cells"] == 1 and inp["fire_summary"]["burning_cells"] == 0
+    assert inp["blocks"]                                                     # 후보가 남아 있다
+
+
+def test_fire_progress_from_burned_to_burning():
+    """관측으로 본 불의 이동 방향: 지난 불(탄 곳·꺼짐 추정) 중심 → 지금 불타는 중 중심 (정답 미사용)"""
+    from orchestrator.observation_planner import belief_layers, fire_progress
+    fire, rest = grid()
+    idx = MapIndex(fire + rest)
+    lay = belief_layers({"10_12": {"status": "CONFIRMED_BURNED", "sim_time_s": 0.0},
+                         "11_12": {"status": "CONFIRMED", "sim_time_s": 0.0},          # 오래돼 꺼짐 추정
+                         "15_12": {"status": "CONFIRMED", "sim_time_s": 9000.0}}, now_s=10_000.0, burn_out=6300.0)
+    p = fire_progress(idx, lay)
+    assert p["basis"] == "PAST_FIRE_TO_BURNING" and 80 <= p["moved_toward_deg"] <= 100     # 동쪽으로 이동
+    assert p["moved_m"] > 300 and p["newest_burning_blocks"][0]["block_id"] == "B5_4"
+
+
+def test_fire_progress_without_past_uses_observation_times():
+    from orchestrator.observation_planner import belief_layers, fire_progress
+    fire, rest = grid()
+    idx = MapIndex(fire + rest)
+    lay = belief_layers({"12_10": {"status": "CONFIRMED", "sim_time_s": 100.0},
+                         "12_14": {"status": "CONFIRMED", "sim_time_s": 900.0}})
+    p = fire_progress(idx, lay)
+    assert p["basis"] == "EARLIEST_TO_LATEST_BURNING" and 170 <= p["moved_toward_deg"] <= 190   # 남쪽
+    assert fire_progress(idx, belief_layers({"12_10": {"status": "CONFIRMED", "sim_time_s": 100.0}})) is None
+
+
+
+# ---------------------------------------------------------------------------
+# 예비 드론 (B 기지 3·4번): 불이 B 쪽으로 오면 투입 (사용자 결정 2026-10-07, ±45°)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def pw4(tmp_path, obs_planner, monkeypatch):
+    """B 기지를 시험 지도 동쪽(오른쪽)에 둔 세계. UAV 4대 (B-uav1·2 는 예비)"""
+    import config as team_config
+    monkeypatch.setattr(team_config, "BASE_B_LAT", LAT0 - 12 * DLAT, raising=False)
+    monkeypatch.setattr(team_config, "BASE_B_LON", LON0 + 40 * DLON, raising=False)
+    fire, rest = grid()
+    env = FixtureEnv(fire_cells=fire, risk_cells=rest, wind_dir_deg=270.0,
+                     reports=[{"cell_id": REPORT_CELL, "sim_time_s": 120.0, "source": "119_CALL"}])
+    ids = ("A-uav1", "A-uav2", "B-uav1", "B-uav2")
+    uav = FakeUav(ids=ids, positions={"A-uav1": (LAT0 + 0.02, LON0), "A-uav2": (LAT0 + 0.02, LON0 + 0.01),
+                                      "B-uav1": (LAT0 - 0.01, LON0 + 0.05), "B-uav2": (LAT0 - 0.01, LON0 + 0.05)})
+    uav.default_script = normal_flight()
+    ugv = FakeUgv()
+    _ugv_arrives_at_target(ugv)
+    lg = Ledger(str(tmp_path / "s.sqlite3"))
+    orch = Orchestrator(lg, env, UavClient(uav.endpoints(), uav.client()), UgvClient("http://ugv", ugv.client()),
+                        analysis=InjectedAnalysis(), weather_feeds=[EnvStationFeed(env, LAT0, LON0)])
+    return {"env": env, "uav": uav, "ledger": lg, "orch": orch}
+
+
+def _known(lg, cid, status, t):
+    lg.add_knowledge("FIRE", f"T:{cid}:{t}", cid, t, "TEST", {"cell_id": cid, "status": status, "observation_id": f"O{cid}"})
+
+
+def test_reserve_uavs_stand_by_until_fire_moves_toward_base(pw4):
+    orch, env, lg = pw4["orch"], pw4["env"], pw4["ledger"]
+    _to_report_time(env)
+    orch.sync()
+    b = orch._obs_build()
+    assert {"B-uav1", "B-uav2"}.isdisjoint(r["resource_id"] for r in b["inp"]["resources_available"])
+    assert b["unavailable"]["B-uav1"] == "RESERVE_STANDBY" and b["inp"]["reserve_uavs"]["active"] is False
+    _known(lg, "12_12", "CONFIRMED_BURNED", 100.0)                       # 지난 불 (서쪽)
+    _known(lg, "16_12", "CONFIRMED", 120.0)                              # 지금 불 (동쪽 = B 쪽으로 이동)
+    b = orch._obs_build()
+    ev = [e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]
+    assert ev and ev[0]["result"] == "PHYSICAL_FIRE_PROGRESS" and ev[0]["detail"]["angle_diff_deg"] <= 45
+    assert {"B-uav1", "B-uav2"} <= {r["resource_id"] for r in b["inp"]["resources_available"]}
+    orch._obs_build()
+    assert len([e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]) == 1   # 한 번만
+
+
+def test_reserve_not_activated_when_fire_moves_away(pw4):
+    orch, env, lg = pw4["orch"], pw4["env"], pw4["ledger"]
+    _to_report_time(env)
+    orch.sync()
+    _known(lg, "16_12", "CONFIRMED_BURNED", 100.0)
+    _known(lg, "12_12", "CONFIRMED", 120.0)                              # 서쪽으로 이동 (B 반대)
+    b = orch._obs_build()
+    assert b["inp"]["reserve_uavs"]["active"] is False
+    assert not [e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]
+
+
+def test_llm_can_request_reserve_uavs(pw4):
+    orch, env, lg = pw4["orch"], pw4["env"], pw4["ledger"]
+
+    def reply(kw):
+        inp = _seen(kw)
+        return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "B 쪽으로 번질 위험",
+                "assignments": [{"resource_id": r["resource_id"], "block_id": inp["blocks"][n]["block_id"],
+                                 "purpose": "BOUNDARY_CHECK", "evidence_refs": [], "rationale": "확인"}
+                                for n, r in enumerate(inp["resources_available"])],
+                "request_reserve_uavs": True, "reserve_reason": "불이 동쪽 오르막으로 번져 B 기지 쪽으로 다가옴"}
+    orch.llm = LlmPlanner(client=FakeOpenAI(reply), timeout_s=30, max_calls=6)
+    _to_report_time(env)
+    orch.obs_plan_cycle()
+    ev = [e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]
+    assert ev and ev[0]["result"] == "LLM_REQUEST" and "B 기지" in ev[0]["detail"]["reason"]
+    assigned = {a["resource_id"] for e in lg.events() if e["event_type"] == "OBS_PLAN_EXECUTED"
+                for a in e["detail"]["assignments"]}
+    assert assigned & {"B-uav1", "B-uav2"}                                # 투입 뒤 다음 계획에서 배정됨
+
+
+def test_reserve_request_needs_reason():
+    from orchestrator.observation_planner import validate
+    inp = {"input_hash": "h", "blocks": [], "context_blocks": [], "reports": [], "resources_available": [],
+           "resources_busy": [], "weather": {}}
+    out = {"input_hash": "h", "predicted_blocks": [], "prediction_rationale": "x", "assignments": [],
+           "request_reserve_uavs": True, "reserve_reason": ""}
+    assert "RESERVE_REASON_INVALID" in validate(out, inp)
+
+
+
+def test_planning_continues_when_all_known_fire_is_observed_burned():
+    """드론이 다시 가서 '다 탄 곳'으로 본 칸만 남아도 후보가 남는다 (실제 환경 실행 7번째에서 멈춘 경우)"""
+    from orchestrator.observation_planner import build_input
+    fire, rest = grid()
+    idx = MapIndex(fire + rest)
+    inp = build_input(idx=idx, fire_states={"12_12": {"status": "CONFIRMED_BURNED", "sim_time_s": 0.0},
+                                            "13_12": {"status": "OBSERVED_CLEAR", "sim_time_s": 0.0}},
+                      reports=[], weather={},
+                      available=[{"resource_id": "A-uav1", "resource_type": "UAV", "lat": LAT0, "lon": LON0}],
+                      busy=[], rejections=[], sim_time_s=10_000.0, run_id="R", burn_out=6300.0)
+    assert inp["blocks"]
+
+
+# ---------------------------------------------------------------------------
+# 앞질러 보내기: 처음 발화(첫 신고) → 마지막 불로 진행 방향·속도 → 1·2시간 뒤 예상 지점 새 출동 (2026-10-07)
+# ---------------------------------------------------------------------------
+
+def test_advance_targets_one_and_two_hours_ahead(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    orch.sync()                                                          # 신고 12_12 @120 s
+    _known(lg, "16_12", "CONFIRMED", 3720.0)                             # 1시간 뒤 동쪽 4칸(360 m)에서 불 확인
+    t = orch._advance_targets(3720.0)
+    assert [x["horizon_s"] for x in t] == [3600.0, 7200.0]
+    assert t[0]["speed_m_per_h"] == 360 and 80 <= t[0]["bearing_deg"] <= 100      # 시간당 360 m, 동쪽
+    assert t[0]["cell_id"] == "20_12" and t[1]["cell_id"] == "24_12"     # 1시간 앞 4칸, 2시간 앞 8칸
+    assert t[0]["origin_cell"] == REPORT_CELL
+
+
+def test_advance_scouts_are_dispatched_once_to_nearest_drones(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    orch.sync()
+    _known(lg, "16_12", "CONFIRMED", 120.0 + 3600.0)
+    orch._request_advance_scouts(3720.0)
+    orch._request_advance_scouts(3720.0)                                 # 같은 '마지막 불'로는 한 번만
+    adv = [t for t in lg.list_tasks() if t.kind == "ADVANCE_SCOUT"]
+    assert len(adv) == 2 and {t.target.cell_id for t in adv} == {"20_12", "24_12"}
+    orch.obs_plan_cycle()
+    sent = [e for e in lg.events() if e["event_type"] == "OBS_ADVANCE_SCOUT_DISPATCH"]
+    assert {e["result"] for e in sent} == {"STARTED"}
+    assert {e["resource_id"] for e in sent} == {"A-uav1", "A-uav2"}       # 두 지점에 드론 두 대
+    for t in adv:                                                        # 다음 계획이 앞질러 보내기를 취소하지 않음
+        assert lg.get_task(t.task_id).purpose_status != "CANCELLED"
+
+
+
+# ---------------------------------------------------------------------------
+# API 키 예산 초과 → 다음 키 (사용자 결정 2026-10-07)
+# ---------------------------------------------------------------------------
+
+def test_budget_exceeded_switches_to_next_key(monkeypatch):
+    import openai
+    from orchestrator import llm as llm_mod
+    monkeypatch.setenv("OPENAI_API_KEY", "key-one")
+    monkeypatch.setenv("OPENAI_API_KEY_2", "key-two")
+    used = []
+
+    class Budget(Exception):
+        body = {"error": {"code": "budget_exceeded", "message": "Budget limit exceeded."}}
+
+    class Fake:
+        def __init__(self, api_key=None, **kw):
+            self.key = api_key
+            self.chat = type("C", (), {"completions": self})()
+
+        def create(self, **kw):
+            used.append(self.key)
+            if self.key == "key-one":
+                raise Budget("Error code: 429 budget_exceeded")
+            msg = type("M", (), {"content": "OK"})()
+            return type("R", (), {"choices": [type("Ch", (), {"message": msg})()]})()
+    monkeypatch.setattr(openai, "OpenAI", Fake)
+    p = llm_mod.LlmPlanner(timeout_s=30, max_calls=5)
+    assert p._chat([{"role": "user", "content": "x"}]) == "OK"
+    assert used == ["key-one", "key-two"] and p.key_index == 1 and p.exhausted_keys == [0]
+    assert p.status() is None
+
+
+def test_all_keys_exhausted_disables_llm(monkeypatch):
+    import openai
+    from orchestrator import llm as llm_mod
+    monkeypatch.setenv("OPENAI_API_KEY", "key-one")
+    monkeypatch.delenv("OPENAI_API_KEY_2", raising=False)
+
+    class Budget(Exception):
+        body = {"error": {"code": "budget_exceeded"}}
+
+    class Fake:
+        def __init__(self, api_key=None, **kw):
+            self.chat = type("C", (), {"completions": self})()
+
+        def create(self, **kw):
+            raise Budget("budget_exceeded")
+    monkeypatch.setattr(openai, "OpenAI", Fake)
+    p = llm_mod.LlmPlanner(timeout_s=30, max_calls=5)
+    with pytest.raises(Budget):
+        p._chat([{"role": "user", "content": "x"}])
+    assert p.status() == "ALL_KEYS_BUDGET_EXCEEDED"
+
+
+
+def test_initial_drone_orbits_report_point_for_120s():
+    """첫 드론: 테두리를 따라가지 않고 신고 지점 둘레를 원으로 120초 (반지름 ≈ 840/(1+2π) ≈ 116 m)"""
+    fire, rest = grid()
+    env = FixtureEnv(fire_cells=fire, risk_cells=rest)
+    c = cell(12, 12)
+    task = Task(task_id="T", incident_id="I", kind="OBSERVE",
+                target=Target(lat=c["lat"], lon=c["lon"], ground_amsl_m=600.0, cell_id="12_12"))
+    o = observation.simulate_edge_sweep(snapshot=env.read(), map_cells=env.map_cells(), task=task, attempt_id="A",
+                                        resource_id="A-uav1", position={"lat": c["lat"], "lon": c["lon"]},
+                                        report_point={"lat": c["lat"], "lon": c["lon"]}, orbit_duration_s=120.0)
+    fp = o["footprint"]
+    assert fp["mode"] == "ORBIT_SURVEY" and fp["duration_s"] == 120.0 and 115 <= fp["orbit_radius_m"] <= 117
+    seen = set(o["covered_cells"] + o["partial_cells"])
+    assert {"12_12", "12_11", "11_12", "13_13", "11_13"} <= seen            # 중심과 둘레 사방 (반경 약 142 m 안)
+    assert "16_12" not in seen and "8_12" not in seen                         # 원 밖은 보지 않음
+    assert o["result"] == "DETECTED"
+
+
+def test_initial_drone_payload_requests_120s(pw, monkeypatch):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    monkeypatch.setattr(config, "OBS_INITIAL_NEAREST_UAV", True)
+    _to_report_time(env)
+    orch.obs_plan_cycle()
+    ex = [b for m, rid, path, b in pw["uav"].calls if path == "/execute"]
+    assert ex and ex[0]["observe_duration_s"] == 120
+    _poll(orch)
+    o = [e["detail"] for e in lg.events() if e["event_type"] == "OBSERVATION"
+         and (e["detail"] or {}).get("sensor_type") == "THERMAL"][0]
+    assert o["footprint"]["mode"] == "ORBIT_SURVEY"
+
+
+
+def test_candidate_blocks_capped_and_ahead_of_progress_first():
+    """후보 구역은 최대 30개, 진행 방향 앞쪽 구역이 먼저 (사용자 결정 2026-10-07)"""
+    from orchestrator.observation_planner import build_input, llm_view
+    fire, rest = grid()
+    idx = MapIndex(fire + rest)
+    fs = {f"{c}_{r}": {"status": "CONFIRMED", "sim_time_s": 3000.0} for c in (12, 13) for r in (12, 13)}
+    inp = build_input(idx=idx, fire_states=fs, reports=[{"report_id": "R1", "cell_id": "9_12", "sim_time_s": 120.0}],
+                      weather={}, available=[{"resource_id": "A-uav1", "resource_type": "UAV", "lat": LAT0, "lon": LON0}],
+                      busy=[], rejections=[], sim_time_s=3000.0, run_id="R", burn_out=6300.0)
+    assert inp["fire_progress"]["basis"] == "IGNITION_TO_BURNING" and 80 <= inp["fire_progress"]["moved_toward_deg"] <= 100
+    assert len(inp["blocks"]) == 30 and inp["deferred_blocks"] > 0
+    first = inp["blocks"][:5]
+    assert all(b["ahead_of_progress"] for b in first)                    # 동쪽(진행 방향) 구역부터
+    v = llm_view(inp)
+    assert len(json.dumps(v, ensure_ascii=False)) < len(json.dumps(inp, ensure_ascii=False)) * 0.6   # 짧은 형태
+    assert {b["id"] for b in v["blocks"]} == {b["block_id"] for b in inp["blocks"]}
+
+
+
+def test_one_plan_per_env_step_then_gathered_next_step(pw):
+    """환경 한 단계 안에서는 관측 계획을 한 번만, 그 뒤 돌아온 자원은 다음 단계에 모아서 (사용자 결정 2026-10-07)"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    first = orch.obs_plan_cycle()
+    assert first
+    _poll(orch)                                                          # 자원들이 관측하고 돌아옴 (같은 단계)
+    assert orch.obs_plan_cycle() == []
+    idle = [e for e in lg.events() if e["event_type"] == "OBS_PLAN_IDLE"]
+    assert idle[-1]["result"] == "ALREADY_PLANNED_THIS_ENV_STEP"
+    assert any("OBSERVATION" == e["event_type"] for e in lg.events())   # 관측 반영은 기다리지 않음
+    env.advance(1)
+    nxt = orch.obs_plan_cycle()
+    assert nxt and len(nxt[0]["assignments"]) == 3                       # 돌아온 자원 셋을 한 번에
+
+
+def test_frontier_includes_unobserved_next_to_passed_fire():
+    """불이 지나간 칸(다 탄 곳·꺼짐 추정) 바로 옆 미관측도 '확인할 바깥'이다 (2026-10-07)"""
+    from orchestrator.observation_planner import belief_layers, known_edge
+    fire, rest = grid()
+    idx = MapIndex(fire + rest)
+    lay = belief_layers({"12_12": {"status": "CONFIRMED", "sim_time_s": 0.0},          # 오래돼 꺼짐 추정
+                         "20_20": {"status": "CONFIRMED_BURNED", "sim_time_s": 9000.0},  # 관측으로 본 탄 곳
+                         "13_12": {"status": "OBSERVED_CLEAR", "sim_time_s": 9000.0}}, now_s=10_000.0, burn_out=6300.0)
+    edge, frontier = known_edge(idx, lay)
+    assert not edge                                                    # 불타는 중인 칸이 없으니 테두리는 없다
+    assert {"11_12", "12_11", "21_21", "19_20"} <= frontier and "13_12" not in frontier
+
+
+def test_ugv_seeing_only_burned_follows_progress_450m(pw):
+    """UGV 가 다 탄 곳만 보고 불을 못 찾으면 진행 방향으로 450 m 떨어진 곳에 같은 UGV 를 바로 다시 보낸다"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    orch.sync()                                                          # 신고 12_12
+    _known(lg, "16_12", "CONFIRMED", 120.0)                              # 진행 방향: 동쪽
+    here = cell(14, 12)
+    task = Task(task_id="T-UGV", incident_id="I", kind="OBSERVE", plan_id="PLAN-X",
+                target=Target(lat=here["lat"], lon=here["lon"], ground_amsl_m=600.0, cell_id="14_12"),
+                requirements=Requirements(resource_types=("UGV",), sensor="THERMAL"))
+    obs = {"observation_id": "OBS-UGV-1", "footprint_center": {"lat": here["lat"], "lon": here["lon"]}}
+    orch._request_ugv_follow(task, obs, "A-ugv1", 120.0)
+    orch._request_ugv_follow(task, obs, "A-ugv1", 120.0)                 # 같은 관측으로는 한 번만
+    fol = [t for t in lg.list_tasks() if t.kind == "UGV_EDGE_FOLLOW"]
+    assert len(fol) == 1 and fol[0].assigned_resource_id == "A-ugv1"
+    assert fol[0].target.cell_id == "19_12"                              # 동쪽 450 m = 5칸
+    orch.obs_plan_cycle()
+    sent = [e for e in lg.events() if e["event_type"] == "OBS_UGV_FOLLOW_DISPATCH"]
+    assert sent and sent[0]["result"] == "STARTED" and sent[0]["resource_id"] == "A-ugv1"
+
+
+def test_ugv_follow_skipped_without_direction(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    orch.sync()
+    here = cell(14, 12)
+    task = Task(task_id="T-UGV", incident_id="I", kind="OBSERVE", plan_id="PLAN-X",
+                target=Target(lat=here["lat"], lon=here["lon"], ground_amsl_m=600.0, cell_id="14_12"),
+                requirements=Requirements(resource_types=("UGV",), sensor="THERMAL"))
+    orch._request_ugv_follow(task, {"observation_id": "O2", "footprint_center": {"lat": here["lat"], "lon": here["lon"]}},
+                             "A-ugv1", 120.0)
+    assert not [t for t in lg.list_tasks() if t.kind == "UGV_EDGE_FOLLOW"]
+    assert [e for e in lg.events() if e["event_type"] == "OBS_UGV_FOLLOW_SKIPPED"][0]["reason"] == "NO_PROGRESS_DIRECTION"
