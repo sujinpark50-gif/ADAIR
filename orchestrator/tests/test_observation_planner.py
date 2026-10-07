@@ -44,6 +44,7 @@ def grid(burning=BURNING):
 @pytest.fixture
 def obs_planner(monkeypatch):
     monkeypatch.setattr(config, "OBS_PLANNER_ENABLED", True)
+    monkeypatch.setattr(config, "OBS_INITIAL_NEAREST_UAV", False)     # 첫 출동은 test_initial_* 에서 따로 켠다
     caps = dict(config.SIMULATED_CAPABILITIES)
     caps["UGV"] = tuple(caps["UGV"]) + ("THERMAL",)
     monkeypatch.setattr(config, "SIMULATED_CAPABILITIES", caps)
@@ -410,3 +411,66 @@ def test_plan_input_carries_edge_fields(pw):
     assert inp["fire_summary"]["known_edge_cells"] > 0
     assert all({"known_edge_cells", "unobserved_next_to_fire"} <= set(b) for b in inp["blocks"])
     assert any(b["unobserved_next_to_fire"] for b in inp["blocks"])
+
+
+def test_field_weather_replaces_station_in_plan_input(pw, monkeypatch):
+    """드론·UGV 현장 측정이 유효(기본 35분)하면 계획 입력의 기상을 대체한다 (사용자 결정 2026-10-07)"""
+    orch, env = pw["orch"], pw["env"]
+    monkeypatch.setattr(config, "FIELD_WEATHER_MAX_AGE_S", {k: 2100.0 for k in config.WEATHER_ITEMS})
+    _to_report_time(env)
+    w0 = orch._obs_build()["inp"]["weather"]["items"]
+    assert w0["wind_ms"]["basis"] == "NEAREST_STATION"
+    orch.obs_plan_cycle()
+    _poll(orch)                                                  # 불 발견 → 같은 방문에서 기상 측정
+    w1 = orch._obs_build()["inp"]["weather"]["items"]
+    assert w1["wind_ms"]["basis"] == "FIELD_LATEST_VALID" and w1["wind_ms"]["cell_id"]
+    env.advance(36)                                              # 35분 넘게 지나면 다시 관측소 값
+    w2 = orch._obs_build()["inp"]["weather"]["items"]
+    assert w2["wind_ms"]["basis"] == "NEAREST_STATION"
+
+
+# ---------------------------------------------------------------------------
+# 첫 출동: 가장 가까운 드론을 LLM 없이 바로 → 그 관측이 들어온 뒤 LLM 계획 (사용자 결정 2026-10-07)
+# ---------------------------------------------------------------------------
+
+def test_initial_nearest_uav_goes_first_then_llm_plans_with_its_observation(pw, monkeypatch):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    monkeypatch.setattr(config, "OBS_INITIAL_NEAREST_UAV", True)
+    seen = []
+
+    def pick(inp):
+        seen.append(inp)
+        return [{"resource_id": r["resource_id"], "block_id": inp["blocks"][n]["block_id"], "purpose": "BOUNDARY_CHECK",
+                 "evidence_refs": [], "rationale": "첫 관측 뒤 배정"} for n, r in enumerate(inp["resources_available"])]
+    fake = FakeOpenAI(_llm_plan(pick))
+    orch.llm = LlmPlanner(client=fake, timeout_s=30, max_calls=5)
+    _to_report_time(env)
+    assert orch.obs_plan_cycle() == []                                   # LLM 을 부르지 않고 첫 드론만 보냄
+    first = _events(lg, "OBS_INITIAL_DISPATCH")[0]
+    rep = cell(12, 12)
+    nearest = min(("A-uav1", "A-uav2"), key=lambda r: math.hypot(pw["uav"].state[r]["lat"] - rep["lat"],
+                                                                 (pw["uav"].state[r]["lon"] - rep["lon"])
+                                                                 * math.cos(math.radians(LAT0))))
+    assert nearest == "A-uav2"
+    assert first["result"] == "STARTED" and first["resource_id"] == nearest   # 신고 칸에 더 가까운 드론
+    t = lg.get_task(first["task_id"])
+    assert t.target.cell_id == REPORT_CELL and t.kind == "OBSERVE"
+    assert fake.requests == []
+    assert orch.obs_plan_cycle() == [] and fake.requests == []           # 관측 전에는 계속 기다림
+    _poll(orch)                                                          # 첫 드론 관측 도착
+    out = orch.obs_plan_cycle()
+    assert out and out[0]["source"] == "LLM"
+    inp = seen[0]
+    assert inp["fire_summary"]["burning_cells"] > 0                      # 첫 관측의 불 좌표가 LLM 입력에 들어감
+    assert len(_events(lg, "OBS_INITIAL_DISPATCH")) == 1                 # 첫 출동은 한 번만
+
+
+def test_initial_dispatch_rejected_does_not_block_planning(pw, monkeypatch):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    monkeypatch.setattr(config, "OBS_INITIAL_NEAREST_UAV", True)
+    for rid in ("A-uav1", "A-uav2"):
+        pw["uav"].verdicts[rid] = {"verdict": "REJECT", "reason": "HIGH_WIND", "eta_sec": None}
+    _to_report_time(env)
+    out = orch.obs_plan_cycle()
+    assert _events(lg, "OBS_INITIAL_DISPATCH")[0]["result"] == "HOLD"     # 드론 모두 거절 → 첫 출동 보류
+    assert out and out[0]["source"] == "RULE_FALLBACK"                    # 기다리지 않고 바로 계획으로 넘어감

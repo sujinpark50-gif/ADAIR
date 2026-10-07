@@ -187,8 +187,8 @@ LOCAL_OBSERVATION_TYPE = {"THERMAL": "THERMAL", "RGB": "RGB", "WEATHER": None}
 # - 항목마다 값·단위·출처·관측시각·유효성을 따로 본다. 유효한 현장 측정 우선, 만료되면 관측소 값으로 바꾸고
 #   재측정을 요청한다. 쓸 값이 없으면 UNKNOWN (임의 값으로 채우지 않음).
 # - 관측소 유효시간: 그 자료의 제공 간격 (기상청 ASOS 시간자료 = 3600초, knowledge.KmaAsosReplay).
-# - 현장 측정 유효시간: 근거가 되는 자료 계약이 아직 없다 → 기본값을 두지 않는다 (TBD).
-#   미설정이면 현장 측정은 POLICY_NOT_SET 으로 표시되고 판단에 쓰이지 않는다 (관측소 값 사용).
+# - 현장 측정 유효시간: 사용자 결정 2026-10-07 = 35분 (시뮬레이션 2,100초, 모든 항목. 트윈 환경 한 단계와 같음).
+#   값을 비우면(ORCH_FIELD_WEATHER_MAX_AGE_S="") POLICY_NOT_SET 으로 표시되고 판단에 쓰이지 않는다 (관측소 값 사용).
 #   ORCH_FIELD_WEATHER_MAX_AGE_S = "600"  (모든 항목, 시뮬레이션 초)  또는
 #                                  '{"wind_ms": 600, "wind_dir_deg": 600}'  (항목별 JSON)
 # ---------------------------------------------------------------------------
@@ -220,7 +220,8 @@ def parse_field_weather_max_age(raw) -> dict:
     return out
 
 
-FIELD_WEATHER_MAX_AGE_S = parse_field_weather_max_age(os.getenv("ORCH_FIELD_WEATHER_MAX_AGE_S"))
+# 사용자 결정 2026-10-07: 현장 측정은 관측 시각부터 35분(시뮬레이션 2,100초) 유효 — 모든 항목
+FIELD_WEATHER_MAX_AGE_S = parse_field_weather_max_age(os.getenv("ORCH_FIELD_WEATHER_MAX_AGE_S", "2100"))
 # 현장 측정이 만료되면 같은 칸의 재측정을 요청한다 (모의 측정 계약 사용, 같은 만료 측정에 대해 한 번)
 WEATHER_REMEASURE_ENABLED = True
 
@@ -265,6 +266,9 @@ OBS_CANDIDATE_RADIUS_M = 1000.0       # 알려진 불에서 이 거리 안의 �
 OBS_BLOCK_CELLS = 3                   # 후보 칸을 3×3 칸 구역으로 묶어 LLM 에 준다
 OBS_STALE_S = None                    # 오래된 관측 기준 — 미정. 관측 시각만 넘기고 오래됨 표시는 하지 않는다
 OBS_RATIONALE_MAX_CHARS = 400
+# 첫 출동 (사용자 결정 2026-10-07): 신고가 오면 LLM 을 기다리지 않고 신고 칸에서 가장 가까운 드론을 바로 보낸다.
+# 그 드론의 첫 관측(불 좌표)이 들어온 뒤에 LLM 이 나머지 자원을 계획한다 (첫 관측이 LLM 입력에 들어가도록).
+OBS_INITIAL_NEAREST_UAV = True
 # 드론 테두리 추적 관측 (모의, TEST_ONLY). 드론팀 순찰 기능(UAV-08) 전까지 총괄 모의 센서로 만든다.
 #   도착 지점에서 불 테두리를 찾아 신고 지점에서 멀어지는 쪽으로 따라 난다. 테두리가 없으면 신고 지점 쪽으로 직선.
 #   카메라 한 장 52×42 m(지면 위 90 m) 중 진행 방향에 수직인 52 m 를 띠 폭으로 쓴다.

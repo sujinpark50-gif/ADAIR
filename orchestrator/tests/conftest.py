@@ -44,6 +44,8 @@ def legacy_dispatch_mode(monkeypatch):
     caps = dict(config.SIMULATED_CAPABILITIES)
     caps["UGV"] = tuple(c for c in caps["UGV"] if c != "THERMAL")
     monkeypatch.setattr(config, "SIMULATED_CAPABILITIES", caps)
+    # 현장 기상 유효시간(2026-10-07 기본 35분)도 기존 시험 기준(미설정)으로 둔다. 필요한 시험은 field_policy 로 정한다
+    monkeypatch.setattr(config, "FIELD_WEATHER_MAX_AGE_S", {k: None for k in config.WEATHER_ITEMS})
 
 
 @pytest.fixture

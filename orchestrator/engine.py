@@ -573,7 +573,8 @@ class Orchestrator:
             return self._hold(task, "TARGET_LOCATION_UNKNOWN", "MAP_INFO", sim,
                               detail={"cell_id": task.nav_target.cell_id})
         snap = self.view_for(task, base)       # 갈 지점 기준으로 기상을 항목별로 고른다
-        if config.WEATHER_REMEASURE_ENABLED and snap.wind_ref.get("remeasure"):
+        # 관측 계획 Task 는 재측정 출동을 따로 만들지 않는다 (다음 관측 대상·자원은 계획이 고른다)
+        if config.WEATHER_REMEASURE_ENABLED and snap.wind_ref.get("remeasure") and not task.plan_id:
             self._request_remeasure(task, snap)
             task = self.ledger.get_task(task_id)
 
@@ -2000,10 +2001,21 @@ class Orchestrator:
         lat = sum(c["lat"] for c in cells) / len(cells)
         lon = sum(c["lon"] for c in cells) / len(cells)
         w = self.kb.weather_for(lat, lon, None, now)
-        return {"basis": w.get("basis"), "at": "알려진 불의 중심",
-                "items": {i: {k: r.get(k) for k in ("value", "unit", "basis", "source", "observed_sim_s", "key",
-                                                     "station_id", "cell_id")} for i, r in w["items"].items()},
-                "unknown": sorted(w["unknown"])}
+        keep = ("value", "unit", "basis", "source", "observed_sim_s", "key", "station_id", "cell_id")
+        items = {i: {k: r.get(k) for k in keep} for i, r in w["items"].items()}
+        # 드론·UGV 현장 측정이 유효(config.FIELD_WEATHER_MAX_AGE_S)하면 항목별로 가장 최근 값으로 관측소 값을 대체한다
+        # (사용자 결정 2026-10-07). 어느 칸에서 잰 값인지 남긴다
+        field = self.kb.field_weather(now)["valid"]
+        for i in config.WEATHER_ITEMS:
+            got = [(f["items"][i]["observed_sim_s"], f["cell_id"], f) for f in field if i in f["items"]]
+            if got:
+                t, cid, f = max(got, key=lambda x: (x[0], x[1]))
+                items[i] = {"value": f["values"][i], "unit": f["items"][i]["unit"], "basis": "FIELD_LATEST_VALID",
+                            "source": f["items"][i]["source"], "observed_sim_s": t, "key": f["items"][i].get("observation_id"),
+                            "station_id": None, "cell_id": cid, "replaced_station_value": (items.get(i) or {}).get("value")}
+        return {"basis": w.get("basis"), "at": "알려진 불의 중심 (현장 측정이 유효하면 그 값)",
+                "field_max_age_s": dict(config.FIELD_WEATHER_MAX_AGE_S),
+                "items": items, "unknown": sorted(i for i in w["unknown"] if i not in items)}
 
     def _obs_build(self) -> Optional[dict]:
         snap = self.view()
@@ -2028,6 +2040,8 @@ class Orchestrator:
         b = self._obs_build()
         if b is None or not b["inp"]["reports"]:
             return None
+        if config.OBS_INITIAL_NEAREST_UAV and b["sim"] <= config.OBS_DEMO_END_SIM_S and self._obs_initial(b):
+            return None                                   # 첫 드론 출동·관측 대기 중 — LLM 계획은 그 뒤에
         if b["sim"] > config.OBS_DEMO_END_SIM_S:
             if not self._obs_end_logged:
                 self._obs_end_logged = True
@@ -2042,6 +2056,31 @@ class Orchestrator:
         if b["inp"]["input_hash"] == self._obs_last_hash:
             return None
         return b
+
+    INITIAL_WAIT_SUBSTATUSES = ("PREPARED", "REQUESTED", "STARTED", "ARRIVED")
+
+    def _obs_initial(self, b: dict) -> bool:
+        """첫 출동: 신고 칸에 가장 가까운 드론을 LLM 없이 바로 보낸다 (사용자 결정 2026-10-07).
+        True = 그 드론이 아직 관측 전이라 LLM 계획을 기다린다. 드론을 못 보냈거나(보류) 관측이 끝났으면 False.
+        가까운 순서는 기존 배정과 같다 (직선거리 → ID, Local 이 거절하면 다음 드론)."""
+        rep = b["inp"]["reports"][0]
+        key = f"OBS-INITIAL:{b['inp']['run_id']}:{rep['report_id']}"
+        task = self.ledger.task_by_request_key(key)
+        if task is None:
+            c = b["idx"].by_id.get(rep["cell_id"]) or {}
+            task, _ = self.submit_task({
+                "request_id": key, "incident_id": "INC-OBSERVATION", "kind": "OBSERVE",
+                "target": {"lat": c.get("lat"), "lon": c.get("lon"), "ground_amsl_m": c.get("ground_amsl_m"),
+                           "cell_id": rep["cell_id"]},
+                "requirements": {"resource_types": ["UAV"], "sensor": "THERMAL", "needs_env_ack": True},
+                "plan_id": "INITIAL_NEAREST_UAV"})
+            out = self.dispatch(task.task_id)
+            self.ledger.log("OBS_INITIAL_DISPATCH", task_id=task.task_id, result=out.get("status"),
+                            resource_id=out.get("resource_id"), reason=out.get("reason"), sim_time_s=b["sim"],
+                            detail={"report_id": rep["report_id"], "cell_id": rep["cell_id"],
+                                    "rule": "신고 칸에서 직선거리가 가장 가까운 드론 (LLM 없이 바로)",
+                                    "excluded": out.get("excluded")})
+        return any(a["substatus"] in self.INITIAL_WAIT_SUBSTATUSES for a in self.ledger.list_attempts(task.task_id))
 
     def obs_plan_call(self, req: dict) -> dict:
         """LLM 호출 (길 수 있다, 장부를 건드리지 않는다)."""
