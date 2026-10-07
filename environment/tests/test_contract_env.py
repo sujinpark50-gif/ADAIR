@@ -236,3 +236,31 @@ def test_downwind_cells_arrive_first(env):
     east = [v for k, v in t.items() if int(k.split("_")[0]) > 19]
     west = [v for k, v in t.items() if int(k.split("_")[0]) < 19]
     assert east and (not west or sum(east) / len(east) < sum(west) / len(west))
+
+
+def test_subtick_interpolates_within_ca_step(tmp_path):
+    """단계 사이 채우기: CA 는 tick_s 단계 그대로, advance 한 번에 subtick_s. 단계 끝 화재는 채우기 없이와 같다 (총괄 브랜치)"""
+    from src.contract_env import ContractEnvironment
+    a = ContractEnvironment(str(tmp_path / "a"), seed=2, ignitions=[(13, 101)], tick_s=2100.0, resume=False)
+    b = ContractEnvironment(str(tmp_path / "b"), seed=2, ignitions=[(13, 101)], tick_s=2100.0, resume=False,
+                            subtick_s=60.0, report_delay_s=120.0)
+    fire = lambda s: sorted((c["cell_id"], c["fire_state"]) for c in s["fire_cells"])
+    sa = a.advance(2)                                                   # 4200 초
+    seen, counts = [], []
+    for _ in range(70):                                                 # 70 × 60 초 = 4200 초
+        s = b.advance(1)
+        counts.append(sum(1 for c in s["fire_cells"] if c["fire_state"] != "UNBURNED"))
+        seen.append(s["simulation_time_s"])
+    assert seen[0] == 60.0 and seen[-1] == 4200.0 and s["tick_s"] == 2100.0 and s["subtick_s"] == 60.0
+    assert fire(s) == fire(sa)                                          # 단계 끝은 보정된 CA 와 같다
+    assert counts == sorted(counts)                                     # 불붙은 칸이 줄지 않고 조금씩 는다
+    assert len(set(counts)) > 2                                         # 단계 사이에도 변한다
+    assert s["fire_display"].startswith("INTERPOLATED")
+    assert b.reports_until(120.0) and b.reports_until(119.0) == []
+
+
+def test_subtick_off_is_unchanged(tmp_path):
+    from src.contract_env import ContractEnvironment
+    e = ContractEnvironment(str(tmp_path / "c"), seed=2, ignitions=[(13, 101)], tick_s=2100.0, resume=False)
+    s = e.advance(1)
+    assert s["simulation_time_s"] == 2100.0 and s["subtick_s"] is None and s["fire_display"] == "CA_STEP"

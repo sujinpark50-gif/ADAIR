@@ -48,7 +48,10 @@ def twin_env(opts: dict) -> dict:
     d = json.loads((ROOT / "web" / "static" / "inje2019" / "scenario.json").read_text(encoding="utf-8"))
     env = {k: str(v) for k, v in d["twin_env"].items()}
     run = Path(opts.get("twin_dir") or RUN_DIR)
-    env.update({"ENV_STATE_DIR": str(run / "env"), "ENV_RESUME": "0"})
+    env.update({"ENV_STATE_DIR": str(run / "env"), "ENV_RESUME": "0",
+                # 총괄 브랜치 2026-10-07: 신고 2분 뒤, 불 지도 1분 단위 (CA 35분 단계 사이 채우기). 밖에서 주면 그 값
+                "ENV_REPORT_DELAY_S": os.environ.get("ENV_REPORT_DELAY_S", "120"),
+                "ENV_SUBTICK_S": os.environ.get("ENV_SUBTICK_S", "60")})
     return env
 
 

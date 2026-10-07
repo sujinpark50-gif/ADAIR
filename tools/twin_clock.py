@@ -21,8 +21,10 @@ def main():
     a = ap.parse_args()
     cx = httpx.Client(timeout=30)
     h = cx.get(f"{a.env}/health").json()
-    tick = h["assumptions"]["tick_s"]
-    print(f"run {h['run_id']} · 한 스텝 {tick:.0f}s · {a.speed:g}배속 → 실제 {tick / a.speed:.1f}s 마다 진행")
+    # 단계 사이 채우기(ENV_SUBTICK_S)가 켜져 있으면 /advance 한 번 = subtick 초 (총괄 브랜치 2026-10-07)
+    tick = h["assumptions"].get("subtick_s") or h["assumptions"]["tick_s"]
+    print(f"run {h['run_id']} · 한 번 진행 {tick:.0f}s (CA 단계 {h['assumptions']['tick_s']:.0f}s) · "
+          f"{a.speed:g}배속 → 실제 {tick / a.speed:.1f}s 마다 진행")
     while True:
         s = cx.get(f"{a.env}/snapshot").json()
         if s["simulation_time_s"] >= a.until_h * 3600:

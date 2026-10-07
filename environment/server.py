@@ -19,7 +19,8 @@
 | POST | /reset           | 새 시뮬레이션 → 새 run_id |
 
 환경 변수: ENV_STATE_DIR(기본 environment/.state), ENV_TICK_S(60), ENV_SCENARIO_START_KST,
-ENV_SEED(42), ENV_IGNITION("19,142"), ENV_REPORT_DELAY_S(0), ENV_RESUME(1).
+ENV_SEED(42), ENV_IGNITION("19,142"), ENV_REPORT_DELAY_S(0), ENV_RESUME(1),
+ENV_SUBTICK_S(비움 = 끔. 예: 60 이면 /advance 한 번에 1분, CA 단계 사이 점화 시각을 채워 넣음 — 총괄 브랜치 2026-10-07).
 """
 
 from __future__ import annotations
@@ -47,7 +48,8 @@ def build_env() -> ContractEnvironment:
         scenario_start_kst=os.getenv("ENV_SCENARIO_START_KST", "2019-04-04T14:45:00+09:00"),
         seed=int(os.getenv("ENV_SEED", "42")), ignitions=ignitions,
         report_delay_s=float(os.getenv("ENV_REPORT_DELAY_S", "0")),
-        resume=os.getenv("ENV_RESUME", "1") != "0")
+        resume=os.getenv("ENV_RESUME", "1") != "0",
+        subtick_s=float(os.getenv("ENV_SUBTICK_S")) if os.getenv("ENV_SUBTICK_S") else None)
 
 
 def build_analysis(env: ContractEnvironment) -> BeliefSpreadAnalysis:

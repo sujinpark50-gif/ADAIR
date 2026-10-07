@@ -135,7 +135,7 @@ class ContractEnvironment:
                  wind_station_id: str = "211",
                  fire_stations_json=DEFAULT_FIRE_STATIONS_JSON,
                  reports: Optional[List[dict]] = None, report_delay_s: float = 0.0,
-                 truth_buffer_cells: int = 3, resume: bool = True):
+                 truth_buffer_cells: int = 3, resume: bool = True, subtick_s: Optional[float] = None):
         from src.fire_model import WildfireCAEngine
         from src.grid import EnvironmentGrid
 
@@ -148,6 +148,13 @@ class ContractEnvironment:
         self.seed = seed
         self.ignitions = [tuple(map(int, p)) for p in ignitions]
         self.tick_s = float(tick_s)
+        # 단계 사이 채우기 (총괄 브랜치 2026-10-07, 은주님 확인 필요). subtick_s 를 주면 advance 한 번에 subtick_s 만큼만
+        # 시간이 간다. CA 는 tick_s 단계 그대로 (보정 유지) 한 단계를 미리 계산해 두고, 그 사이 새로 붙는 칸의 점화 시각을
+        # '이미 타던 칸에서 가까운 칸부터' 나눠 정해 snapshot 이 조금씩 번진 불을 돌려준다. 다 탄 칸은 단계 끝에 꺼진다.
+        self.subtick_s = float(subtick_s) if subtick_s else None
+        if self.subtick_s and (self.subtick_s <= 0 or self.subtick_s > self.tick_s):
+            raise ValueError("subtick_s 는 0 보다 크고 tick_s 이하여야 한다")
+        self._iv = None                         # {"t0", "t_end", "prev": [코드], "trans": {칸: [[시각, 코드], ...]}}
         self.scenario_start_kst = scenario_start_kst
         self.truth_buffer_cells = int(truth_buffer_cells)
         self.map_version = MAP_VERSION
@@ -258,6 +265,46 @@ class ContractEnvironment:
     def _fire_codes(self) -> np.ndarray:
         return np.array([_FIRE_CODE[c.fire_state] for c in self._cells], dtype=np.uint8)
 
+    def _display_codes(self) -> np.ndarray:
+        """지금 시각에 보이는 화재 코드. 단계 사이 채우기 중이면 단계 시작 상태 + 지금까지 일어난 변화."""
+        if not self._iv:
+            return self._fire_codes()
+        codes = np.array(self._iv["prev"], dtype=np.uint8)
+        for idx, seq in self._iv["trans"].items():
+            for t, code in seq:
+                if t <= self.simulation_time_s + 1e-6:
+                    codes[int(idx)] = code
+        return codes
+
+    def _start_interval(self):
+        """CA 한 단계를 미리 계산하고 그 사이 변화 시각을 정한다 (점화: 이전에 타던 칸에서 가까운 순, 꺼짐: 단계 끝)."""
+        t0 = self.simulation_time_s
+        prev = self._fire_codes()
+        self._apply_wind()                       # 이번 단계는 시작 시각의 관측 바람으로 (기존과 같음)
+        self.engine.step()
+        self.step_count += 1
+        nxt = self._fire_codes()
+        t_end = round(t0 + self.tick_s, 6)
+        burning0 = [(int(self.static["cols"][i]), int(self.static["rows"][i])) for i in np.nonzero(prev == 1)[0]]
+        changed = np.nonzero(prev != nxt)[0]
+        dist = {}
+        for i in changed:
+            if prev[i] == 0:
+                col, row = int(self.static["cols"][i]), int(self.static["rows"][i])
+                dist[int(i)] = min((max(abs(col - c), abs(row - r)) for c, r in burning0), default=1)
+        levels = sorted(set(dist.values()))
+        trans = {}
+        for i in changed:
+            i = int(i)
+            seq = []
+            if prev[i] == 0:                     # 새로 불붙음 — 가까운 거리 묶음부터 단계 안에 고르게
+                k = levels.index(dist[i])
+                seq.append([round(t0 + self.tick_s * (k + 1) / len(levels), 6), 1])
+            if nxt[i] == 2:                      # 다 타서 꺼짐 — 단계 끝
+                seq.append([t_end, 2])
+            trans[str(i)] = seq
+        self._iv = {"t0": t0, "t_end": t_end, "prev": prev.tolist(), "trans": trans}
+
     def _save(self):
         codes = self._fire_codes()
         doc = {
@@ -268,6 +315,7 @@ class ContractEnvironment:
             "burning": np.nonzero(codes == 1)[0].tolist(), "burned": np.nonzero(codes == 2)[0].tolist(),
             "burn_counters": {str(k): v for k, v in self.engine._burn_counters.items()},
             "rng_state": self.engine._rng.bit_generator.state, "saved_wall": datetime.now(timezone.utc).isoformat(),
+            "subtick_s": self.subtick_s, "interval": self._iv,
         }
         tmp = self._state_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(doc), encoding="utf-8")
@@ -305,6 +353,7 @@ class ContractEnvironment:
         self._set_fire(doc["burning"], doc["burned"])
         self.engine._burn_counters = {int(k): v for k, v in doc["burn_counters"].items()}
         self.engine._rng.bit_generator.state = doc["rng_state"]
+        self._iv = doc.get("interval") if self.subtick_s else None
         # APPLY 기록은 ACK 를 먼저 저장하고 상태 파일을 나중에 쓴다. 그 사이에 멈췄으면 ACK 가 준 버전이 더 크다 →
         # 그보다 작은 버전을 내보내지 않는다 (같은 run 안에서 버전 역행 금지).
         with self._db() as con:
@@ -323,6 +372,7 @@ class ContractEnvironment:
         self.state_version = 1
         self.simulation_time_s = 0.0
         self.step_count = 0
+        self._iv = None
         from src.fire_model import WildfireCAEngine
         self._set_fire([], [])
         self.engine = WildfireCAEngine(grid=self.grid, config_path=str(self.config_path), seed=self.seed)
@@ -361,7 +411,7 @@ class ContractEnvironment:
     def snapshot(self) -> dict:
         """READ. 상태를 바꾸지 않는다 (CA 진행·버전 증가 없음)."""
         with self._lock:
-            codes = self._fire_codes()
+            codes = self._display_codes()
             fire_idx = np.nonzero(codes > 0)[0]
             fire = [self._cell_view(int(i), _FIRE_FROM_CODE[int(codes[i])].value) for i in fire_idx]
             # 진짜 세계 화재 칸 주변 UNBURNED 칸 — 모의 센서가 '불 없음'을 볼 수 있는 대상 (총괄 판단 입력 아님)
@@ -388,7 +438,9 @@ class ContractEnvironment:
                 "wind_valid_sim_s": w.get("valid_from_sim_s", self.simulation_time_s),
                 "weather": weather, "fire_cells": fire, "risk_cells": risk,
                 "protected_sites": self.protected_sites(),
-                "step_count": self.step_count, "tick_s": self.tick_s,
+                "step_count": self.step_count, "tick_s": self.tick_s, "subtick_s": self.subtick_s,
+                "fire_display": ("INTERPOLATED_WITHIN_CA_STEP (단계 사이 점화 시각은 채워 넣은 값)"
+                                 if self.subtick_s else "CA_STEP"),
                 "source": self.source, "contract_complete": True,
             }
 
@@ -398,6 +450,12 @@ class ContractEnvironment:
             raise ValueError("steps 는 1 이상의 정수")
         with self._lock:
             for _ in range(steps):
+                if self.subtick_s:
+                    # 단계 사이 채우기: 단계가 끝났으면(또는 처음이면) 다음 CA 단계를 미리 계산하고 subtick 만큼만 간다
+                    if self._iv is None or self.simulation_time_s >= self._iv["t_end"] - 1e-6:
+                        self._start_interval()
+                    self.simulation_time_s = round(min(self.simulation_time_s + self.subtick_s, self._iv["t_end"]), 6)
+                    continue
                 self._apply_wind()               # 이번 스텝은 스텝 시작 시각의 관측 바람으로 진행
                 self.engine.step()
                 self.step_count += 1
@@ -511,7 +569,10 @@ class ContractEnvironment:
                 "wind": {k: self._wind_info.get(k) for k in ("basis", "status", "station_id", "station_name",
                                                             "observed_kst", "applied_speed_ms",
                                                             "applied_direction_deg")},
-                "assumptions": {"tick_s": self.tick_s, "scenario_start_kst": self.scenario_start_kst,
+                "assumptions": {"tick_s": self.tick_s, "subtick_s": self.subtick_s,
+                                "fire_display": ("CA 단계 사이 점화 시각 채우기 (이전에 타던 칸에서 가까운 순)"
+                                                 if self.subtick_s else "CA 단계"),
+                                "scenario_start_kst": self.scenario_start_kst,
                                 "ignitions": self.ignitions, "seed": self.seed,
                                 "truth_buffer_cells": self.truth_buffer_cells,
                                 "wind_field": "GLOBAL_FIELD (칸별 바람장·양간지풍 미구현)",

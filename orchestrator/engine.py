@@ -2122,7 +2122,8 @@ class Orchestrator:
             return self._obs_idle("NO_AVAILABLE_RESOURCE", b)
         if not b["inp"]["blocks"]:
             return self._obs_idle("NO_SELECTABLE_BLOCK", b)          # 고를 수 있는 구역이 없음 (후보 소진)
-        if (config.OBS_ONE_PLAN_PER_ENV_STEP and b["sim"] == getattr(self, "_obs_planned_sim", None)
+        if (config.OBS_ONE_PLAN_PER_ENV_STEP and self._env_step_key(b["sim"]) == self._env_step_key(
+                getattr(self, "_obs_planned_sim", None))
                 and not getattr(self, "_obs_same_step_ok", False)):
             return self._obs_idle("ALREADY_PLANNED_THIS_ENV_STEP", b)    # 다음 환경 단계에 모아서
         if b["inp"]["input_hash"] == self._obs_last_hash:
@@ -2377,6 +2378,13 @@ class Orchestrator:
                         "origin_cell": rep["cell_id"]})
         return out
 
+    def _env_step_key(self, sim):
+        """환경 CA 단계 번호 (단계 사이 채우기로 1분씩 가도 '한 단계에 한 번' 기준은 CA 단계 = tick_s)."""
+        tick = getattr(self.env, "tick_s", None)
+        if sim is None:
+            return None
+        return int(sim // tick) if isinstance(tick, (int, float)) and tick > 0 else sim
+
     def _request_ugv_follow(self, task, obs, rid, sim) -> None:
         """UGV 가 다 탄 곳만 보고 불을 못 찾았을 때: 진행 방향 쪽으로 OBS_UGV_FOLLOW_STEP_M 떨어진 지점에 같은 UGV 를
         바로 다시 보낸다 (사용자 결정 2026-10-07). 진행 방향을 모르면 보내지 않고 기록만 한다."""
@@ -2390,7 +2398,7 @@ class Orchestrator:
         # 멈춤 조건 (2026-10-07 실제 환경 실행: UGV 는 가까운 도로 지점에 서므로 같은 자리를 수십 번 맴돌았다)
         #   ① 같은 UGV 는 환경 한 단계에 한 번만  ② 지난 따라가기 출발점과 한 칸 이내에서 관측했으면 길이 막힌 것으로 보고 멈춤
         last = getattr(self, "_ugv_follow_last", {}).get(rid)
-        if last and last["sim"] == sim:
+        if last and self._env_step_key(last["sim"]) == self._env_step_key(sim):
             return
         if (last and here.get("lat") is not None and last["from"].get("lat") is not None
                 and obs_plan._dist_m(here["lat"], here["lon"], last["from"]["lat"], last["from"]["lon"])
