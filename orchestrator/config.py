@@ -256,8 +256,9 @@ KMA_ASOS_STATIONS = Path(os.getenv("ORCH_KMA_ASOS_STATIONS", str(ROOT / "data/we
 # LLM (요청서 §9: 모델·timeout·호출/비용 한도는 설정값. 임의 기본값 금지)
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = "openai"
-LLM_MODEL = os.getenv("ORCH_LLM_MODEL", "gpt-5.6-luna")   # 사용자 결정 2026-09-30
+LLM_MODEL = os.getenv("ORCH_LLM_MODEL", "gpt-5.5")   # 사용자 결정 2026-10-07 (copa 게이트웨이에 gpt-5.6-luna 없음)
 LLM_API_KEY_ENV = "OPENAI_API_KEY"                         # 키 값은 코드·로그에 남기지 않는다
+LLM_BASE_URL = os.getenv("OPENAI_BASE_URL") or "https://copa.codyssey.kr/v1"  # 사용자 결정 2026-10-07
 LLM_TIMEOUT_S = float(os.getenv("ORCH_LLM_TIMEOUT_S", "30"))     # 사용자 결정 2026-09-30 (실제 초)
 LLM_MAX_CALLS_PER_RUN = int(os.getenv("ORCH_LLM_MAX_CALLS", "50"))  # 사용자 결정 2026-09-30 (서버 1회 실행당)
 LLM_TEMPERATURE = None           # TBD — 모델이 지원하는 경우에만 전달

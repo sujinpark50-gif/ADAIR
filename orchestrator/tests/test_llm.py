@@ -9,7 +9,7 @@ from orchestrator.llm import LlmPlanner
 from .test_priority import LAT0, LON0, _fire_world, _one_uav, _submit_cell, cell
 
 
-class FakeResponses:
+class FakeCompletions:
     def __init__(self, outer):
         self.outer = outer
 
@@ -18,19 +18,20 @@ class FakeResponses:
         r = self.outer.reply(kw)
         if isinstance(r, Exception):
             raise r
-        return type("Resp", (), {"output_text": r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)})()
+        msg = type("Msg", (), {"content": r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)})()
+        return type("Resp", (), {"choices": [type("Choice", (), {"message": msg})()]})()
 
 
 class FakeOpenAI:
-    """reply(kw) → dict/str/Exception. kw['input'] 은 총괄이 보낸 JSON 문자열"""
+    """reply(kw) → dict/str/Exception. kw['messages'][-1]['content'] 는 총괄이 보낸 JSON 문자열"""
 
     def __init__(self, reply):
         self.reply, self.requests = reply, []
-        self.responses = FakeResponses(self)
+        self.chat = type("Chat", (), {"completions": FakeCompletions(self)})()
 
 
 def _inp(kw):
-    return json.loads(kw["input"])
+    return json.loads(kw["messages"][-1]["content"])
 
 
 def prefer_lower_risk(kw):
@@ -45,12 +46,18 @@ def prefer_lower_risk(kw):
 
 def _world_with_llm(world, reply, mode="AUTO_HIGHER_RISK"):
     fake = FakeOpenAI(reply)
-    world["orch"].llm = LlmPlanner(client=fake, model="gpt-5.6-luna", timeout_s=30, max_calls=5)
+    world["orch"].llm = LlmPlanner(client=fake, model="gpt-5.5", timeout_s=30, max_calls=5)
     world["orch"].set_priority_mode(mode, "시험")
     _fire_world(world, [cell("A", 0, 0, 0.72), cell("B", 0, 500, 0.65)])
     _one_uav(world)
     ta, tb = _submit_cell(world["orch"], "R-A", "A"), _submit_cell(world["orch"], "R-B", "B")
     return fake, ta, tb
+
+
+def test_code_fenced_json_reply_is_accepted(world):
+    _, ta, tb = _world_with_llm(world, lambda kw: "```json\n" + json.dumps(prefer_lower_risk(kw)) + "\n```")
+    g = world["orch"].dispatch_pending()["groups"][0]
+    assert g["status"] == "LLM_DECIDED" and g["llm"]["order"] == [tb.task_id, ta.task_id]
 
 
 def _llm_event(world):
@@ -65,12 +72,13 @@ def test_valid_llm_order_is_used_in_auto_mode(world):
     assert out["results"][tb.task_id]["status"] == "STARTED"            # AI 가 고른 B 가 드론을 받음
     assert out["results"][ta.task_id]["excluded"]["A-uav1"] == "OCCUPIED"
     req = fake.requests[0]
-    assert req["model"] == "gpt-5.6-luna" and req["timeout"] == 30
-    assert req["text"]["format"]["type"] == "json_schema" and req["text"]["format"]["strict"] is True
+    assert req["model"] == "gpt-5.5" and req["timeout"] == 30
+    assert "response_format" not in req                                  # copa 게이트웨이가 거부함
+    assert '"priority_order"' not in req["messages"][0]["content"] and '"group_index"' in req["messages"][0]["content"]
     inp = _inp(req)
     assert set(inp["groups"][0]["tasks"][0]) >= {"task_id", "human_risk", "risk_score"}
     ev = _llm_event(world)
-    assert ev["result"] == "OK" and ev["detail"]["model"] == "gpt-5.6-luna"
+    assert ev["result"] == "OK" and ev["detail"]["model"] == "gpt-5.5"
 
 
 def _bad(mutate):

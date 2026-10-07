@@ -62,6 +62,23 @@ OUTPUT_SCHEMA = {
     },
 }
 
+SYSTEM_WITH_FORMAT = (
+    SYSTEM + " 답은 아래 JSON Schema 를 따르는 JSON 객체 하나만 출력한다 (설명·코드블록 없이).\n"
+    + json.dumps(OUTPUT_SCHEMA, ensure_ascii=False)
+)
+
+
+def _strip_code_fence(text):
+    """모델이 ```json ... ``` 으로 감싸 보내는 경우만 벗긴다. 그 밖의 내용은 손대지 않는다."""
+    if not isinstance(text, str):
+        return text
+    t = text.strip()
+    if t.startswith("```") and t.endswith("```"):
+        t = t[3:-3]
+        if t[:4].lower() == "json":
+            t = t[4:]
+    return t.strip()
+
 
 def build_input(snapshot, plan: dict, tasks_by_id: dict) -> dict:
     """LLM 에 줄 입력. 판단에 필요한 사실만, ID 로 추적 가능하게."""
@@ -180,7 +197,7 @@ class LlmPlanner:
     def _get_client(self):
         if self._client is None:
             from openai import OpenAI
-            self._client = OpenAI()
+            self._client = OpenAI(base_url=config.LLM_BASE_URL)
         return self._client
 
     def propose(self, snapshot, plan: dict, tasks_by_id: dict) -> dict:
@@ -191,18 +208,19 @@ class LlmPlanner:
         if why:
             return {**base, "status": "DISABLED", "reason": why}
         inp = build_input(snapshot, plan, tasks_by_id)
-        kwargs = {"model": self.model, "instructions": SYSTEM,
-                  "input": json.dumps(inp, ensure_ascii=False),
-                  "text": {"format": {"type": "json_schema", "name": "priority_order",
-                                      "schema": OUTPUT_SCHEMA, "strict": True}},
+        # copa 게이트웨이는 Chat Completions 만 받고 response_format(json_schema·json_object)도 거부한다
+        # (2026-10-07 확인). 그래서 출력 형식은 지시문으로 주고, 지키는지는 validate() 가 결정론으로 검사한다.
+        kwargs = {"model": self.model,
+                  "messages": [{"role": "system", "content": SYSTEM_WITH_FORMAT},
+                               {"role": "user", "content": json.dumps(inp, ensure_ascii=False)}],
                   "timeout": self.timeout_s}
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         self.calls += 1
         t0 = time.monotonic()
         try:
-            resp = self._get_client().responses.create(**kwargs)
-            raw = resp.output_text
+            resp = self._get_client().chat.completions.create(**kwargs)
+            raw = _strip_code_fence(resp.choices[0].message.content)
         except Exception as e:  # noqa: BLE001 — 모델 실패는 규칙 fallback 으로 회수한다
             return {**base, "status": "ERROR", "reason": type(e).__name__, "error": str(e)[:300],
                     "latency_s": round(time.monotonic() - t0, 3), "input": inp}
