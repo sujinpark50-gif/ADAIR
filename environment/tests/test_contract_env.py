@@ -106,10 +106,20 @@ def test_map_cells_static_only(env):
     cells = env.map_cells()
     assert len(cells) == env.grid.rows * env.grid.cols
     keys = set().union(*(c.keys() for c in cells[:50]))
-    assert keys == {"cell_id", "lat", "lon", "cell_size_m", "ground_amsl_m", "building_type", "human_exposure"}
+    assert keys == {"cell_id", "lat", "lon", "cell_size_m", "ground_amsl_m", "building_type", "human_exposure",
+                    "is_road", "fuel_amount"}           # 도로·연료: 총괄 관측 계획 지형 근거 (2026-10-07)
     res = [c for c in cells if c["building_type"] == 1]
     assert res and all(c["human_exposure"] for c in res)
     assert len(env.protected_sites()) == len(res)
+
+
+def test_map_fuel_is_static_not_truth(env):
+    """지도의 연료는 시작 시점 값이다 — 불이 태워도 바뀌지 않는다 (정답 누출 방지)"""
+    before = {c["cell_id"]: c["fuel_amount"] for c in env.map_cells()}
+    env.advance(3)
+    burning = {c["cell_id"] for c in env.snapshot()["fire_cells"]}
+    after = {c["cell_id"]: c["fuel_amount"] for c in env.map_cells()}
+    assert burning and all(after[cid] == before[cid] for cid in burning)
 
 
 def test_stations_single_source(env):

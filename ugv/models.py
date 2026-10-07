@@ -34,6 +34,8 @@ class Road:
         """이 도로에서 실제로 낼 속도 = min(도로 제한속도, 차량 최고속도) / 혼잡 배율."""
         road = self.speed_kmh / 3.6 if self.speed_kmh else self.distance_m / max(self.base_time_s, 1e-6)
         if max_speed_mps is not None:
+            from . import config                       # 느린 도로 하한 (UGV_MIN_ROAD_SPEED_KMH, 기본 50 km/h)
+            road = max(road, config.MIN_ROAD_SPEED_KMH / 3.6)
             road = min(road, max_speed_mps)
         return road / self.congestion
 

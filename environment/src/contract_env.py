@@ -202,6 +202,9 @@ class ContractEnvironment:
                 # DEM nodata 는 0 으로 채워져 있다 → 지면고도를 모르는 칸으로 둔다 (가짜 고도로 비행 명령 금지)
                 "ground_amsl_m": None if elev <= 0.0 else round(elev, 2),
                 "building_type": bt, "human_exposure": bt == 1,
+                # 총괄 관측 계획의 지형 근거 (2026-10-07, 총괄 브랜치에서 추가 — 환경팀 공유 필요).
+                # 둘 다 시작 시점의 정적 지도값이다 (불이 태운 뒤의 연료가 아님 — 정답 누출 없음)
+                "is_road": bool(cells[i].is_road), "fuel_amount": round(float(self.static["fuel_amount"][i]), 3),
             })
 
     def _idx(self, col: int, row: int) -> Optional[int]:

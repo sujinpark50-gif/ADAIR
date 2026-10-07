@@ -10,14 +10,16 @@ import os
 #   실제 소방차(수십 km/h)가 아니라 Gazebo 차량 속도에 맞춘 값이다. 실제 시간감은 UGV_TIME_SCALE 로 맞춘다.
 # 스폰 위치는 ugv/data/road_network.json 의 spawn[resource_id] (build_road_network.py 가 계산).
 RESOURCES = [
+    # UGV 최고속도 60 km/h (총괄 브랜치 사용자 결정 2026-10-07: 50~60 km/h, 실제 소방차 수준. sim 주행 기준 —
+    # Gazebo r1_rover 는 이 속도를 내지 못한다). 이전 값 2.0 m/s (r1_rover 기본)
     {"resource_id": "A-ugv1",  "resource_type": "UGV",
-     "base": "A", "home_node": "A", "px4_instance": 1, "px4_model": "r1_rover", "max_speed_mps": 2.0},
+     "base": "A", "home_node": "A", "px4_instance": 1, "px4_model": "r1_rover", "max_speed_mps": 60 / 3.6},
     # 소방차도 r1_rover 기반 (2026-10-03 WSL): rover_ackermann 은 명령 없이(disarm 상태) 조향된 채 굴러가
     # 도로 밖으로 떨어졌다. 경광등·방수포는 px4-start.sh 가 r1_rover 위에 붙인다 (ugv/gazebo/fire_truck)
     {"resource_id": "A-fire1", "resource_type": "FIRE_ENGINE",
      "base": "A", "home_node": "A", "px4_instance": 3, "px4_model": "r1_rover", "max_speed_mps": 2.0},
     {"resource_id": "B-ugv1",  "resource_type": "UGV",
-     "base": "B", "home_node": "B", "px4_instance": 2, "px4_model": "r1_rover", "max_speed_mps": 2.0},
+     "base": "B", "home_node": "B", "px4_instance": 2, "px4_model": "r1_rover", "max_speed_mps": 60 / 3.6},
 ]
 for _r in RESOURCES:
     _r["px4_port"] = 14540 + _r["px4_instance"]
@@ -60,7 +62,11 @@ SECONDS_PER_ENV_STEP = float(os.getenv("UGV_SECONDS_PER_ENV_STEP", "60"))
 REPORT_URL = os.getenv("UGV_REPORT_URL", "")
 
 # 도로 환경 시나리오(차단 도로·경유 불가 노드·혼잡의 시간대, CSV 또는 JSON). 비우면 시나리오 없음
-SCENARIO_FILE = os.getenv("UGV_SCENARIO", "ugv/scenarios/inje_girin.csv")
+# 총괄 브랜치 사용자 결정 2026-10-07: 도로 정체·통제 시나리오를 기본으로 끈다 (돌아가거나 느려지는 일 없음).
+# 다시 켜려면 UGV_SCENARIO=ugv/scenarios/inje_girin.csv
+SCENARIO_FILE = os.getenv("UGV_SCENARIO", "")
+# 차량 최고속도가 주어진 주행에서 도로 제한속도가 이보다 낮으면 이 값으로 본다 (50 km/h, 같은 결정). 0 이면 끔
+MIN_ROAD_SPEED_KMH = float(os.getenv("UGV_MIN_ROAD_SPEED_KMH", "50"))
 
 # 주행 파라미터 — 실측 보정 필요
 CRUISE_SPEED_MPS = 2.0

@@ -36,7 +36,8 @@ if _os.getenv("UAV_HOME"):
 # 실행
 ARRIVAL_TOLERANCE_M = 10.0  # 목표 수평거리 이내면 도착으로 본다
 MONITOR_INTERVAL_S = 1.0    # 비행 중 배터리 복귀 여유 확인 주기 (실제 초)
-MOCK_TIME_SCALE = 100.0     # Mock 비행 배속. 1200 s 비행이 12 s 에 끝난다
+# Mock 비행 배속. 1200 s 비행이 12 s 에 끝난다. 환경 시계 배속과 맞추려면 UAV_MOCK_TIME_SCALE (총괄 브랜치 2026-10-07)
+MOCK_TIME_SCALE = float(_os.getenv("UAV_MOCK_TIME_SCALE", "100"))
                             # (통합 커넥터가 Task 완료를 30 s 까지 기다린다)
 
 # 센서. WEATHER 는 mock 에서만 모의값으로 지원한다 (실기체에는 기상 센서가 없다 — UAV-05·07)

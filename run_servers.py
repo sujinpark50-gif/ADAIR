@@ -82,9 +82,11 @@ def server_defs(opts: dict) -> dict:
         web_env["WEB_DEMO_EXTINGUISH"] = "1"
     if opts.get("twin"):
         web_env["WEB_ENV_URL"] = "http://127.0.0.1:8300"
-    uav_extra = {**tw, "UAV_STATE_DIR": str(run / "uav"), "UAV_HOME": twin_uav_home(opts)} if tw else {}
-    orch_env = {**tw, "ORCH_ENV_MODE": "team_http", "ORCH_DB_PATH": str(run / "orchestrator.sqlite3")} if tw else {}
     speed = str(opts.get("twin_speed") or 100)
+    # 트윈: 드론 mock 배속 = 트윈 시계 배속 (UAV_MOCK_TIME_SCALE, 2026-10-07)
+    uav_extra = {**tw, "UAV_STATE_DIR": str(run / "uav"), "UAV_HOME": twin_uav_home(opts),
+                 "UAV_MOCK_TIME_SCALE": speed} if tw else {}
+    orch_env = {**tw, "ORCH_ENV_MODE": "team_http", "ORCH_DB_PATH": str(run / "orchestrator.sqlite3")} if tw else {}
     uv = [PY, "-m", "uvicorn"]
     return {
         "env":  {"cwd": ROOT, "port": 8300, "health": "/health",
