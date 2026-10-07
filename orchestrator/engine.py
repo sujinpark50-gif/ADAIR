@@ -2387,6 +2387,19 @@ class Orchestrator:
         here = obs.get("footprint_center") or obs.get("position") or {}
         detail = {"observation_id": obs["observation_id"], "resource_id": rid, "from": here, "progress": prog,
                   "step_m": config.OBS_UGV_FOLLOW_STEP_M}
+        # 멈춤 조건 (2026-10-07 실제 환경 실행: UGV 는 가까운 도로 지점에 서므로 같은 자리를 수십 번 맴돌았다)
+        #   ① 같은 UGV 는 환경 한 단계에 한 번만  ② 지난 따라가기 출발점과 한 칸 이내에서 관측했으면 길이 막힌 것으로 보고 멈춤
+        last = getattr(self, "_ugv_follow_last", {}).get(rid)
+        if last and last["sim"] == sim:
+            return
+        if (last and here.get("lat") is not None and last["from"].get("lat") is not None
+                and obs_plan._dist_m(here["lat"], here["lon"], last["from"]["lat"], last["from"]["lon"])
+                < (idx.cell_size_m or 90.0)):
+            self.ledger.log("OBS_UGV_FOLLOW_SKIPPED", task_id=task.task_id, resource_id=rid,
+                            reason="UGV_DID_NOT_MOVE_ROAD_LIMIT", sim_time_s=sim, detail={**detail, "last": last})
+            self._ugv_follow_last = {**getattr(self, "_ugv_follow_last", {}), rid: {"sim": sim, "from": here}}
+            return
+        self._ugv_follow_last = {**getattr(self, "_ugv_follow_last", {}), rid: {"sim": sim, "from": here}}
         if not prog or prog.get("moved_toward_deg") is None or here.get("lat") is None:
             self.ledger.log("OBS_UGV_FOLLOW_SKIPPED", task_id=task.task_id, reason="NO_PROGRESS_DIRECTION",
                             sim_time_s=sim, detail=detail)
@@ -2511,7 +2524,10 @@ class Orchestrator:
         truth = truth or self.env.read()
         now = truth.simulation_time_s or 0.0
         layers = obs_plan.belief_layers(self.kb.fire_states(now), now, self._burn_out_s())
-        out = map_evaluation.edge_recall(truth, layers, set(self._map_index().by_id) or None)
+        ever = {k["subject"] for k in self.ledger.knowledge("FIRE")
+                if (k["body"] or {}).get("status") in ("CONFIRMED", "CONFIRMED_BURNED")
+                and (k["sim_time_s"] is None or k["sim_time_s"] <= now)}
+        out = map_evaluation.edge_recall(truth, layers, set(self._map_index().by_id) or None, ever)
         if record:
             self.ledger.log("MAP_EVALUATION", result=None if out["edge_recall_pct"] is None
                             else str(out["edge_recall_pct"]), sim_time_s=now, detail=out)

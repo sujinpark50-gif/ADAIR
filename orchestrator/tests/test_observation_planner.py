@@ -966,3 +966,38 @@ def test_ugv_follow_skipped_without_direction(pw):
                              "A-ugv1", 120.0)
     assert not [t for t in lg.list_tasks() if t.kind == "UGV_EDGE_FOLLOW"]
     assert [e for e in lg.events() if e["event_type"] == "OBS_UGV_FOLLOW_SKIPPED"][0]["reason"] == "NO_PROGRESS_DIRECTION"
+
+
+def test_ugv_follow_stops_when_stuck_or_same_step(pw):
+    """UGV 가 같은 도로 지점에 다시 서면(길 막힘) 멈추고, 한 환경 단계에 한 번만 따라간다"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    orch.sync()
+    _known(lg, "16_12", "CONFIRMED", 120.0)
+    here = cell(14, 12)
+    task = Task(task_id="T-UGV", incident_id="I", kind="OBSERVE", plan_id="PLAN-X",
+                target=Target(lat=here["lat"], lon=here["lon"], ground_amsl_m=600.0, cell_id="14_12"),
+                requirements=Requirements(resource_types=("UGV",), sensor="THERMAL"))
+    pos = {"lat": here["lat"], "lon": here["lon"]}
+    orch._request_ugv_follow(task, {"observation_id": "O1", "footprint_center": pos}, "A-ugv1", 120.0)
+    orch._request_ugv_follow(task, {"observation_id": "O2", "footprint_center": pos}, "A-ugv1", 120.0)   # 같은 단계
+    assert len([t for t in lg.list_tasks() if t.kind == "UGV_EDGE_FOLLOW"]) == 1
+    orch._request_ugv_follow(task, {"observation_id": "O3", "footprint_center": pos}, "A-ugv1", 2220.0)  # 같은 자리
+    assert len([t for t in lg.list_tasks() if t.kind == "UGV_EDGE_FOLLOW"]) == 1
+    sk = [e for e in lg.events() if e["event_type"] == "OBS_UGV_FOLLOW_SKIPPED"]
+    assert sk[-1]["reason"] == "UGV_DID_NOT_MOVE_ROAD_LIMIT"
+
+
+def test_three_discovery_metrics():
+    """테두리 재현율 + 불타는 곳 발견율 + 화재 영역 발견율(누적, 관측만)"""
+    from orchestrator.map_evaluation import edge_recall
+    fire = [cell(c, 12, "BURNING") for c in (10, 11, 12)] + [cell(c, 12, "BURNED") for c in (7, 8, 9)]
+    _, rest = grid(burning=set())
+    rest = [c for c in rest if c["cell_id"] not in {f["cell_id"] for f in fire}]
+    snap = FixtureEnv(fire_cells=fire, risk_cells=rest).read()
+    layers = {"12_12": {"state": "BURNING"}, "11_12": {"state": "PRESUMED_BURNED"}}
+    ever = {"12_12", "11_12", "8_12"}                                     # 관측으로 본 적 있는 불·탄 곳
+    m = edge_recall(snap, layers, None, ever)
+    assert m["burning_found"] == 1 and m["burning_found_pct"] == 33.3    # 불타는 3칸 중 지금 아는 1칸
+    assert m["area_found"] == 3 and m["fire_area_found_pct"] == 50.0     # 불·탄 6칸 중 본 적 있는 3칸
+    assert m["edge_recall_pct"] is not None and m["used_for_planning"] is False

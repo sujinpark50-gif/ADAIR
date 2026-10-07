@@ -41,14 +41,32 @@ def truth_edge(fire_cells: List[dict], map_ids: Optional[set] = None) -> set:
     return edge
 
 
-def edge_recall(snapshot, layers: Dict[str, dict], map_ids: Optional[set] = None) -> dict:
-    """layers = observation_planner.belief_layers(...) 결과 (칸 → {state, ...})"""
+def _pct(hit, total):
+    return None if not total else round(100.0 * hit / total, 1)
+
+
+def edge_recall(snapshot, layers: Dict[str, dict], map_ids: Optional[set] = None,
+                ever_observed_fire: Optional[set] = None) -> dict:
+    """세 점수 (사용자 결정 2026-10-07 — 테두리만 보면 불이 커질수록 실패처럼 보인다):
+      ① 테두리 재현율  : 진짜 테두리 칸 중 지금 '불타는 중'으로 아는 칸
+      ② 불타는 곳 발견율: 진짜 불타는 칸 중 지금 '불타는 중'으로 아는 칸
+      ③ 화재 영역 발견율: 진짜 불타는 칸+다 탄 칸 중 한 번이라도 관측으로 불·탄 곳을 확인한 칸 (누적, 추정 제외)
+    layers = observation_planner.belief_layers(...), ever_observed_fire = 관측으로 불·탄 곳을 본 적 있는 칸"""
     edge = truth_edge(snapshot.fire_cells, map_ids)
+    burning = {c["cell_id"] for c in snapshot.fire_cells if c.get("fire_state") == "BURNING"}
+    area = {c["cell_id"] for c in snapshot.fire_cells if c.get("fire_state") in ("BURNING", "BURNED")}
     known = {c for c, f in layers.items() if f.get("state") == "BURNING"}
+    ever = set(ever_observed_fire or ())
     hit = edge & known
-    return {"metric": "EDGE_RECALL", "simulation_time_s": snapshot.simulation_time_s,
+    return {"metric": "MAP_DISCOVERY", "simulation_time_s": snapshot.simulation_time_s,
             "run_id": snapshot.run_id, "state_version": snapshot.state_version,
             "truth_edge_cells": len(edge), "known_burning_cells": len(known), "edge_cells_found": len(hit),
-            "edge_recall_pct": None if not edge else round(100.0 * len(hit) / len(edge), 1),
-            "definition": "진짜 테두리(BURNING 이며 8방향 이웃에 UNBURNED) 중 관측으로 불 확인한 칸의 비율",
+            "edge_recall_pct": _pct(len(hit), len(edge)),
+            "truth_burning_cells": len(burning), "burning_found": len(burning & known),
+            "burning_found_pct": _pct(len(burning & known), len(burning)),
+            "truth_fire_area_cells": len(area), "area_found": len(area & ever),
+            "fire_area_found_pct": _pct(len(area & ever), len(area)),
+            "definition": {"edge_recall_pct": "진짜 테두리 중 지금 불타는 중으로 아는 칸",
+                           "burning_found_pct": "진짜 불타는 칸 중 지금 불타는 중으로 아는 칸",
+                           "fire_area_found_pct": "진짜 불타는+다 탄 칸 중 관측으로 한 번이라도 불·탄 곳을 확인한 칸 (누적)"},
             "used_for_planning": False}
