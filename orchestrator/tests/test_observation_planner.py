@@ -463,7 +463,8 @@ def test_known_edge_and_frontier_use_belief_only():
     assert "15_12" not in frontier                                      # 정답상 불이어도 이웃이 아니면 아님
 
 
-def test_plan_input_carries_edge_fields(pw):
+def test_plan_input_carries_edge_fields(pw, monkeypatch):
+    monkeypatch.setattr(config, "OBS_MAX_CANDIDATE_BLOCKS", 0)            # 상한과 무관한 시험 (전체 후보)
     orch, env = pw["orch"], pw["env"]
     _to_report_time(env)
     orch.obs_plan_cycle()
@@ -538,8 +539,9 @@ def test_initial_dispatch_rejected_does_not_block_planning(pw, monkeypatch):
     assert out and out[0]["source"] == "RULE_FALLBACK"                    # 기다리지 않고 바로 계획으로 넘어감
 
 
-def test_terrain_fields_uphill_road_fuel(tmp_path):
+def test_terrain_fields_uphill_road_fuel(tmp_path, monkeypatch):
     """오르막·도로·연료는 정적 지도 정보라 계획 입력에 넣는다 (정답 아님). 지도에 없으면 넣지 않는다"""
+    monkeypatch.setattr(config, "OBS_MAX_CANDIDATE_BLOCKS", 0)            # 상한과 무관한 시험 (전체 후보)
     from orchestrator.observation_planner import build_input
     fire, rest = grid()
     cells = []
@@ -886,7 +888,7 @@ def test_initial_drone_payload_requests_120s(pw, monkeypatch):
 
 
 def test_candidate_blocks_capped_and_ahead_of_progress_first():
-    """후보 구역은 최대 30개, 진행 방향 앞쪽 구역이 먼저 (사용자 결정 2026-10-07)"""
+    """후보 구역은 상한(기본 10개)까지, 진행 방향 앞쪽 구역이 먼저 (사용자 결정 2026-10-07)"""
     from orchestrator.observation_planner import build_input, llm_view
     fire, rest = grid()
     idx = MapIndex(fire + rest)
@@ -895,7 +897,7 @@ def test_candidate_blocks_capped_and_ahead_of_progress_first():
                       weather={}, available=[{"resource_id": "A-uav1", "resource_type": "UAV", "lat": LAT0, "lon": LON0}],
                       busy=[], rejections=[], sim_time_s=3000.0, run_id="R", burn_out=6300.0)
     assert inp["fire_progress"]["basis"] == "IGNITION_TO_BURNING" and 80 <= inp["fire_progress"]["moved_toward_deg"] <= 100
-    assert len(inp["blocks"]) == 30 and inp["deferred_blocks"] > 0
+    assert len(inp["blocks"]) == config.OBS_MAX_CANDIDATE_BLOCKS == 10 and inp["deferred_blocks"] > 0
     first = inp["blocks"][:5]
     assert all(b["ahead_of_progress"] for b in first)                    # 동쪽(진행 방향) 구역부터
     v = llm_view(inp)
