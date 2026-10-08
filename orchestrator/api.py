@@ -188,8 +188,8 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
         with dispatch_gate, lock:
             orch.recover()
 
+    dispatch_wanted = threading.Event() if poll_interval_s else None   # 배정 작업자가 있을 때만
     if poll_interval_s:
-        dispatch_wanted = threading.Event()
 
         def dispatcher():
             # 자동 배정 전용 작업자. 추적 루프는 배정을 부탁만 하고(dispatch_wanted) 기다리지 않는다 —
@@ -268,7 +268,14 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                                           "active_run": orch.ledger.active_run()})
         result = None
         if do_dispatch and created:
-            if config.AUTO_DISPATCH_ON_CHANGE:
+            if config.AUTO_DISPATCH_ON_CHANGE and dispatch_wanted is not None:
+                # 배정 작업자가 돌고 있으면 접수만 하고 바로 응답한다. 배정은 작업자가 우선순위 순서로 한다.
+                # 여기서 dispatch_all 을 기다리면 작업자가 쥔 dispatch_gate(LLM 관측 계획, 최대 OBS_LLM_WALL_MAX_S)
+                # 뒤에 줄을 서고, 잡은 뒤에도 관측 계획·LLM 을 한 번 더 해서 응답이 수 분 늦었다 (2026-10-08 트윈:
+                # 운용자 순찰 요청 180초 시간 초과 — 임무는 접수돼 있었음)
+                dispatch_wanted.set()
+                result = {"status": "QUEUED_FOR_DISPATCHER"}
+            elif config.AUTO_DISPATCH_ON_CHANGE:
                 # 다른 대기 임무와 함께 우선순위 순서로 배정
                 result = dispatch_all()["results"].get(task.task_id)
             else:
