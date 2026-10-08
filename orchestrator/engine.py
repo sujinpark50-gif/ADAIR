@@ -1486,6 +1486,15 @@ class Orchestrator:
                                     "basis": ["ARRIVED", "SIMULATED_OBSERVATION_TARGET_COVERED",
                                               "ENV_ACK" if ack.get("accepted") else "NO_ENV_ACK_REQUIRED"],
                                     "resource_released": False, **self._evidence_level(obs.get("source"), ack)})
+        elif task.plan_id and acked and config.OBS_PLANNER_ENABLED:
+            # 관측 계획 지점: 그 자리에서 볼 수 있는 만큼 본 것으로 끝낸다 (UGV 는 도로에서만 보므로 목표 칸이 시야 밖일
+            # 수 있다). 다시 열면 같은 자리로 끝없이 다시 보낸다 (2026-10-08 실제 환경 실행). 다음은 지시서 규칙이 정한다
+            if self._set_purpose(task, "COMPLETED", basis="PLANNED_VISIT_DONE", attempt_id=aid, hold_reason=None):
+                self.ledger.log("TASK_COMPLETE", task_id=task.task_id, attempt_id=aid, resource_id=rid,
+                                result="COMPLETED", detail={"completion_rule": task.completion_rule,
+                                                            "basis": ["ARRIVED", "PLANNED_VISIT_DONE"],
+                                                            "target_covered": obs["target_covered"],
+                                                            "resource_released": False})
         else:
             self._reopen(task, "OBSERVATION_REQUIREMENT_NOT_MET" if not obs["target_covered"]
                          else "ENV_APPLY_NOT_ACKED", aid)
@@ -2429,7 +2438,7 @@ class Orchestrator:
         o["next"] += 1
         c = self._map_index().by_id[st["cell_id"]]
         task, _ = self.submit_task({
-            "request_id": f"OBSORDER:{o['plan_id']}:{rid}:{o['next']}", "incident_id": "INC-OBSERVATION",
+            "request_id": f"OBSORDER:{o['plan_id']}:{rid}:{o['next']}:{new_id('S')}", "incident_id": "INC-OBSERVATION",
             "kind": "HEAD_FOLLOW" if o["kind"] == "HEAD" else "OBSERVE",
             "target": {"lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"), "cell_id": c["cell_id"]},
             "requirements": {"resource_types": [o["resource_type"]], "sensor": "THERMAL", "needs_env_ack": True},

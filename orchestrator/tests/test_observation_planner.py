@@ -1216,7 +1216,7 @@ def test_queued_stop_is_dispatched_while_waiting_for_slow_llm(pw):
                                   "next": 0, "new_fire": 0, "kind": "ORDER", "resource_type": "UAV", "since_s": 0}
         tid = orch._queue_stop("A-uav1", 120.0).task_id          # 추적 루프가 관측 뒤에 넣은 것처럼
         _t.sleep(0.8)
-        seen["status"] = lg.get_task(tid).purpose_status          # LLM 답이 나가기 전 상태
+        seen.setdefault("status", lg.get_task(tid).purpose_status)   # 첫 호출의 답이 나가기 전 상태
         return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "x",
                 "assignments": [], "request_reserve_uavs": False, "reserve_reason": ""}
     orch.llm = LlmPlanner(client=FakeOpenAI(reply), timeout_s=30, max_calls=5)
@@ -1270,3 +1270,28 @@ def test_unknown_evidence_ref_is_dropped_not_reasked(pw):
     plan["assignments"][0]["evidence_refs"] = plan["assignments"][0]["evidence_refs"] + ["B99_99"]
     assert validate(plan, inp) == []
     assert "B99_99" not in plan["assignments"][0]["evidence_refs"]
+
+
+def test_ugv_target_out_of_road_view_is_not_resent_forever(pw):
+    """UGV 는 도로에서만 본다 — 목표 칸이 시야 밖이어도 그 지점 관측으로 끝내고 같은 자리로 다시 보내지 않는다
+    (2026-10-08 실제 환경 실행: 다시 열고 다시 보내기가 끝없이 반복됨)"""
+    orch, env, lg, ugv = pw["orch"], pw["env"], pw["ledger"], pw["ugv"]
+
+    def far_road(rid):
+        body = next(b for m, p, b in reversed(ugv.calls) if p.endswith("/execute"))
+        t = body["target"]
+        return [{"status": "COMPLETED", "progress": {"phase": "ARRIVED"},
+                 "observation": {"observation_type": "ROAD_STATUS", "arrived_node": "N1",
+                                 "position": {"lat": t["lat"] + 0.004, "lon": t["lon"]}},   # 목표에서 약 450 m
+                 "_unit": {"state": "READY", "current_task_id": None}}]
+    ugv.default_script = far_road
+    _to_report_time(env)
+    row = next(r for r in orch.obs_plan_cycle()[0]["assignments"] if r["resource_id"] == "A-ugv1")
+    _poll(orch)
+    t = lg.get_task(row["task_id"])
+    assert t.purpose_status == "COMPLETED"
+    done = [e for e in lg.events(t.task_id) if e["event_type"] == "TASK_COMPLETE"][-1]["detail"]
+    assert done["basis"] == ["ARRIVED", "PLANNED_VISIT_DONE"] and done["target_covered"] is False
+    orch.obs_plan_cycle()
+    _poll(orch)
+    assert len([a for a in lg.list_attempts(t.task_id)]) == 1           # 같은 지점으로 다시 보내지 않음
