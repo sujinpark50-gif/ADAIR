@@ -2493,6 +2493,8 @@ class Orchestrator:
             return
         if o["new_fire"] > 0:
             action = "FOLLOW_HEAD"
+        elif not ground and bat is not None and bat >= config.OBS_KEEP_WATCH_BATTERY_PCT:
+            action = "FOLLOW_HEAD_BATTERY_OK"         # 새 불은 없지만 배터리가 넉넉 → 충전하지 않고 계속 본다
         elif not ground and not low and self._last_airborne(rid):
             action = "FOLLOW_HEAD_LAST_AIRBORNE"      # 한꺼번에 충전하지 않게 (효율 규칙 3)
         else:
@@ -2694,11 +2696,20 @@ class Orchestrator:
         if getattr(self, "_llm_pool", None) is None:
             self._llm_pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="obs-llm")
         fut = self._llm_pool.submit(self.obs_plan_call, req)
+        deadline = time.monotonic() + config.OBS_LLM_WALL_MAX_S
         while True:
             try:
                 return fut.result(timeout=0.2)
             except cf.TimeoutError:
                 self._dispatch_queued_order_stops()
+            if time.monotonic() > deadline:
+                # 멈춘 호출은 버리고(다음 호출은 새 스레드) 규칙 계획으로 — 시간 제한이 안 걸리는 연결 멈춤 대비
+                self._llm_pool.shutdown(wait=False)
+                self._llm_pool = None
+                self.ledger.log("OBS_LLM_WALL_TIMEOUT", sim_time_s=req["sim"],
+                                detail={"wall_max_s": config.OBS_LLM_WALL_MAX_S, "input_hash": req["inp"]["input_hash"]})
+                return {"status": "ERROR", "reason": "WALL_CLOCK_TIMEOUT", "attempts": [
+                    {"status": "ERROR", "reason": "WALL_CLOCK_TIMEOUT", "latency_s": config.OBS_LLM_WALL_MAX_S}]}
 
     def _planned_observation(self, snap, task, aid, rid, pos, data, ground) -> dict:
         """관측 계획 Task 의 모의 관측: 드론 = 테두리 추적 띠, UGV = 지상 열화상 (지도 전체 칸 기준)."""

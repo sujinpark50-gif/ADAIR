@@ -452,9 +452,9 @@ def validate(out, inp: dict) -> List[str]:
         if not _str_list(a["evidence_refs"]):
             v.append(f"EVIDENCE_TYPE:{n}")
         else:
-            unknown = [x for x in a["evidence_refs"] if x not in ids]
-            if unknown:
-                v.append(f"UNKNOWN_REFS:{n}:{','.join(unknown[:5])}")
+            # 입력에 없는 근거 ID 는 다시 묻지 않고 뺀다 (2026-10-08 run2: 근거 번호 하나 때문에 30초짜리 재질문).
+            # 배정 자체(자원·구역)는 위에서 엄격히 검사한다
+            a["evidence_refs"] = [x for x in a["evidence_refs"] if x in ids]
         if not _text_ok(a["rationale"]):
             v.append(f"RATIONALE_INVALID:{n}")
         if isinstance(rid, str):

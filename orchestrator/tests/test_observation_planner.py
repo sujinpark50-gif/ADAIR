@@ -1122,6 +1122,8 @@ def test_new_fire_in_order_follows_fire_head_downwind(pw):
 def test_no_new_fire_returns_to_charge_unless_last_drone_in_air(pw):
     orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
     _with_known_fire(orch, env, lg)
+    for rid in ("A-uav1", "A-uav2"):
+        pw["uav"].state[rid]["battery"] = 40.0           # 30% 이상 50% 미만
     orch._order_after_observation(_hook_task(), "A-uav1", 0, 180.0, ground=False)
     assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "FOLLOW_HEAD_LAST_AIRBORNE"   # 하늘에 혼자 → 남음
     orch._order_after_observation(_hook_task(), "A-uav2", 0, 180.0, ground=False)
@@ -1221,3 +1223,43 @@ def test_queued_stop_is_dispatched_while_waiting_for_slow_llm(pw):
     _to_report_time(env)
     orch.obs_plan_cycle(max_rounds=1)
     assert seen["status"] != "PENDING"
+
+
+def test_no_new_fire_but_battery_50_keeps_watching_head(pw):
+    """새 불이 없어도 배터리 50% 이상이면 충전하러 가지 않고 불 머리를 계속 본다 (2026-10-08)"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _with_known_fire(orch, env, lg)
+    orch._orders["A-uav2"] = {"plan_id": "P", "source": "LLM", "stops": [], "next": 0, "new_fire": 0, "kind": "ORDER",
+                              "resource_type": "UAV", "since_s": 0}          # 다른 드론도 하늘에
+    pw["uav"].state["A-uav1"]["battery"] = 60.0
+    orch._order_after_observation(_hook_task(), "A-uav1", 0, 180.0, ground=False)
+    end = _events(lg, "OBS_ORDER_END")[-1]
+    assert end["result"] == "FOLLOW_HEAD_BATTERY_OK" and end["detail"]["head"]["cell_id"] == "17_12"
+    assert "A-uav1" not in orch._to_charge
+
+
+def test_llm_stuck_past_wall_limit_falls_back_to_rules(pw, monkeypatch):
+    import time as _t
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    monkeypatch.setattr(config, "OBS_LLM_WALL_MAX_S", 0.5)
+
+    def reply(kw):
+        _t.sleep(2.0)                                    # 시간 제한이 안 걸리는 연결 멈춤
+        return "{}"
+    orch.llm = LlmPlanner(client=FakeOpenAI(reply), timeout_s=30, max_calls=5)
+    _to_report_time(env)
+    t0 = _t.monotonic()
+    out = orch.obs_plan_cycle(max_rounds=1)[0]
+    assert _t.monotonic() - t0 < 1.8
+    assert out["source"] == "RULE_FALLBACK" and _events(lg, "OBS_LLM_WALL_TIMEOUT")
+    assert _events(lg, "OBS_PLAN")[-1]["detail"]["llm"]["reason"] == "WALL_CLOCK_TIMEOUT"
+
+
+def test_unknown_evidence_ref_is_dropped_not_reasked(pw):
+    orch, env = pw["orch"], pw["env"]
+    _to_report_time(env)
+    inp = orch.obs_plan_request()["inp"]
+    plan = rule_plan(inp)
+    plan["assignments"][0]["evidence_refs"] = plan["assignments"][0]["evidence_refs"] + ["B99_99"]
+    assert validate(plan, inp) == []
+    assert "B99_99" not in plan["assignments"][0]["evidence_refs"]
