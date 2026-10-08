@@ -2609,10 +2609,9 @@ class Orchestrator:
         outs = []
         if config.OBS_PLANNER_ENABLED:
             self._update_charging()
-        for t in self.ledger.list_tasks(["PENDING"]):   # 지시서 다음 지점·앞질러 보내기 출동 먼저 (LLM 없이)
-            if (t.request_key or "").startswith("OBSORDER:") and config.OBS_PLANNER_ENABLED:
-                self._dispatch_order_stop(t)
-            elif t.kind in ("ADVANCE_SCOUT", "UGV_EDGE_FOLLOW") and config.OBS_PLANNER_ENABLED:
+        self._dispatch_queued_order_stops()
+        for t in self.ledger.list_tasks(["PENDING"]):   # 앞질러 보내기 출동 먼저 (LLM 없이)
+            if t.kind in ("ADVANCE_SCOUT", "UGV_EDGE_FOLLOW") and config.OBS_PLANNER_ENABLED:
                 out = self.dispatch(t.task_id)
                 self.ledger.log("OBS_ADVANCE_SCOUT_DISPATCH" if t.kind == "ADVANCE_SCOUT" else "OBS_UGV_FOLLOW_DISPATCH",
                                 task_id=t.task_id, result=out.get("status"),
@@ -2623,7 +2622,7 @@ class Orchestrator:
                 req = self.obs_plan_request()
                 if req is None:
                     break
-                out = self.obs_plan_apply(req, self.obs_plan_call(req))
+                out = self.obs_plan_apply(req, self._call_while_dispatching_orders(req))
                 outs.append(out)
                 if not out.get("replan"):
                     break
@@ -2633,6 +2632,29 @@ class Orchestrator:
         if config.OBS_PLANNER_ENABLED and self._charged_ready:
             outs.extend(self._orders_after_charge())       # 충전을 마친 드론은 규칙 지시서 (회의를 기다리지 않음)
         return outs
+
+    def _dispatch_queued_order_stops(self) -> None:
+        if not config.OBS_PLANNER_ENABLED:
+            return
+        for t in self.ledger.list_tasks(["PENDING"]):
+            if (t.request_key or "").startswith("OBSORDER:"):
+                self._dispatch_order_stop(t)
+
+    def _call_while_dispatching_orders(self, req: dict) -> dict:
+        """LLM 계획 호출(수십 초)을 기다리는 동안에도 같은 배정 작업자가 지시서 다음 지점을 보낸다 (2026-10-08 실제
+        환경 실행: 기다리는 사이 드론이 기지에 내려 버려 '불 머리 따라가기'·'하늘에 한 대 남기기'가 끊겼다).
+        배정(평가·예약·출동)은 이 스레드 하나에서만 하므로 직렬 배정 원칙은 그대로다. LLM 호출은 장부를 건드리지 않는다."""
+        import concurrent.futures as cf
+        if self.llm is None:
+            return self.obs_plan_call(req)
+        if getattr(self, "_llm_pool", None) is None:
+            self._llm_pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="obs-llm")
+        fut = self._llm_pool.submit(self.obs_plan_call, req)
+        while True:
+            try:
+                return fut.result(timeout=0.2)
+            except cf.TimeoutError:
+                self._dispatch_queued_order_stops()
 
     def _planned_observation(self, snap, task, aid, rid, pos, data, ground) -> dict:
         """관측 계획 Task 의 모의 관측: 드론 = 테두리 추적 띠, UGV = 지상 열화상 (지도 전체 칸 기준)."""

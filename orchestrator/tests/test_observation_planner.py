@@ -1200,3 +1200,24 @@ def test_edge_sweep_goes_toward_fire_head_20m_inside_burned_side():
     # 14_12 의 안 탄 이웃(15_11·15_13)은 동쪽 → 테두리선(칸 가운데 + 45 m)에서 20 m 안쪽 = 가운데에서 동쪽 25 m
     east_m = (fp["path"][1]["lon"] - c["lon"]) * 111_320.0 * math.cos(math.radians(c["lat"]))
     assert abs(east_m - 25.0) < 1.0
+
+
+def test_queued_stop_is_dispatched_while_waiting_for_slow_llm(pw):
+    """LLM 을 기다리는 동안 들어온 지시서 다음 지점도 바로 보낸다 (기다리다 드론이 내려앉지 않게, 2026-10-08)"""
+    import time as _t
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    seen = {}
+
+    def reply(kw):
+        inp = _seen(kw)
+        orch._orders["A-uav1"] = {"plan_id": "P-SLOW", "source": "LLM", "stops": [{"block_id": "B6_6", "cell_id": "19_19"}],
+                                  "next": 0, "new_fire": 0, "kind": "ORDER", "resource_type": "UAV", "since_s": 0}
+        tid = orch._queue_stop("A-uav1", 120.0).task_id          # 추적 루프가 관측 뒤에 넣은 것처럼
+        _t.sleep(0.8)
+        seen["status"] = lg.get_task(tid).purpose_status          # LLM 답이 나가기 전 상태
+        return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "x",
+                "assignments": [], "request_reserve_uavs": False, "reserve_reason": ""}
+    orch.llm = LlmPlanner(client=FakeOpenAI(reply), timeout_s=30, max_calls=5)
+    _to_report_time(env)
+    orch.obs_plan_cycle(max_rounds=1)
+    assert seen["status"] != "PENDING"
