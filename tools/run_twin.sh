@@ -12,6 +12,8 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 PY="${PY:-${VENV:-$HOME/uav-venv}/bin/python}"; [[ -x "$PY" ]] || PY=python3
+# 윈도우(cp949 콘솔)에서 '—' 등을 찍다 죽지 않게 UTF-8 로, 로그는 바로바로 보이게 버퍼 없이
+export PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1
 MODE="${UAV_MODE:-mock}"
 LAUNCH="${TWIN_LAUNCH:-forward}"
 SPEED="${TWIN_SPEED:-$([[ $MODE == real ]] && echo 1 || echo 100)}"

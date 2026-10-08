@@ -490,6 +490,10 @@ class Orchestrator:
                   "fire_states": self.kb.fire_states(now), "station_weather": self.kb.latest_station_obs(now),
                   "field_weather": field["valid"], "field_weather_excluded": field["excluded"],
                   "weather_policy": self.weather_policy()}
+        # 관측으로 본 불의 진행 — 분석기는 이 방향을 풍향보다 먼저 쓴다 (사용자 결정 2026-10-08)
+        prog = self._fire_progress(now) if fires else None
+        if prog and prog.get("moved_toward_deg") is not None:
+            belief["fire_progress"] = {k: prog[k] for k in ("basis", "moved_toward_deg", "moved_m")}
         an = self.analysis.analyze(belief) if self.analysis else {}
 
         def geo(c):                           # 분석 결과 칸에 지도 정보를 붙인다
@@ -2927,12 +2931,16 @@ class Orchestrator:
         working = {u for u in uavs if u != rid and u not in self._to_charge and (u in self._orders or u in res)}
         return len(working) < config.OBS_MIN_AIRBORNE_UAVS
 
-    def _progress_bearing(self, now) -> Optional[float]:
-        """관측으로 본 불의 진행 방향 (북 기준 시계방향, 불이 향해 간 쪽). 계산할 수 없으면 None."""
+    def _fire_progress(self, now) -> Optional[dict]:
+        """관측으로 본 불의 진행 (observation_planner.fire_progress). 아는 세계만 쓴다."""
         rows = self._report_rows()
-        prog = obs_plan.fire_progress(self._map_index(),
+        return obs_plan.fire_progress(self._map_index(),
                                       obs_plan.belief_layers(self.kb.fire_states(now or 0.0), now, self._burn_out_s()),
                                       rows[0]["cell_id"] if rows else None)
+
+    def _progress_bearing(self, now) -> Optional[float]:
+        """관측으로 본 불의 진행 방향 (북 기준 시계방향, 불이 향해 간 쪽). 계산할 수 없으면 None."""
+        prog = self._fire_progress(now)
         if prog and prog.get("moved_toward_deg") is not None:
             return float(prog["moved_toward_deg"])
         return None
@@ -3357,7 +3365,10 @@ class Orchestrator:
         executed = next((e for e in reversed(ev) if e["event_type"] == "OBS_PLAN_EXECUTED"), None)
         layers = (obs_plan.belief_layers(self.kb.fire_states(now), now, self._burn_out_s())
                   if not snap.run_gate else {})
+        head_deg, head_basis = self._head_bearing(now) if not snap.run_gate else (None, None)
         return {"enabled": config.OBS_PLANNER_ENABLED, "simulation_time_s": now,
+                # 불 머리 방향 (관측으로 본 진행 우선, 없으면 풍하) — 운용자 순찰 순서에 쓴다
+                "head": {"bearing_deg": None if head_deg is None else round(head_deg, 1), "basis": head_basis},
                 "demo_end_sim_s": config.OBS_DEMO_END_SIM_S,
                 "llm": {"model": config.LLM_MODEL, "calls_used": self.llm.calls if self.llm else 0,
                         "max_calls": config.LLM_MAX_CALLS_PER_RUN,

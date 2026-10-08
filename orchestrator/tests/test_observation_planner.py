@@ -1136,6 +1136,16 @@ def test_fire_head_prefers_observed_progress_over_opposite_wind(pw):
     assert end["result"] == "FOLLOW_HEAD" and end["detail"]["head"]["cell_id"] == "17_12"
 
 
+def test_analysis_input_and_plan_view_carry_observed_progress(pw):
+    """확산 예측(분석기)과 운용자 순찰도 관측으로 본 진행 방향을 받는다 (풍향만으로 번지는 쪽을 정하지 않음)"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    env.wind_dir_deg = 90.0                              # 동풍 → 풍하는 서쪽. 불은 동쪽으로 진행
+    _with_known_fire(orch, env, lg)
+    orch.view()
+    assert orch.analysis.last_input["fire_progress"]["moved_toward_deg"] == 90
+    assert orch.observation_plan_view()["head"] == {"bearing_deg": 90.0, "basis": "FIRE_PROGRESS"}
+
+
 def test_fire_head_falls_back_to_downwind_without_progress(pw):
     orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
     _with_known_fire(orch, env, lg)

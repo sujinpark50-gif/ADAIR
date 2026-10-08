@@ -7,6 +7,8 @@
 - 화재 출발점 = belief.known_fires (신고·정찰 확인으로 총괄이 지금 불이라고 믿는 칸).
 - 바람 = belief.field_weather(유효한 현장 측정) 중 불에 가장 가까운 것 → 없으면 station_weather(관측소) 중 가장 가까운 것.
   둘 다 없으면 바람 0 으로 가정하고 그 사실을 forecast_ref.wind_basis 에 남긴다.
+- 번지는 방향 = belief.fire_progress.moved_toward_deg(총괄이 관측으로 확인한 불의 진행 방향)가 있으면 그것,
+  없으면 바람이 불어 가는 쪽. 어느 쪽을 썼는지 forecast_ref.direction_basis 에 남긴다 (총괄 브랜치 2026-10-08).
 - 확산식은 김은주님 CA 의 칸→이웃 확산 확률식(fire_model._calculate_spread_probability)과 같은 식을 쓴다.
   확률 p 로 매 스텝(tick_s) 번질 때 '절반의 경우 번지는' 대기 시간(기하분포 중앙값, 최소 1스텝)
   tick_s · max(1, ln0.5/ln(1-p)) 를 간선 비용으로 두고, 알려진 불에서 최단 도달 시간(Dijkstra)을
@@ -152,7 +154,15 @@ class BeliefSpreadAnalysis:
         if not fires:
             return empty
         wind, wdir, wref = self._pick_wind(belief, fires)
-        towards = math.radians((wdir + 180.0) % 360.0)
+        # 번지는 쪽 = 관측으로 본 불의 진행 방향(belief.fire_progress, 총괄이 확인한 이동) → 없으면 바람이 불어 가는 쪽.
+        # 총괄 브랜치 2026-10-08: 관측소 풍향은 발화지와 떨어져 실제 진행과 다를 수 있다 (2019 인제: 관측소 160° 남남동풍,
+        # 불은 첫날 오후 북동·이튿날 남동 — 강원 산불백서 140~146쪽). 세기는 그대로 측정 풍속을 쓴다.
+        prog = belief.get("fire_progress") or {}
+        if isinstance(prog.get("moved_toward_deg"), (int, float)) and not isinstance(prog["moved_toward_deg"], bool):
+            toward_deg, dir_basis = float(prog["moved_toward_deg"]) % 360.0, "FIRE_PROGRESS"
+        else:
+            toward_deg, dir_basis = (wdir + 180.0) % 360.0, "DOWNWIND"
+        towards = math.radians(toward_deg)
         wx, wy = math.sin(towards), -math.cos(towards)      # 격자 좌표(행이 아래로 증가) 기준, CA 와 동일
 
         # 알려진 불에서 예상 도달 시각 (Dijkstra, horizon 까지)
@@ -197,6 +207,7 @@ class BeliefSpreadAnalysis:
             "risk_cells": risk, "spread_forecast": spread, "source": self.source, "derived_from_observation": True,
             "forecast_ref": {"model_version": MODEL_VERSION, "issued_sim_s": now, "horizon_s": self.horizon_s,
                              "tick_s_assumption": self.tick_s, "wind_ms_used": wind, "wind_dir_deg_used": wdir,
+                             "spread_toward_deg_used": round(toward_deg, 1), "direction_basis": dir_basis,
                              **wref, "cells_reached": len(reach), "cells_returned": len(spread)},
             "input_summary": {"known_fires": len(fires), "ignored_cells": ignored,
                               "fire_states": len(belief.get("fire_states") or {})},

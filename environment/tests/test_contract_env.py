@@ -238,6 +238,24 @@ def test_downwind_cells_arrive_first(env):
     assert east and (not west or sum(east) / len(east) < sum(west) / len(west))
 
 
+def test_observed_progress_overrides_wind_direction(env):
+    """총괄이 관측으로 본 진행 방향이 있으면 풍향보다 먼저 쓴다 — 불은 바람만이 아니라 지형·연료로도 번진다 (총괄 브랜치)"""
+    an = analysis(env)
+    st = [{"station_id": "X", "lat": 38.0, "lon": 128.1, "sim_time_s": 0.0, "values": {"wind_ms": 10.0,
+                                                                                        "wind_dir_deg": 270.0}}]
+    b = belief(env, station=False); b["station_weather"] = st          # 서풍 → 풍하는 동쪽
+    b["fire_progress"] = {"basis": "PAST_FIRE_TO_BURNING", "moved_toward_deg": 270.0, "moved_m": 180}   # 불은 서쪽으로
+    r = an.analyze(b)
+    assert r["forecast_ref"]["direction_basis"] == "FIRE_PROGRESS" and r["forecast_ref"]["spread_toward_deg_used"] == 270.0
+    assert r["forecast_ref"]["wind_dir_deg_used"] == 270.0                # 관측 풍향은 그대로 기록
+    t = {c["cell_id"]: c["expected_arrival_s"] for c in r["spread_forecast"]}
+    east = [v for k, v in t.items() if int(k.split("_")[0]) > 19]
+    west = [v for k, v in t.items() if int(k.split("_")[0]) < 19]
+    assert west and (not east or sum(west) / len(west) < sum(east) / len(east))
+    b.pop("fire_progress")
+    assert an.analyze(b)["forecast_ref"]["direction_basis"] == "DOWNWIND"
+
+
 def test_subtick_interpolates_within_ca_step(tmp_path):
     """단계 사이 채우기: CA 는 tick_s 단계 그대로, advance 한 번에 subtick_s. 단계 끝 화재는 채우기 없이와 같다 (총괄 브랜치)"""
     from src.contract_env import ContractEnvironment
