@@ -99,12 +99,21 @@ def belief_layers(fire_states: Dict[str, dict], now_s: Optional[float] = None,
     return out
 
 
-def known_edge(idx: MapIndex, belief: Dict[str, dict]):
+def needs_look(st: Optional[dict], now_s: Optional[float]) -> bool:
+    """볼 필요가 있는 칸: 아직 아무도 안 봤거나, '불 없음·일부만 봄'으로 본 지 OBS_RECHECK_CLEAR_S 가 지났다
+    (사용자 결정 2026-10-08 — 그 사이 번졌을 수 있다). now_s 를 모르면 미관측만."""
+    if st is None:
+        return True
+    return (now_s is not None and st["state"] in ("CLEAR", "PARTIAL") and st.get("sim_time_s") is not None
+            and now_s - st["sim_time_s"] >= config.OBS_RECHECK_CLEAR_S)
+
+
+def known_edge(idx: MapIndex, belief: Dict[str, dict], now_s: Optional[float] = None):
     """총괄이 아는 테두리 (사용자 결정 2026-10-07: 테두리를 보고 예측하는 것이 핵심).
     known_edge: 관측으로 불 확인(BURNING)한 칸 중 8방향 이웃에 불 확인·탄 곳이 아닌 칸(미관측·불 없음·일부만 봄)이 있는 칸.
-    frontier : 아직 아무도 보지 않은 칸 중 8방향 이웃에 불 확인 칸 또는 불이 지나간 칸(다 탄 곳·꺼짐 추정)이 있는 칸 —
-               번졌는지 먼저 볼 후보. 불이 지나간 칸을 넣지 않으면 아는 불이 모두 꺼진 것으로 바뀌는 순간 '바로 바깥'
-               정보가 사라져 먼 구역부터 보게 된다 (사용자 결정 2026-10-07, 실제 환경 실행에서 확인).
+    frontier : 볼 필요가 있는 칸(미관측, 또는 오래전 '불 없음' — needs_look) 중 8방향 이웃에 불 확인 칸 또는 불이 지나간
+               칸(다 탄 곳·꺼짐 추정)이 있는 칸 — 번졌는지 먼저 볼 후보. 불이 지나간 칸을 넣지 않으면 아는 불이 모두
+               꺼진 것으로 바뀌는 순간 '바로 바깥' 정보가 사라져 먼 구역부터 보게 된다 (사용자 결정 2026-10-07).
     정답이 아니라 아는 세계(belief)로만 계산한다."""
     burning = {c for c, b in belief.items() if b["state"] == "BURNING" and c in idx.by_id}
     passed = {c for c, b in belief.items() if b["state"] in ("BURNED", "PRESUMED_BURNED") and c in idx.by_id}
@@ -114,7 +123,7 @@ def known_edge(idx: MapIndex, belief: Dict[str, dict]):
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):
                 n = idx.by_cr.get((col + dc, row + dr))
-                if (dc or dr) and n is not None and belief.get(n["cell_id"]) is None:
+                if (dc or dr) and n is not None and needs_look(belief.get(n["cell_id"]), now_s):
                     frontier.add(n["cell_id"])
     for cid in burning:
         col, row = parse_cell_key(cid)
@@ -126,7 +135,7 @@ def known_edge(idx: MapIndex, belief: Dict[str, dict]):
                 st = belief.get(n["cell_id"])
                 if st is None or st["state"] not in ("BURNING", "BURNED", "PRESUMED_BURNED"):
                     edge.add(cid)
-                if st is None:
+                if needs_look(st, now_s):
                     frontier.add(n["cell_id"])
     return edge, frontier
 
@@ -180,7 +189,7 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
     덜 끝난 지시서를 바꾸기 때문이다 (사용자 결정 2026-10-08). charging = 충전 중 드론 [{resource_id, ready_in_s}].
     전체 격자·관측 원문은 넣지 않는다. 결과에 input_hash 를 넣는다 (시각 제외)."""
     belief = belief_layers(fire_states, sim_time_s, burn_out)
-    edge, frontier = known_edge(idx, belief)
+    edge, frontier = known_edge(idx, belief, sim_time_s)
     # 후보 구역의 기준 = 불이 있거나 최근까지 있던 곳. '다 타고 꺼짐(추정)'과 관측으로 본 '다 탄 곳'도 넣는다 — 빼면
     # 아는 불이 모두 꺼진 것으로 바뀌는 순간 후보가 사라져 계획이 멈춘다 (2026-10-07 실제 환경 실행에서 두 번 확인)
     anchors = [cid for cid, b in belief.items() if b["state"] in ("BURNING", "REPORTED", "PRESUMED_BURNED", "BURNED")
@@ -289,21 +298,40 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
                                                     "bearing_from_fire_centre_deg", "mean_ground_m",
                                                     "elev_above_known_fire_m",
                                                     "last_observed_sim_s", "last_observation_id", "in_progress_by")}
-    # 후보 구역 상한 (OBS_MAX_CANDIDATE_BLOCKS): 진행 방향 앞쪽 → 테두리 바깥 미관측 → 미관측 → 가까운 순
+    # 후보 구역 상한 (OBS_MAX_CANDIDATE_BLOCKS). 불 중심 기준 방위(OBS_CANDIDATE_SECTORS)마다 줄을 세우고 돌아가며
+    # 하나씩 고른다 — 둘레를 고르게 보게 (사용자 결정 2026-10-08). 방위 안의 순서: 테두리 바깥 볼 칸 → 테두리 칸 →
+    # 미관측 → 가까운 순. 방위를 도는 순서는 진행 방향 앞쪽부터. 테두리와 닿은 구역(볼 칸·테두리 칸이 있음)을 먼저 돌고,
+    # 남으면 나머지로 채운다
     progress = fire_progress(idx, belief, reports[0]["cell_id"] if reports else None)
     ahead = None if not progress else progress.get("moved_toward_deg")
+    n_sec = max(1, config.OBS_CANDIDATE_SECTORS)
+
+    def diff_of(b):
+        brg = b.get("bearing_from_fire_centre_deg")
+        return None if ahead is None or brg is None else abs((brg - ahead + 180) % 360 - 180)
 
     def prio(b):
+        diff = diff_of(b)
+        b["ahead_of_progress"] = None if diff is None else diff <= 45
+        return (-b["unobserved_next_to_fire"], -b["known_edge_cells"], -b["counts"]["UNOBSERVED"],
+                b["dist_to_known_fire_m"], b["block_id"])
+
+    def sector(b):
         brg = b.get("bearing_from_fire_centre_deg")
-        if ahead is None or brg is None:
-            tier, diff = 0, 0
-        else:
-            diff = abs((brg - ahead + 180) % 360 - 180)
-            tier = 0 if diff <= 45 else 1 if diff <= 90 else 2
-        b["ahead_of_progress"] = None if ahead is None or brg is None else tier == 0
-        return (tier, -b["unobserved_next_to_fire"], -b["counts"]["UNOBSERVED"], b["dist_to_known_fire_m"], diff,
-                b["block_id"])
-    ordered = sorted(blocks.values(), key=prio)
+        return 0 if brg is None else int(((brg + 180.0 / n_sec) % 360) // (360.0 / n_sec))
+
+    lanes: Dict[int, List[dict]] = {}
+    for b in sorted(blocks.values(), key=prio):
+        lanes.setdefault(sector(b), []).append(b)
+    lane_order = sorted(lanes, key=lambda k: (min((d for d in map(diff_of, lanes[k]) if d is not None), default=0), k))
+    ordered: List[dict] = []
+    for touching in (True, False):
+        queues = [[b for b in lanes[k] if bool(b["unobserved_next_to_fire"] or b["known_edge_cells"]) == touching]
+                  for k in lane_order]
+        while any(queues):
+            for q in queues:
+                if q:
+                    ordered.append(q.pop(0))
     limit = config.OBS_MAX_CANDIDATE_BLOCKS
     chosen = ordered if not limit else ordered[:limit]
     for res in available:                                # 상한 때문에 고를 구역이 없어진 자원이 없게 한 개씩 보탠다
@@ -362,7 +390,8 @@ SYSTEM = (
     "할 일 1) predicted_blocks: 불이 있을 것 같은데 아직 확인 안 한 구역.\n"
     "할 일 2) assignments = 작업 지시서. 너는 약 35분에 한 번만 불린다. res 의 자원마다 볼 구역을 순서대로 "
     "1~order_max_stops 개(block_ids). 한 구역은 한 번만, ok 에 있는 자원만. 배터리(bat)가 적은 드론에는 가까운 구역을 적게.\n"
-    "우선순위: emergency(인명피해 예상) 근처 → progress 방향 앞쪽 → 테두리 바로 바깥 미관측(front) → 풍하·오르막(up+).\n"
+    "우선순위: emergency(인명피해 예상) 근처 → progress 방향 앞쪽 → 테두리 바로 바깥 볼 칸(front) → 풍하·오르막(up+).\n"
+    "불은 사방으로 번진다. 자원이 둘 이상이면 서로 다른 방향(brg)으로 나눠 둘레 전체(꼬리·옆구리 포함)를 본다.\n"
     "불은 도로(road)를 못 넘고 연료(fuel) 없는 곳으로 안 번진다. 입력에 없는 값은 모르는 것이다.\n"
     "입력에 없는 ID·수치를 만들지 않는다. evidence_refs 는 입력 ID 만. "
     "reserve.active=false 이고 불이 그 기지 쪽으로 오면 request_reserve_uavs=true + reserve_reason, 아니면 false·빈 문자열.\n"
@@ -508,7 +537,7 @@ def rule_plan(inp: dict, only: Optional[List[str]] = None) -> dict:
 # ---------------------------------------------------------------------------
 LEGEND = (
     "약어: blocks[] 고를 수 있는 구역 — id, n 칸 수(U 미관측·C 불없음·P 일부·B 불타는중·X 탄곳·PX 꺼짐추정·R 신고), "
-    "edge 테두리 칸, front 테두리 바로 바깥 미관측 칸, d 아는 불까지 m, brg 불 중심에서 방향°, ahead 진행 방향 앞쪽, "
+    "edge 테두리 칸, front 테두리 바로 바깥 볼 칸(미관측·오래전 불없음), d 아는 불까지 m, brg 불 중심에서 방향°, ahead 진행 방향 앞쪽, "
     "up 아는 불보다 높은 m, road 도로 칸, fuel 연료, t 마지막 관측 s, ok 보낼 수 있는 자원(없으면 전부), near [가까운 자원, km]. "
     "ctx[] 참고용(고를 수 없음). res[] [ID, 종류, bat 배터리%, now(ON_STOP=지금 지점 본 뒤 시작)]. "
     "chg[] 충전 중 [ID, 남은 s]. busy[] [ID, 구역]. weather {항목: [값, 기준, 관측 s]} (wind_dir_deg 는 불어오는 방향). "

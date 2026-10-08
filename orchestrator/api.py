@@ -247,7 +247,8 @@ def create_app(orch: Orchestrator, poll_interval_s: Optional[float] = None) -> F
                         "key_present": bool(os.getenv(config.LLM_API_KEY_ENV)),
                         "timeout_s": config.LLM_TIMEOUT_S, "max_calls": config.LLM_MAX_CALLS_PER_RUN,
                         "not_ready_reason": orch.llm.status() if orch.llm else "NOT_CONNECTED",
-                        "calls_used": orch.llm.calls if orch.llm else 0},
+                        "calls_used": orch.llm.calls if orch.llm else 0,
+                        "in_flight": orch._llm_in_flight},     # 트윈 시계가 이 동안 멈춘다 (2026-10-08)
                 "f1_official_rule": config.OFFICIAL_RULE_SOURCE or "NOT_READY",
                 "f2_suppression": "READY" if config.SUPPRESSION_CONTRACT_READY else "NOT_READY"}
 

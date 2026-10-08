@@ -116,6 +116,18 @@ class UavClient:
             return "REFUSED", {"http_status": r.status_code, "body": r.text[:500]}
         return "UNKNOWN", {"http_status": r.status_code, "body": r.text[:500]}
 
+    def abort(self, rid: str, exec_task_id: str, reason: str) -> Tuple[str, dict]:
+        """중단 요청 (드론팀 UAV-09). ("OK"|"NOT_FOUND"|"UNREACHABLE", TaskStatus). 같은 요청 반복은 처음 결과."""
+        try:
+            r = _call(self.client, "POST", self._url(rid, f"/task/{exec_task_id}/abort"), json={"reason": reason})
+        except Unreachable as e:
+            return "UNREACHABLE", {"error": str(e)}
+        if r.status_code == 200:
+            return "OK", r.json()
+        if r.status_code == 404:
+            return "NOT_FOUND", {"body": r.text[:300]}
+        return "UNREACHABLE", {"http_status": r.status_code}
+
     def task_status(self, rid: str, exec_task_id: str) -> Tuple[str, dict]:
         """("OK"|"NOT_FOUND"|"UNREACHABLE", 상세)"""
         try:

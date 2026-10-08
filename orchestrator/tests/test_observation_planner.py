@@ -245,7 +245,8 @@ def test_validator_rejects_invented_ids_and_busy_blocks(pw):
 
 def test_rejected_resource_is_not_silently_replaced_and_replanned(pw):
     orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
-    pw["uav"].verdicts["A-uav1"] = {"verdict": "REJECT", "reason": "LOW_BATTERY", "eta_sec": None}
+    # 출동 때에만 알 수 있는 거절 ('지금은' 사유). 물리적으로 못 가는 사유는 계획 전에 빠진다 (test_resource_that_cannot_*)
+    pw["uav"].verdicts["A-uav1"] = {"verdict": "REJECT", "reason": "BUSY", "eta_sec": None}
     _to_report_time(env)
     outs = orch.obs_plan_cycle()
     first = outs[0]
@@ -299,11 +300,12 @@ def test_resource_freed_during_call_gets_planned_next(pw):
     assert "A-uav2" not in [r["resource_id"] for r in req["inp"]["resources_available"]]
     pw["uav"].state["A-uav2"]["current_task_id"] = None                 # 호출 도중 돌아옴
     out = orch.obs_plan_apply(req, _ok_plan(req["inp"]))
-    assert out["replan"] is True                                         # 남은 자원은 다음 계획에서
-    assert orch.obs_plan_cycle() == []                                   # 같은 환경 단계에서는 다시 계획하지 않음
-    env.advance(1)                                                       # 다음 단계에 모아서
+    assert out["replan"] is False
+    # 같은 환경 단계에서 LLM 을 다시 부르지 않고, 회의가 배정하지 않은 노는 드론은 규칙 지시서를 바로 받는다
+    # (사용자 결정 2026-10-08, run 191238: 다음 회의까지 드론 2대가 1.8시간 놀았다)
     nxt = orch.obs_plan_cycle()
-    assert any(r["resource_id"] == "A-uav2" for o in nxt for r in o["assignments"])
+    assert [o["source"] for o in nxt] == ["RULE_UNASSIGNED_IDLE"]
+    assert [r["resource_id"] for o in nxt for r in o["assignments"]] == ["A-uav2"]
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +397,7 @@ def test_observation_plan_view_shows_layers_without_truth(pw):
 def test_unselectable_blocks_are_removed_before_llm(pw):
     """고를 수 없는 구역은 LLM 입력의 blocks 에서 미리 빠진다 (사용자 결정 2026-10-07)"""
     orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
-    pw["uav"].verdicts["A-uav1"] = {"verdict": "REJECT", "reason": "LOW_BATTERY", "eta_sec": None}
+    pw["uav"].verdicts["A-uav1"] = {"verdict": "REJECT", "reason": "BUSY", "eta_sec": None}   # 출동 때 거절
     _to_report_time(env)
     first = orch.obs_plan_cycle(max_rounds=1)[0]
     rejected = next(r for r in first["assignments"] if r["resource_id"] == "A-uav1")
@@ -740,9 +742,8 @@ def test_llm_can_request_reserve_uavs(pw4):
     orch.obs_plan_cycle()
     ev = [e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]
     assert ev and ev[0]["result"] == "LLM_REQUEST" and "C 기지" in ev[0]["detail"]["reason"]
-    assigned = {a["resource_id"] for e in lg.events() if e["event_type"] == "OBS_PLAN_EXECUTED"
-                for a in e["detail"]["assignments"]}
-    assert assigned & {"C-uav1", "C-uav2"}                                # 투입 뒤 다음 계획에서 배정됨
+    ordered = {e["resource_id"] for e in lg.events() if e["event_type"] == "OBS_ORDER"}
+    assert ordered & {"C-uav1", "C-uav2"}           # 투입 뒤 바로 지시서 (회의가 안 줬으면 규칙, LLM 재호출 없음)
 
 
 def test_reserve_request_needs_reason():
@@ -903,8 +904,9 @@ def test_initial_drone_payload_requests_120s(pw, monkeypatch):
 
 
 
-def test_candidate_blocks_capped_and_ahead_of_progress_first():
-    """후보 구역은 상한(기본 10개)까지, 진행 방향 앞쪽 구역이 먼저 (사용자 결정 2026-10-07)"""
+def test_candidate_blocks_capped_ahead_first_and_spread_around_fire():
+    """후보 구역은 상한(기본 10개)까지, 진행 방향 앞쪽 구역이 먼저 (2026-10-07) — 그다음은 방위마다 돌아가며
+    골라 둘레 전체가 들어간다 (사용자 결정 2026-10-08)"""
     from orchestrator.observation_planner import build_input, llm_view
     fire, rest = grid()
     idx = MapIndex(fire + rest)
@@ -914,8 +916,9 @@ def test_candidate_blocks_capped_and_ahead_of_progress_first():
                       busy=[], rejections=[], sim_time_s=3000.0, run_id="R", burn_out=6300.0)
     assert inp["fire_progress"]["basis"] == "IGNITION_TO_BURNING" and 80 <= inp["fire_progress"]["moved_toward_deg"] <= 100
     assert len(inp["blocks"]) == config.OBS_MAX_CANDIDATE_BLOCKS == 10 and inp["deferred_blocks"] > 0
-    first = inp["blocks"][:5]
-    assert all(b["ahead_of_progress"] for b in first)                    # 동쪽(진행 방향) 구역부터
+    assert inp["blocks"][0]["ahead_of_progress"]                         # 동쪽(진행 방향) 구역부터
+    sectors = {int(((b["bearing_from_fire_centre_deg"] + 22.5) % 360) // 45) for b in inp["blocks"]}
+    assert len(sectors) == 8                                             # 8방위가 모두 후보에 들어감
     v = llm_view(inp)
     assert len(json.dumps(v, ensure_ascii=False)) < len(json.dumps(inp, ensure_ascii=False)) * 0.6   # 짧은 형태
     assert {b["id"] for b in v["blocks"]} == {b["block_id"] for b in inp["blocks"]}
@@ -1131,7 +1134,25 @@ def test_no_new_fire_returns_to_charge_unless_last_drone_in_air(pw):
     orch._order_after_observation(_hook_task(), "A-uav2", 0, 180.0, ground=False)
     assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "RETURN_TO_CHARGE"           # A-uav1 이 하늘에 있음
     orch._order_after_observation(_hook_task(), "A-ugv1", 0, 180.0, ground=True)
-    assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "WAIT"                       # UGV 는 충전 없음 → 대기
+    end = _events(lg, "OBS_ORDER_END")[-1]                # UGV 는 충전 없음 → 도로에서 불 머리 감시 (2026-10-08)
+    assert end["result"] == "FOLLOW_HEAD_UGV_WATCH" and end["detail"]["head"]["basis"] == "UGV_HEAD_STANDOFF"
+    assert end["detail"]["head"]["watch_cell"] == "17_12"                             # 머리 칸을 바라본다
+    assert orch._ugv_watch_action("A-ugv1", 180.0) == "WAIT"                          # 같은 환경 단계에는 한 번만
+
+
+def test_ugv_watching_head_sends_drones_to_perimeter(pw):
+    """머리 칸이 보인 UGV 가 머리를 맡으면 드론은 머리로 가지 않고 둘레 빈 곳으로 (사용자 결정 2026-10-08)"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _with_known_fire(orch, env, lg)
+    orch._orders["A-ugv1"] = {"plan_id": "H", "source": "RULE", "stops": [], "next": 0, "new_fire": 0,
+                              "kind": "HEAD", "resource_type": "UGV", "since_s": 0, "role": "HEAD",
+                              "watch_cell": "17_12"}
+    orch._order_after_observation(_hook_task(), "A-ugv1", 0, 180.0, ground=True, seen_cells={"17_12"})
+    assert orch._ugv_head_watchers(180.0) == ["A-ugv1"]
+    assert "A-ugv1" in orch._obs_build()["unavailable"]                               # 회의가 다른 데로 안 보냄
+    orch._order_after_observation(_hook_task(), "A-uav1", 2, 180.0, ground=False)     # 새 불 → 원래는 머리로
+    end = _events(lg, "OBS_ORDER_END")[-1]
+    assert end["result"] == "PERIMETER_GAP" and end["detail"]["head"]["basis"] == "PERIMETER_GAP"
 
 
 def test_landed_drone_charges_30min_then_gets_rule_order(pw):
@@ -1340,3 +1361,169 @@ def test_new_order_replaces_queued_stop_and_never_overruns(pw):
     rows, _ = orch._assign_orders(plan, b["inp"], b["idx"], "PLAN-NEW", "LLM", 120.0)
     assert lg.get_task(old.task_id).purpose_status == "CANCELLED"
     assert rows[0]["dispatch"] == "STARTED" and orch._orders["A-uav1"]["plan_id"] == "PLAN-NEW"
+
+
+# ---------------------------------------------------------------------------
+# 가는 중인 드론에 새 임무 (사용자 결정 2026-10-08): 새 지시서가 오면 드론 중단(UAV-09) → 복귀 중 재배정(UAV-06)
+# ---------------------------------------------------------------------------
+
+def _flying_uav1(orch, lg):
+    """A-uav1 을 지시서 첫 지점으로 보낸 상태 (관측 전, 시도 STARTED). (시도, 다른 칸으로 가는 새 계획 배정)"""
+    orch.obs_plan_cycle()
+    att = lg.get_attempt(lg.reservations()["A-uav1"]["attempt_id"])
+    assert att["substatus"] == "STARTED"
+    b = orch._obs_build()
+    me = next(r for r in b["inp"]["resources_available"] if r["resource_id"] == "A-uav1")
+    assert me["now"] == "ON_STOP"
+    cur = lg.get_task(att["task_id"]).target.cell_id
+    other = next(x for x in b["inp"]["blocks"] if x["target_cell"] != cur and "A-uav1" in x["allowed_resources"])
+    plan = {"assignments": [{"resource_id": "A-uav1", "block_ids": [other["block_id"]], "purpose": "BOUNDARY_CHECK",
+                             "evidence_refs": [], "rationale": "새 회의"}]}
+    return att, plan, b
+
+
+def test_new_order_cuts_drone_flying_to_old_stop_and_sends_it_to_new_stop(pw):
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    _to_report_time(env)
+    att, plan, b = _flying_uav1(orch, lg)
+    rows, _ = orch._assign_orders(plan, b["inp"], b["idx"], "PLAN-NEW", "LLM", 120.0)
+    assert any(c[2].endswith("/abort") for c in uav.calls if c[1] == "A-uav1")
+    ev = _events(lg, "OBS_RETASK_AIRBORNE")[-1]
+    assert ev["result"] == "ABORTED_BEFORE_OBSERVATION" and ev["detail"]["previous_task_id"] == att["task_id"]
+    assert lg.get_task(att["task_id"]).purpose_status == "CANCELLED"           # 앞 지점은 거둠 (다른 드론에 인계 안 함)
+    assert lg.get_attempt(att["attempt_id"])["substatus"] == "RELEASED"
+    assert rows[0]["dispatch"] == "STARTED"
+    assert lg.reservations()["A-uav1"]["task_id"] == rows[0]["task_id"]      # 기지에 내리지 않고 바로 새 지점
+    assert not _events(lg, "OBS_CHARGING_START")
+    _poll(orch)                                                                 # 끊긴 앞 시도의 FAILED 가 새 Task 를 건드리지 않음
+    assert lg.get_task(att["task_id"]).purpose_status == "CANCELLED"
+    assert not [e for e in _events(lg, "TASK_REOPENED") if e["task_id"] == att["task_id"]]
+
+
+def test_observing_drone_is_not_cut_and_new_order_waits(pw):
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    _to_report_time(env)
+    att, plan, b = _flying_uav1(orch, lg)
+    for _ in range(2):                                                          # ENROUTE → OBSERVING (도착)
+        orch._track(lg.get_attempt(att["attempt_id"]), orch.uav)
+    assert lg.get_attempt(att["attempt_id"])["substatus"] == "ARRIVED"
+    rows, _ = orch._assign_orders(plan, b["inp"], b["idx"], "PLAN-NEW", "LLM", 120.0)
+    assert rows[0]["dispatch"] == "QUEUED_AFTER_CURRENT_STOP"
+    assert not any(c[2].endswith("/abort") for c in uav.calls)
+
+
+def test_retask_off_keeps_old_behaviour(pw, monkeypatch):
+    monkeypatch.setattr(config, "OBS_RETASK_AIRBORNE", False)
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    _to_report_time(env)
+    att, plan, b = _flying_uav1(orch, lg)
+    rows, _ = orch._assign_orders(plan, b["inp"], b["idx"], "PLAN-NEW", "LLM", 120.0)
+    assert rows[0]["dispatch"] == "QUEUED_AFTER_CURRENT_STOP"
+    assert not any(c[2].endswith("/abort") for c in uav.calls)
+
+
+def test_abort_too_late_lets_observation_finish_then_retasks_while_returning(pw):
+    """중단 요청이 관측 뒤에 닿으면(ALREADY_RETURNING) 관측은 그대로 반영하고, 기다리던 새 지점은 복귀 중 재배정으로 간다.
+    관측 뒤 다음 행동이 지시서 지점을 하나 더 넣지 않는다."""
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    uav.default_script = _returning_flight()
+    _to_report_time(env)
+    att, plan, b = _flying_uav1(orch, lg)
+    exec_id = att["command"]["payload"]["task_id"]
+    uav.scripts[exec_id] = uav.scripts[exec_id][2:]                             # 드론은 이미 관측을 마치고 복귀 중
+    uav.state["A-uav1"]["current_task_id"] = None
+    rows, _ = orch._assign_orders(plan, b["inp"], b["idx"], "PLAN-NEW", "LLM", 120.0)
+    assert _events(lg, "OBS_RETASK_AIRBORNE")[-1]["result"] == "ALREADY_RETURNING"
+    new_tid = rows[0]["task_id"]
+    assert lg.get_task(new_tid).purpose_status == "PENDING"
+    assert lg.get_task(att["task_id"]).purpose_status == "IN_EXECUTION"        # 관측을 버리지 않음
+    _poll(orch)
+    assert lg.get_task(att["task_id"]).purpose_status == "COMPLETED"
+    assert [e["result"] for e in _events(lg, "OBS_ORDER_NEXT") if e["resource_id"] == "A-uav1"] == ["QUEUED_STOP_WAITING"]
+    orch.obs_plan_cycle()
+    assert lg.reservations()["A-uav1"]["task_id"] == new_tid
+    assert [e for e in _events(lg, "OBS_RETASK_WHILE_RETURNING") if e["task_id"] == new_tid]
+    assert len([c for c in uav.calls if c[2].endswith("/abort")]) == 1         # 같은 시도에 중단 요청은 한 번만
+
+
+def test_only_one_ugv_heads_for_fire_head_post(pw, monkeypatch):
+    """머리 감시 지점으로 가는 중인 UGV 가 있으면 다른 노는 UGV 는 둘레로 (2026-10-08 run 191238: 4대가 같은 지점)"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _with_known_fire(orch, env, lg)
+    monkeypatch.setattr(orch, "_ugv_ids", lambda: {"A-ugv1", "B-ugv1"})
+    assert orch._ugv_watch_action("B-ugv1", 180.0) == "FOLLOW_HEAD_UGV_WATCH"
+    orch._orders["A-ugv1"] = {"plan_id": "H", "source": "RULE", "stops": [{"block_id": "B9_4", "cell_id": "27_12"}],
+                              "next": 1, "new_fire": 0, "kind": "HEAD", "resource_type": "UGV", "since_s": 180.0,
+                              "role": "HEAD", "watch_cell": "17_12"}        # 아직 가는 중 (머리 칸을 보기 전)
+    assert orch._ugv_head_watchers(180.0) == []
+    assert orch._ugv_watch_action("B-ugv1", 180.0) == "PERIMETER_GAP_UGV_WATCH"
+
+
+# ---------------------------------------------------------------------------
+# 못 가는 자원은 계획 전에 거른다 — 자원 자신의 평가로 (사용자 결정 2026-10-08)
+# ---------------------------------------------------------------------------
+
+def test_resource_that_cannot_return_is_removed_before_planning(pw):
+    """드론이 '복귀 여유 부족'이라고 답하는 구역은 LLM·규칙 입력에서 빠지고, 어디에도 못 가면 가용 자원에서 빠진다"""
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    uav.verdicts["A-uav2"] = {"verdict": "REJECT", "reason": "RETURN_MARGIN_INSUFFICIENT", "eta_sec": None}
+    _to_report_time(env)
+    b = orch._obs_build()
+    assert "A-uav2" not in {r["resource_id"] for r in b["inp"]["resources_available"]}
+    assert b["unavailable"]["A-uav2"] == "NO_FEASIBLE_BLOCK:RETURN_MARGIN_INSUFFICIENT"
+    assert all("A-uav2" not in x["allowed_resources"] for x in b["inp"]["blocks"])
+    assert "A-uav1" in {r["resource_id"] for r in b["inp"]["resources_available"]}
+    n = len(uav.eval_calls())
+    orch._obs_build()
+    assert len(uav.eval_calls()) == n                      # 같은 자리·배터리·바람이면 다시 묻지 않는다
+    orch.obs_plan_cycle()
+    assert not [e for e in _events(lg, "OBS_ORDER") if e["resource_id"] == "A-uav2"]
+
+
+def test_only_some_blocks_out_of_reach_keeps_resource_for_the_rest(pw):
+    orch, env, uav = pw["orch"], pw["env"], pw["uav"]
+    _to_report_time(env)
+    far = orch._obs_build()["inp"]["blocks"][0]["target_cell"]
+    orch._probe_cache = {}
+
+    def verdict(body):
+        c = orch._map_index().by_id[far]
+        hit = abs(body["target"]["lat"] - c["lat"]) < 1e-9 and abs(body["target"]["lon"] - c["lon"]) < 1e-9
+        return ({"verdict": "REJECT", "reason": "LOW_BATTERY", "eta_sec": None} if hit
+                else {"verdict": "ACCEPT", "eta_sec": 60})
+    uav.verdicts["A-uav1"] = verdict
+    inp = orch._obs_build()["inp"]
+    assert "A-uav1" in {r["resource_id"] for r in inp["resources_available"]}
+    assert all("A-uav1" not in x["allowed_resources"] for x in inp["blocks"] if x["target_cell"] == far)
+
+
+def test_busy_or_unacceptable_counter(pw):
+    """BUSY 는 '지금은' 사유라 거르지 않는다. 총괄이 못 받는 COUNTER(체류 줄이기)는 못 가는 것으로 본다"""
+    orch, env, uav = pw["orch"], pw["env"], pw["uav"]
+    uav.verdicts["A-uav1"] = {"verdict": "REJECT", "reason": "BUSY", "eta_sec": None}
+    uav.verdicts["A-uav2"] = {"verdict": "COUNTER", "reason": "RETURN_MARGIN_INSUFFICIENT", "eta_sec": 60,
+                              "counter_offer": {"observe_duration_s": 20}}
+    _to_report_time(env)
+    b = orch._obs_build()
+    ids = {r["resource_id"] for r in b["inp"]["resources_available"]}
+    assert "A-uav1" in ids and "A-uav2" not in ids
+    assert b["unavailable"]["A-uav2"] == "NO_FEASIBLE_BLOCK:COUNTER_UNACCEPTABLE:RETURN_MARGIN_INSUFFICIENT"
+
+
+def test_ugv_unreachable_by_road_is_removed(pw):
+    orch, env, ugv = pw["orch"], pw["env"], pw["ugv"]
+    _to_report_time(env)
+    ugv.verdicts = {"A-ugv1": {"verdict": "REJECT", "reason": "TARGET_UNREACHABLE", "eta_sec": None}}
+    b = orch._obs_build()
+    assert b["unavailable"].get("A-ugv1") == "NO_FEASIBLE_BLOCK:TARGET_UNREACHABLE"
+
+
+def test_rule_between_meetings_uses_same_physical_filter(pw):
+    """회의 사이 규칙(불 머리 따라가기)도 같은 1단계 거르기 — 드론이 못 간다고 답하면 그 칸으로 보내지 않는다"""
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    _with_known_fire(orch, env, lg)
+    uav.verdicts["A-uav1"] = {"verdict": "REJECT", "reason": "RETURN_MARGIN_INSUFFICIENT", "eta_sec": None}
+    orch._order_after_observation(_hook_task(), "A-uav1", 2, 180.0, ground=False)
+    end = _events(lg, "OBS_ORDER_END")[-1]
+    assert end["result"] == "RETURN_TO_CHARGE" and end["detail"]["unreachable"]["cell_id"] == "17_12"
+    assert not [e for e in _events(lg, "OBS_ORDER_STOP_QUEUED") if e["resource_id"] == "A-uav1"]

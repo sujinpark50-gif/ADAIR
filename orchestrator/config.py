@@ -280,6 +280,26 @@ OBS_MAX_CANDIDATE_BLOCKS = 10        # 2026-10-07: 30 → 10 (실제 배정은 �
 # 모아서 계획한다. 같은 계획 중 자원 거절로 다시 짜는 것은 허용. 관측 반영·첫 출동·앞질러 보내기는 기다리지 않는다
 OBS_ONE_PLAN_PER_ENV_STEP = True
 OBS_STALE_S = None                    # 오래된 관측 기준 — 미정. 관측 시각만 넘기고 오래됨 표시는 하지 않는다
+# 둘레 고르게 보기 (사용자 결정 2026-10-08, run 20261008_183847: 불 머리(북)만 보고 남·남동 테두리 26칸 중 1칸만 찾음)
+#   ① 다시 보기: '불 없음(일부만 봄 포함)'으로 본 지 OBS_RECHECK_CLEAR_S 가 지난 칸이 아는 불 바로 옆이면 다시 볼 후보
+#      (frontier)로 되돌린다. 전에는 한 번 본 칸이 영영 후보에서 빠져, 뒤에 꼬리·옆구리로 번져도 보지 않았다.
+#      기본 = 환경 한 단계(트윈 35분) — 그 사이에 불이 한 칸 번질 수 있다
+OBS_RECHECK_CLEAR_S = float(os.getenv("ORCH_RECHECK_CLEAR_S", "2100"))
+#   ② LLM 후보 구역을 불 중심 기준 8방위에 고르게 나눠 고른다 (방위마다 가장 급한 구역부터 돌아가며).
+#      전에는 진행 방향 앞쪽부터 10개를 골라 꼬리·옆구리 구역이 입력에 거의 들어가지 않았다
+OBS_CANDIDATE_SECTORS = 8
+#   ③ 회의 사이 규칙: 불 머리를 따라가는 드론은 이 수까지. 나머지 드론은 가장 오래 안 본 방위의 테두리 바깥으로
+OBS_HEAD_FOLLOWERS_MAX = int(os.getenv("ORCH_HEAD_FOLLOWERS_MAX", "1"))
+#   ④ 불 머리는 UGV 가 본다 (사용자 결정 2026-10-08, run 20261008_185335: UGV 한 번 관측 평균 약 188칸, 드론 1칸 미만).
+#      관측을 마친 UGV 가 할 일이 없고 머리를 맡은 UGV 가 없으면 불 머리 칸을 보러 간다(가까운 도로에서, 지형 시선).
+#      머리 칸이 보였으면 그 UGV 가 머리를 맡는다 — 회의 배정에서 빼고, 새 환경 단계마다 다시 본다.
+#      머리를 맡은 UGV 가 있으면 드론은 머리로 가지 않고 둘레(③)로 간다. 지형에 가려 안 보이면 내려놓고 드론이 맡는다
+OBS_UGV_HEAD_WATCH = os.getenv("ORCH_UGV_HEAD_WATCH", "1") == "1"
+OBS_UGV_HEAD_WATCH_VALID_S = 4200.0   # 머리 칸을 마지막으로 본 뒤 이 시간(환경 두 단계)까지 '머리를 맡음'으로 본다
+#      머리 감시 UGV 는 불 머리 칸이 아니라 진행 방향 앞쪽으로 이만큼 떨어진 곳(가까운 도로)에 서서 머리를 바라본다
+#      (UGV 시야 600 m~2 km 안. 사용자 결정 2026-10-08: "진행 방향을 바라보며 멀리서 차량 하나가 감시")
+#      다른 노는 UGV 는 도로에서 가장 오래 안 본 방위를 감시하고, 드론은 그 빈 곳을 정찰한다
+OBS_UGV_HEAD_STANDOFF_M = float(os.getenv("ORCH_UGV_HEAD_STANDOFF_M", "1000"))
 OBS_RATIONALE_MAX_CHARS = 400
 # 첫 출동 (사용자 결정 2026-10-07): 신고가 오면 LLM 을 기다리지 않고 신고 칸에서 가장 가까운 드론을 바로 보낸다.
 # 그 드론의 첫 관측(불 좌표)이 들어온 뒤에 LLM 이 나머지 자원을 계획한다 (첫 관측이 LLM 입력에 들어가도록).
@@ -346,6 +366,10 @@ OBS_EMERGENCY_ON_HUMAN_RISK = True
 # 돌아가는 중에 새 임무 받기 (드론팀 UAV-06, 사용자 결정 2026-10-08: 이 브랜치에서 켬). 드론 서버도
 # UAV_RETASK_WHILE_RETURNING=1 로 띄워야 한다 (run_servers.py). 끄면 다음 지점은 착륙·반납 뒤에 보낸다.
 OBS_RETASK_WHILE_RETURNING = os.getenv("ORCH_RETASK_WHILE_RETURNING", "1") == "1"
+# 가는 중인 드론에 새 임무 (사용자 결정 2026-10-08): 새 회의가 지시서를 바꿨는데 드론이 앞 지점으로 가는 중(관측 전)이면
+# 드론 중단 요청(UAV-09 abort)으로 끊고 → 복귀 중 재배정(UAV-06)으로 바로 새 지점에 보낸다. 관측 중이면 끝까지 본다.
+# 드론팀 코드는 바꾸지 않는다 (abort·복귀 중 재배정 모두 기존 기능). OBS_RETASK_WHILE_RETURNING 도 켜져 있어야 한다
+OBS_RETASK_AIRBORNE = os.getenv("ORCH_RETASK_AIRBORNE", "1") == "1"
 # 지시서를 배터리에 맞게 자르기 위한 드론 값 — 드론팀 uav/uav-agent/config.py 값을 옮겨 적음 (드론팀 '실측 보정 필요')
 UAV_ASSUMED_CRUISE_MS = 10.0
 UAV_ASSUMED_DRAIN_PCT_S = 0.033
