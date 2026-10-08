@@ -160,6 +160,13 @@ SENSOR_PROFILES = {
 }
 # 원래 관측 범위(한 프레임)는 TEST_THERMAL_90M_V1 로 남겨 둔다. 되돌리기: ORCH_SENSOR_PROFILE=TEST_THERMAL_90M_V1
 DEFAULT_SENSOR_PROFILE_ID = os.getenv("ORCH_SENSOR_PROFILE", "ASSUMED_ORBIT_90M_V1")
+# UGV 열화상 시야 (사용자 결정 2026-10-08): 반지름 600 m ~ 2 km, 지형에 따라 다르다.
+#   600 m 안은 항상 보임. 600 m ~ 2 km 는 카메라(지면 위 3 m)에서 그 칸까지 지면 높이(지도 90 m 칸)가 시선을 막지 않으면 보임.
+#   카메라 높이·600 m 안 항상 보임은 시험용 가정 (TEST_ONLY) — 실제 값이 정해지면 숫자만 바꾼다.
+UGV_VIEW = {"sensor_profile_id": "ASSUMED_GROUND_LOS_V1", "source": "SIMULATED", "status": "TEST_ONLY",
+            "sensor_type": "THERMAL", "min_m": 600.0, "max_m": 2000.0,
+            "mast_m": float(os.getenv("ORCH_UGV_MAST_M", "3.0")),
+            "basis": "RADIUS_600M_ALWAYS_TO_2KM_TERRAIN_LINE_OF_SIGHT (카메라 높이 3 m 가정, 나무·건물 가림 미반영)"}
 GROUND_SENSOR_PROFILE_ID = os.getenv("ORCH_GROUND_SENSOR_PROFILE", "ASSUMED_GROUND_VIEW_V1")   # UGV 열화상
 
 # ---------------------------------------------------------------------------

@@ -369,7 +369,7 @@ def test_observation_updates_belief_and_triggers_new_plan(pw):
     obs = [e["detail"] for e in _events(lg, "OBSERVATION") if (e["detail"] or {}).get("sensor_type") == "THERMAL"]
     assert {o["resource_id"] for o in obs} == {"A-uav1", "A-uav2", "A-ugv1"}
     profiles = {o["resource_id"]: o["sensor_profile_id"] for o in obs}
-    assert profiles["A-uav1"] == "ASSUMED_EDGE_SWEEP_V1" and profiles["A-ugv1"] == "ASSUMED_GROUND_VIEW_V1"
+    assert profiles["A-uav1"] == "ASSUMED_EDGE_SWEEP_V1" and profiles["A-ugv1"] == "ASSUMED_GROUND_LOS_V1"
     states = orch.kb.fire_states(env.simulation_time_s)
     assert any(v["status"] == "CONFIRMED" for v in states.values())        # 관측으로 불 확인
     assert not _events(lg, "ENV_SENSE_PLANNED")                             # 따로 측정 출동을 만들지 않음
@@ -465,6 +465,8 @@ def test_known_edge_and_frontier_use_belief_only():
 
 def test_plan_input_carries_edge_fields(pw, monkeypatch):
     monkeypatch.setattr(config, "OBS_MAX_CANDIDATE_BLOCKS", 0)            # 상한과 무관한 시험 (전체 후보)
+    # 시험 지도가 2.7 km 라 UGV 시야(2 km)면 거의 다 보인다 → 이 시험만 좁힌다
+    monkeypatch.setattr(config, "UGV_VIEW", {**config.UGV_VIEW, "min_m": 200.0, "max_m": 300.0})
     orch, env = pw["orch"], pw["env"]
     _to_report_time(env)
     orch.obs_plan_cycle()
@@ -1282,7 +1284,7 @@ def test_ugv_target_out_of_road_view_is_not_resent_forever(pw):
         t = body["target"]
         return [{"status": "COMPLETED", "progress": {"phase": "ARRIVED"},
                  "observation": {"observation_type": "ROAD_STATUS", "arrived_node": "N1",
-                                 "position": {"lat": t["lat"] + 0.004, "lon": t["lon"]}},   # 목표에서 약 450 m
+                                 "position": {"lat": t["lat"] + 0.025, "lon": t["lon"]}},   # 목표에서 약 2.8 km
                  "_unit": {"state": "READY", "current_task_id": None}}]
     ugv.default_script = far_road
     _to_report_time(env)
@@ -1295,3 +1297,31 @@ def test_ugv_target_out_of_road_view_is_not_resent_forever(pw):
     orch.obs_plan_cycle()
     _poll(orch)
     assert len([a for a in lg.list_attempts(t.task_id)]) == 1           # 같은 지점으로 다시 보내지 않음
+
+
+def _ugv_view(ridge_col=None, ridge_m=0.0):
+    """UGV 를 0_15 칸에 두고 동쪽을 본다. ridge_col 열 전체를 ridge_m 높인다 (능선)"""
+    fire, rest = grid(burning={"5_15", "20_15"})
+    for c in fire + rest:
+        if ridge_col is not None and c["cell_id"].split("_")[0] == str(ridge_col):
+            c["ground_amsl_m"] = 600.0 + ridge_m
+    env = FixtureEnv(fire_cells=fire, risk_cells=rest)
+    me = next(c for c in fire + rest if c["cell_id"] == "0_15")
+    task = Task(task_id="T", incident_id="I", kind="OBSERVE",
+                target=Target(lat=me["lat"], lon=me["lon"], ground_amsl_m=600.0, cell_id="20_15"))
+    return observation.simulate_ground_los(snapshot=env.read(), map_cells=env.map_cells(), task=task, attempt_id="A",
+                                           resource_id="A-ugv1", position={"lat": me["lat"], "lon": me["lon"]})
+
+
+def test_ugv_sees_600m_always_and_up_to_2km_unless_terrain_blocks():
+    flat = _ugv_view()
+    seen = set(flat["covered_cells"])
+    assert flat["sensor_profile_id"] == "ASSUMED_GROUND_LOS_V1" and flat["sensor_status"] == "TEST_ONLY"
+    assert {"5_15", "20_15", "22_15"} <= seen and "23_15" not in seen      # 22칸 = 1980 m, 23칸 = 2070 m
+    assert {"5_15", "20_15"} == {p["cell_id"] for p in flat["fire_points"]} and flat["target_covered"]
+    ridge = _ugv_view(ridge_col=10, ridge_m=50.0)                            # 900 m 지점에 50 m 능선
+    seen = set(ridge["covered_cells"])
+    assert "5_15" in seen and "10_15" in seen                                # 600 m 안 + 능선 자체는 보임
+    assert "20_15" not in seen and not ridge["target_covered"]              # 능선 너머 불은 안 보임
+    assert [p["cell_id"] for p in ridge["fire_points"]] == ["5_15"]
+    assert ridge["footprint"]["hidden_cells"] > 0

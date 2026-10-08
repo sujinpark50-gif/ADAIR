@@ -2105,11 +2105,11 @@ class Orchestrator:
                 why[rid] = reason
                 continue
             sw = config.EDGE_SWEEP_PROFILE
-            gp = config.SENSOR_PROFILES[config.GROUND_SENSOR_PROFILE_ID]
             view = (f"테두리를 다 탄 쪽 {config.OBS_EDGE_OFFSET_M:g} m 안에서 불 머리 쪽으로 "
                     f"{sw['speed_ms'] * sw['duration_s']:g} m × 폭 {sw['swath_m']:g} m"
                     if v.resource_type == "UAV" else
-                    f"가까운 도로 지점에서 주변 {gp['footprint_width_m']:g} m 사각형 (도로로 이동)")
+                    f"가까운 도로에서 반지름 {config.UGV_VIEW['min_m']:g} m~{config.UGV_VIEW['max_m'] / 1000:g} km "
+                    f"(지형에 가리면 안 보임, 도로로 이동)")
             row = {"resource_id": rid, "resource_type": v.resource_type,
                    "lat": round(v.lat, 5), "lon": round(v.lon, 5), "observation": view,
                    "now": "ON_STOP" if on_stop is not None else "IDLE"}
@@ -2756,17 +2756,9 @@ class Orchestrator:
     def _planned_observation(self, snap, task, aid, rid, pos, data, ground) -> dict:
         """관측 계획 Task 의 모의 관측: 드론 = 테두리 추적 띠, UGV = 지상 열화상 (지도 전체 칸 기준)."""
         idx_cells = getattr(self.env, "map_cells", lambda: [])()
-        if ground:
-            prof = config.SENSOR_PROFILES[config.GROUND_SENSOR_PROFILE_ID]
-            if pos.get("lat") is None or pos.get("lon") is None:
-                cells = []
-            else:
-                reach = max(prof["footprint_width_m"], prof["footprint_height_m"])
-                cells = observation.with_truth_state(observation.cells_near(idx_cells, pos["lat"], pos["lon"], reach),
-                                                     snap)
-            return observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid, position=pos,
-                                        uav_raw_observation=data.get("observation"),
-                                        profile_id=config.GROUND_SENSOR_PROFILE_ID, cells=cells)
+        if ground:      # UGV: 반지름 600 m ~ 2 km, 지형 시선 (사용자 결정 2026-10-08)
+            return observation.simulate_ground_los(snapshot=snap, map_cells=idx_cells, task=task, attempt_id=aid,
+                                                   resource_id=rid, position=pos)
         return observation.simulate_edge_sweep(snapshot=snap, map_cells=idx_cells, task=task, attempt_id=aid,
                                                resource_id=rid, position=pos,
                                                report_point=self._report_point(self._map_index()),

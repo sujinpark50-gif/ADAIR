@@ -376,6 +376,77 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
             "advance_point": advance_point}
 
 
+def simulate_ground_los(*, snapshot, map_cells, task, attempt_id: str, resource_id: str, position: dict) -> dict:
+    """UGV 지상 열화상 (모의, TEST_ONLY — 사용자 결정 2026-10-08): 반지름 config.UGV_VIEW 의 min_m 안은 항상 보이고,
+    min_m ~ max_m 는 카메라(UGV 칸 지면 + mast_m)에서 그 칸 지면까지의 시선이 사이 지형에 막히지 않으면 보인다.
+    지형은 정적 지도 칸의 지면 높이(ground_amsl_m)만 쓴다. 정답(불 상태)은 보인 칸에만 쓴다."""
+    prof = config.UGV_VIEW
+    base = {
+        "observation_id": f"OBS-{uuid.uuid4().hex[:12]}", "run_id": snapshot.run_id,
+        "state_version_seen": snapshot.state_version, "simulation_time_s": snapshot.simulation_time_s,
+        "observed_wall": datetime.now(timezone.utc).isoformat(), "task_id": task.task_id,
+        "attempt_id": attempt_id, "resource_id": resource_id, "source": prof["source"],
+        "sensor_profile_id": prof["sensor_profile_id"], "sensor_status": prof["status"],
+        "sensor_type": "THERMAL", "position": position, "footprint_basis": prof["basis"],
+    }
+    lat0, lon0 = position.get("lat"), position.get("lon")
+    empty = {"footprint": None, "covered_cells": [], "partial_cells": [], "cell_coverage": [], "detections": [],
+             "fire_points": [], "target_covered": False}
+    if lat0 is None or lon0 is None:
+        return {**base, "result": "FAILED", "failure_reason": "POSITION_UNKNOWN", **empty}
+    near = [c for c in cells_near(map_cells, lat0, lon0, prof["max_m"])
+            if math.hypot(*_to_local_m(lat0, lon0, c["lat"], c["lon"])) <= prof["max_m"]]
+    near = with_truth_state(near, snapshot)
+    by_cr = {parse_cell_key(c["cell_id"]): c for c in near if parse_cell_key(c["cell_id"])}
+    here = min(near, key=lambda c: (math.hypot(*_to_local_m(lat0, lon0, c["lat"], c["lon"])), c["cell_id"]),
+               default=None)
+    if here is None or here.get("ground_amsl_m") is None or parse_cell_key(here["cell_id"]) is None:
+        return {**base, "result": "FAILED", "failure_reason": "GROUND_UNKNOWN_AT_POSITION", **empty}
+    c0, r0 = parse_cell_key(here["cell_id"])
+    eye = here["ground_amsl_m"] + prof["mast_m"]
+
+    def visible(c):
+        d = math.hypot(*_to_local_m(lat0, lon0, c["lat"], c["lon"]))
+        if d <= prof["min_m"]:
+            return True
+        tgt = c.get("ground_amsl_m")
+        p = parse_cell_key(c["cell_id"])
+        if tgt is None or p is None:
+            return False
+        steps = max(abs(p[0] - c0), abs(p[1] - r0)) * 2          # 칸 반 개 간격으로 사이 지형을 본다
+        for i in range(1, steps):
+            t = i / steps
+            m = by_cr.get((round(c0 + t * (p[0] - c0)), round(r0 + t * (p[1] - r0))))
+            if m is None or m.get("ground_amsl_m") is None or m is c:
+                continue
+            if m["ground_amsl_m"] > eye + t * (tgt - eye):        # 사이 지면이 시선보다 높다 → 가림
+                return False
+        return True
+    seen, hidden = [], 0
+    for c in sorted(near, key=lambda c: c["cell_id"]):
+        if visible(c):
+            seen.append(c)
+        else:
+            hidden += 1
+    covered = [c["cell_id"] for c in seen]
+    goal = task.nav_target
+    fp = {"shape": "RADIUS_TERRAIN_LOS", "min_m": prof["min_m"], "max_m": prof["max_m"], "mast_m": prof["mast_m"],
+          "eye_amsl_m": round(eye, 1), "visible_cells": len(seen), "hidden_cells": hidden,
+          "method": "GRID_LINE_OF_SIGHT_HALF_CELL_STEP"}
+    detections = [{"cell_id": c["cell_id"], "fire_state": c["fire_state"]} for c in seen
+                  if c["fire_state"] in ("BURNING", "BURNED")]
+    result = "DETECTED" if detections else ("NOT_DETECTED" if seen else "NO_COVERAGE")
+    return {**base, "result": result, "footprint": fp, "covered_cells": covered, "partial_cells": [],
+            "cell_coverage": [{"cell_id": c["cell_id"], "cell_size_m": c.get("cell_size_m"), "full": True,
+                               "fraction": 1.0, "rect": None} for c in seen],
+            "coverage_method": fp["method"], "detections": detections,
+            "fire_points": [{"lat": c["lat"], "lon": c["lon"], "cell_id": c["cell_id"]} for c in seen
+                            if c["fire_state"] == "BURNING"],
+            "target_covered": goal.cell_id in covered,
+            "target_point": {"lat": goal.lat, "lon": goal.lon, "cell_id": goal.cell_id},
+            "footprint_center": {"lat": lat0, "lon": lon0}}
+
+
 def simulate_weather(*, snapshot, task, attempt_id: str, resource_id: str, position: dict,
                      provider_raw: Optional[dict] = None) -> dict:
     """모의 기상 측정 (TEST_ONLY). 도착 위치가 속한 셀에 환경 기상값(cell['weather'])이 있으면 그 값,

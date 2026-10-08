@@ -512,7 +512,7 @@ LEGEND = (
     "up 아는 불보다 높은 m, road 도로 칸, fuel 연료, t 마지막 관측 s, ok 보낼 수 있는 자원(없으면 전부), near [가까운 자원, km]. "
     "ctx[] 참고용(고를 수 없음). res[] [ID, 종류, bat 배터리%, now(ON_STOP=지금 지점 본 뒤 시작)]. "
     "chg[] 충전 중 [ID, 남은 s]. busy[] [ID, 구역]. weather {항목: [값, 기준, 관측 s]} (wind_dir_deg 는 불어오는 방향). "
-    "UAV: 테두리를 다 탄 쪽 20 m 안에서 따라 날며 폭 52 m 를 본다. UGV: 가까운 도로에서 주변 450 m 를 본다."
+    "UAV: 테두리를 다 탄 쪽 20 m 안에서 따라 날며 폭 52 m 를 본다. UGV: 가까운 도로에서 반지름 600 m~2 km 를 본다 (산에 가리면 안 보임)."
 )
 _COUNT_KEYS = {"UNOBSERVED": "U", "CLEAR": "C", "PARTIAL": "P", "BURNING": "B", "BURNED": "X", "PRESUMED_BURNED": "PX",
                "REPORTED": "R"}
