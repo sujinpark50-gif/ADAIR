@@ -307,6 +307,36 @@ EDGE_SWEEP_PROFILE = {
     "sensor_type": "THERMAL", "speed_ms": 7.0, "duration_s": 60.0, "swath_m": 52.0,
     "basis": "ASSUMED_EDGE_FOLLOWING_SWEEP (드론 순찰 코드 대기, UAV-08)",
 }
+# 드론은 불 바로 위를 날지 않는다 (사용자 결정 2026-10-08): 불 테두리(불타는 칸과 안 탄 칸의 경계)에서
+# 다 탄 쪽으로 20 m 들어간 선을 따라 난다. 카메라 띠 폭 52 m 의 절반(26 m)이라 테두리와 그 바깥 6 m 가 보인다.
+# 불이 보이면 불 머리(바람이 불어 가는 쪽 맨 앞) 쪽으로 테두리를 따라간다.
+OBS_EDGE_OFFSET_M = 20.0
+
+# ---------------------------------------------------------------------------
+# 작업 지시서 (사용자 결정 2026-10-08) — LLM 호출을 줄이기 위해 회의(계획) 한 번에 자원마다 구역 순서 목록을 준다.
+#   - 회의는 환경 단계(35분)마다 한 번 (OBS_ONE_PLAN_PER_ENV_STEP). 지시서도 그 길이. 새 회의는 덜 끝난 지시서를 바꾼다.
+#   - 자원은 지시서대로 돌며 발견은 장부에만 적는다 (LLM 을 부르지 않는다).
+#   - 지시서를 일찍 끝내면(또는 드론 배터리 30% 미만): 지시서 동안 새로 찾은 불 칸이 있으면 불 머리를 계속 따라가고
+#     (배터리는 드론의 복귀 안전선 15% 까지 — 드론이 거절하면 멈춤), 없으면 드론은 기지로 복귀해 충전, UGV 는 대기.
+#   - 마지막으로 하늘에 남은 드론은 새 불이 없어도 배터리 30% 이상이면 복귀하지 않고 불 머리를 본다 (한꺼번에 충전 방지).
+#   - 인명피해 예상(환경 확산 예측이 주거지·사람 있는 보호대상에 닿음)이 새로 생기면 회의를 바로 연다 (장소마다 한 번).
+# ---------------------------------------------------------------------------
+OBS_ORDER_MAX_STOPS = 3
+OBS_ORDER_BATTERY_MIN_PCT = 30.0
+# 기지 충전 30분 — 시험용 가정 (TEST_ONLY, 사용자 결정 2026-10-08). 드론팀에 실제 방식(교체·도킹 충전) 확인 필요.
+# 드론 mock 은 착륙하면 배터리를 바로 100% 로 바꾸므로 총괄이 착륙 뒤 이 시간 동안 일을 주지 않는다.
+OBS_DRONE_CHARGE_S = float(os.getenv("ORCH_DRONE_CHARGE_S", "1800"))
+OBS_DRONE_CHARGE_BASIS = "TEST_ONLY_ASSUMED_DOCK_CHARGE_30MIN"
+OBS_MIN_AIRBORNE_UAVS = 1
+OBS_EMERGENCY_ON_HUMAN_RISK = True
+# 돌아가는 중에 새 임무 받기 (드론팀 UAV-06, 사용자 결정 2026-10-08: 이 브랜치에서 켬). 드론 서버도
+# UAV_RETASK_WHILE_RETURNING=1 로 띄워야 한다 (run_servers.py). 끄면 다음 지점은 착륙·반납 뒤에 보낸다.
+OBS_RETASK_WHILE_RETURNING = os.getenv("ORCH_RETASK_WHILE_RETURNING", "1") == "1"
+# 지시서를 배터리에 맞게 자르기 위한 드론 값 — 드론팀 uav/uav-agent/config.py 값을 옮겨 적음 (드론팀 '실측 보정 필요')
+UAV_ASSUMED_CRUISE_MS = 10.0
+UAV_ASSUMED_DRAIN_PCT_S = 0.033
+UAV_ASSUMED_RETURN_RESERVE_PCT = 15.0
+UAV_ASSUMED_OBSERVE_S = 60.0
 
 # ---------------------------------------------------------------------------
 # LLM (요청서 §9: 모델·timeout·호출/비용 한도는 설정값. 임의 기본값 금지)

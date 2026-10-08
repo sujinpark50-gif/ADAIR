@@ -87,8 +87,10 @@ def server_defs(opts: dict) -> dict:
         web_env["WEB_ENV_URL"] = "http://127.0.0.1:8300"
     speed = str(opts.get("twin_speed") or 100)
     # 트윈: 드론 mock 배속 = 트윈 시계 배속 (UAV_MOCK_TIME_SCALE, 2026-10-07)
+    # 돌아가는 중에 새 임무 받기 (드론팀 UAV-06, 총괄 작업 지시서 — 사용자 결정 2026-10-08, 드론팀 공유 필요)
     uav_extra = {**tw, "UAV_STATE_DIR": str(run / "uav"), "UAV_HOME": twin_uav_home(opts),
-                 "UAV_MOCK_TIME_SCALE": speed} if tw else {}
+                 "UAV_MOCK_TIME_SCALE": speed,
+                 "UAV_RETASK_WHILE_RETURNING": os.environ.get("UAV_RETASK_WHILE_RETURNING", "1")} if tw else {}
     orch_env = {**tw, "ORCH_ENV_MODE": "team_http", "ORCH_DB_PATH": str(run / "orchestrator.sqlite3")} if tw else {}
     uv = [PY, "-m", "uvicorn"]
     return {

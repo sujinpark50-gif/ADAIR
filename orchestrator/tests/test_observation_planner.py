@@ -177,14 +177,14 @@ def test_llm_choice_of_block_and_resource_is_executed(pw):
     def pick(inp):
         far = _far_blocks(inp)
         res = sorted(r["resource_id"] for r in inp["resources_available"])
-        return [{"resource_id": rid, "block_id": far[i]["block_id"], "purpose": "PREDICTED_SPREAD",
+        return [{"resource_id": rid, "block_ids": [far[i]["block_id"]], "purpose": "PREDICTED_SPREAD",
                  "evidence_refs": [far[i]["block_id"]], "rationale": "먼 미관측 구역 확인"} for i, rid in enumerate(res)]
     fake = FakeOpenAI(_llm_plan(pick))
     orch.llm = LlmPlanner(client=fake, timeout_s=30, max_calls=5)
     _to_report_time(env)
     out = orch.obs_plan_cycle()[0]
     assert out["source"] == "LLM"
-    want = {a["resource_id"]: a["block_id"] for a in _events(lg, "OBS_PLAN")[-1]["detail"]["plan"]["assignments"]}
+    want = {a["resource_id"]: a["block_ids"][0] for a in _events(lg, "OBS_PLAN")[-1]["detail"]["plan"]["assignments"]}
     assert {r["resource_id"]: r["block_id"] for r in out["assignments"]} == want
     for r in out["assignments"]:
         t = lg.get_task(r["task_id"])
@@ -203,10 +203,10 @@ def test_invalid_llm_output_is_repaired_once(pw):
         inp = _seen(kw)
         if len(calls) == 1:                               # 없는 구역 + 자원 중복
             return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "x",
-                    "assignments": [{"resource_id": "A-uav1", "block_id": "B99_99", "purpose": "RECHECK",
+                    "assignments": [{"resource_id": "A-uav1", "block_ids": ["B99_99"], "purpose": "RECHECK",
                                      "evidence_refs": [], "rationale": "x"}],
                     "request_reserve_uavs": False, "reserve_reason": ""}
-        return _llm_plan(lambda i: [{"resource_id": r["resource_id"], "block_id": _far_blocks(i)[n]["block_id"],
+        return _llm_plan(lambda i: [{"resource_id": r["resource_id"], "block_ids": [_far_blocks(i)[n]["block_id"]],
                                      "purpose": "BOUNDARY_CHECK", "evidence_refs": [], "rationale": "수정"}
                                     for n, r in enumerate(i["resources_available"])])(kw)
     orch.llm = LlmPlanner(client=FakeOpenAI(reply), timeout_s=30, max_calls=5)
@@ -238,7 +238,7 @@ def test_validator_rejects_invented_ids_and_busy_blocks(pw):
     bad = {**good, "assignments": [dict(good["assignments"][0], resource_id="Z-uav9")] + good["assignments"][1:]}
     assert any(v.startswith("RESOURCE_NOT_AVAILABLE") for v in validate(bad, inp))
     two = {**good, "assignments": [good["assignments"][0], dict(good["assignments"][1],
-                                                                block_id=good["assignments"][0]["block_id"])]}
+                                                                block_ids=good["assignments"][0]["block_ids"])]}
     assert any(v.startswith("BLOCK_DUPLICATE") for v in validate(two, inp))
     assert "INPUT_HASH_MISMATCH" in validate({**good, "input_hash": "x"}, inp)
 
@@ -502,7 +502,7 @@ def test_initial_nearest_uav_goes_first_then_llm_plans_with_its_observation(pw, 
 
     def pick(inp):
         seen.append(inp)
-        return [{"resource_id": r["resource_id"], "block_id": inp["blocks"][n]["block_id"], "purpose": "BOUNDARY_CHECK",
+        return [{"resource_id": r["resource_id"], "block_ids": [inp["blocks"][n]["block_id"]], "purpose": "BOUNDARY_CHECK",
                  "evidence_refs": [], "rationale": "첫 관측 뒤 배정"} for n, r in enumerate(inp["resources_available"])]
     fake = FakeOpenAI(_llm_plan(pick))
     orch.llm = LlmPlanner(client=fake, timeout_s=30, max_calls=5)
@@ -729,7 +729,7 @@ def test_llm_can_request_reserve_uavs(pw4):
     def reply(kw):
         inp = _seen(kw)
         return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "B 쪽으로 번질 위험",
-                "assignments": [{"resource_id": r["resource_id"], "block_id": inp["blocks"][n]["block_id"],
+                "assignments": [{"resource_id": r["resource_id"], "block_ids": [inp["blocks"][n]["block_id"]],
                                  "purpose": "BOUNDARY_CHECK", "evidence_refs": [], "rationale": "확인"}
                                 for n, r in enumerate(inp["resources_available"])],
                 "request_reserve_uavs": True, "reserve_reason": "불이 동쪽 오르막으로 번져 B 기지 쪽으로 다가옴"}
@@ -855,22 +855,36 @@ def test_all_keys_exhausted_disables_llm(monkeypatch):
 
 
 
-def test_initial_drone_orbits_report_point_for_120s():
-    """첫 드론: 테두리를 따라가지 않고 신고 지점 둘레를 원으로 120초 (반지름 ≈ 840/(1+2π) ≈ 116 m)"""
-    fire, rest = grid()
+def _orbit(burning):
+    fire, rest = grid(burning)
     env = FixtureEnv(fire_cells=fire, risk_cells=rest)
     c = cell(12, 12)
     task = Task(task_id="T", incident_id="I", kind="OBSERVE",
                 target=Target(lat=c["lat"], lon=c["lon"], ground_amsl_m=600.0, cell_id="12_12"))
-    o = observation.simulate_edge_sweep(snapshot=env.read(), map_cells=env.map_cells(), task=task, attempt_id="A",
-                                        resource_id="A-uav1", position={"lat": c["lat"], "lon": c["lon"]},
-                                        report_point={"lat": c["lat"], "lon": c["lon"]}, orbit_duration_s=120.0)
+    return observation.simulate_edge_sweep(snapshot=env.read(), map_cells=env.map_cells(), task=task, attempt_id="A",
+                                           resource_id="A-uav1", position={"lat": c["lat"], "lon": c["lon"]},
+                                           report_point={"lat": c["lat"], "lon": c["lon"]}, orbit_duration_s=120.0)
+
+
+def test_initial_drone_orbits_20m_inside_fire_line():
+    """첫 드론: 신고 지점 둘레 원 120초. 원은 불 테두리선에서 다 탄 쪽 20 m 안 (2026-10-08).
+    십자 모양 불(가운데 + 사방 한 칸): 가장 먼 테두리선 = 90 + 45 = 135 m → 반지름 115 m"""
+    plus = {"12_12", "11_12", "13_12", "12_11", "12_13"}
+    o = _orbit(plus)
     fp = o["footprint"]
-    assert fp["mode"] == "ORBIT_SURVEY" and fp["duration_s"] == 120.0 and 115 <= fp["orbit_radius_m"] <= 117
+    assert fp["mode"] == "ORBIT_FIRE_EDGE" and fp["duration_s"] == 120.0 and fp["edge_offset_m"] == 20.0
+    assert 114.5 <= fp["orbit_radius_m"] <= 115.5
     seen = set(o["covered_cells"] + o["partial_cells"])
-    assert {"12_12", "12_11", "11_12", "13_13", "11_13"} <= seen            # 중심과 둘레 사방 (반경 약 142 m 안)
-    assert "16_12" not in seen and "8_12" not in seen                         # 원 밖은 보지 않음
+    assert plus <= seen and "15_12" not in seen
     assert o["result"] == "DETECTED"
+    assert _orbit({"12_12"})["footprint"]["orbit_radius_m"] == 25.0      # 한 칸 불: 45 - 20 m
+
+
+def test_initial_drone_follows_edge_when_fire_too_big_to_orbit():
+    """불이 이미 커서 테두리 안쪽 원이 120초에 안 들어가면 원 대신 테두리를 따라간다"""
+    o = _orbit(BURNING)
+    assert o["footprint"]["mode"] == "EDGE_FOLLOW" and o["footprint"]["orbit_radius_m"] is None
+    assert 0 < o["footprint"]["length_m"] <= 840.0 and o["result"] == "DETECTED"
 
 
 def test_initial_drone_payload_requests_120s(pw, monkeypatch):
@@ -883,7 +897,7 @@ def test_initial_drone_payload_requests_120s(pw, monkeypatch):
     _poll(orch)
     o = [e["detail"] for e in lg.events() if e["event_type"] == "OBSERVATION"
          and (e["detail"] or {}).get("sensor_type") == "THERMAL"][0]
-    assert o["footprint"]["mode"] == "ORBIT_SURVEY"
+    assert o["footprint"]["mode"] == "EDGE_FOLLOW"          # 시험 불이 커서 원 대신 테두리 (2026-10-08)
 
 
 
@@ -919,7 +933,10 @@ def test_one_plan_per_env_step_then_gathered_next_step(pw):
     assert any("OBSERVATION" == e["event_type"] for e in lg.events())   # 관측 반영은 기다리지 않음
     env.advance(1)
     nxt = orch.obs_plan_cycle()
-    assert nxt and len(nxt[0]["assignments"]) == 3                       # 돌아온 자원 셋을 한 번에
+    # 기지에 내린 드론 둘은 30분 충전 중 (2026-10-08) → 다음 단계 회의는 UGV 만 배정하고 충전 중 드론을 알려 준다
+    assert nxt and [r["resource_id"] for r in nxt[0]["assignments"]] == ["A-ugv1"]
+    plan = _events(lg, "OBS_PLAN")[-1]["detail"]
+    assert plan["resources_unavailable"] == {"A-uav1": "CHARGING", "A-uav2": "CHARGING"}
 
 
 def test_frontier_includes_unobserved_next_to_passed_fire():
@@ -1003,3 +1020,183 @@ def test_three_discovery_metrics():
     assert m["burning_found"] == 1 and m["burning_found_pct"] == 33.3    # 불타는 3칸 중 지금 아는 1칸
     assert m["area_found"] == 3 and m["fire_area_found_pct"] == 50.0     # 불·탄 6칸 중 본 적 있는 3칸
     assert m["edge_recall_pct"] is not None and m["used_for_planning"] is False
+
+
+# ---------------------------------------------------------------------------
+# 작업 지시서·충전·불 머리·긴급 회의 (사용자 결정 2026-10-08)
+# ---------------------------------------------------------------------------
+
+def _returning_flight(margin=10.0):
+    """ENROUTE → OBSERVING → COMPLETED(RETURNING) 에서 멈춤 — 복귀 중에 다음 지점을 받는 드론"""
+    def script(rid, body):
+        t = body["target"]
+        pos = {"lat": t["lat"], "lon": t["lon"], "alt_m_amsl": t["alt_m_amsl"] + t["target_agl_m"] + margin}
+        return [{"status": "IN_PROGRESS", "progress": {"phase": "ENROUTE"}},
+                {"status": "IN_PROGRESS", "progress": {"phase": "OBSERVING"}},
+                {"status": "COMPLETED", "progress": {"phase": "RETURNING"},
+                 "observation": {"position": pos, "sensor_type": "THERMAL"}}]
+    return script
+
+
+def _hook_task(cell_id="12_12", plan_id="PLAN-T"):
+    c = cell(*map(int, cell_id.split("_")))
+    return Task(task_id="T-HOOK", incident_id="I", kind="OBSERVE", plan_id=plan_id,
+                target=Target(lat=c["lat"], lon=c["lon"], ground_amsl_m=600.0, cell_id=cell_id))
+
+
+def _with_known_fire(orch, env, lg):
+    _to_report_time(env)
+    orch.sync()                                          # 기상(바람 270° = 서풍) 을 아는 세계에
+    for cid in ("14_12", "15_12", "16_12", "17_12", "12_12"):
+        _known(lg, cid, "CONFIRMED", 120.0)
+
+
+def test_rule_plan_gives_each_resource_up_to_three_stops_and_validator_checks_count(pw):
+    orch, env = pw["orch"], pw["env"]
+    _to_report_time(env)
+    inp = orch.obs_plan_request()["inp"]
+    plan = rule_plan(inp)
+    assert validate(plan, inp) == []
+    assert all(1 <= len(a["block_ids"]) <= 3 for a in plan["assignments"])
+    assert len({b for a in plan["assignments"] for b in a["block_ids"]}) == sum(len(a["block_ids"])
+                                                                                for a in plan["assignments"])
+    four = {**plan, "assignments": [dict(plan["assignments"][0], block_ids=[b["block_id"] for b in inp["blocks"][:4]])]
+            + plan["assignments"][1:]}
+    assert any(v.startswith("BLOCK_IDS_INVALID") for v in validate(four, inp))
+
+
+def test_prompt_is_short_and_view_carries_battery_and_charging(pw):
+    from orchestrator.observation_planner import LEGEND, SYSTEM, llm_view
+    assert len(SYSTEM) < 800 and len(LEGEND) < 600                     # 장황한 설명은 뺀다 (2026-10-08)
+    orch, env = pw["orch"], pw["env"]
+    _to_report_time(env)
+    orch._charging["A-uav2"] = {"since_s": 0.0, "until_s": 2000.0}
+    v = llm_view(orch.obs_plan_request()["inp"])
+    assert ["A-uav1", "UAV", 95, "IDLE"] in v["res"]
+    assert v["chg"] == [["A-uav2", 1880]] and v["order_max_stops"] == 3
+    assert "note" not in json.dumps(v.get("progress") or {})
+
+
+def test_order_next_stop_is_sent_while_returning_without_landing(pw):
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    uav.default_script = _returning_flight()
+    _to_report_time(env)
+    row = next(r for r in orch.obs_plan_cycle()[0]["assignments"] if r["resource_id"] == "A-uav1")
+    assert len(row["block_ids"]) == 3 and row["trimmed_for_battery"] == []
+    _poll(orch)                                          # 첫 지점 관측 → 복귀 중
+    for rid in ("A-uav1", "A-uav2"):
+        uav.state[rid]["current_task_id"] = None         # 실제 드론: 복귀 중은 '실행 중' 이 아니다
+    orch.obs_plan_cycle()
+    assert "A-uav1" in {e["resource_id"] for e in _events(lg, "OBS_RETASK_WHILE_RETURNING")}
+    q = [e for e in _events(lg, "OBS_ORDER_STOP_QUEUED") if e["resource_id"] == "A-uav1"]
+    assert [e["detail"]["stop"] for e in q] == [1, 2]
+    second = lg.get_task(q[1]["task_id"])
+    assert MapIndex.block_id(second.target.cell_id) == row["block_ids"][1]
+    assert lg.reservations()["A-uav1"]["task_id"] == second.task_id    # 기지에 내리지 않고 바로 다음 지점
+    assert not _events(lg, "OBS_CHARGING_START")
+
+
+def test_battery_below_30_ends_order_early(pw, monkeypatch):
+    orch, env, lg, uav = pw["orch"], pw["env"], pw["ledger"], pw["uav"]
+    _with_known_fire(orch, env, lg)
+    orch._orders["A-uav1"] = {"plan_id": "P", "source": "LLM", "stops": [{"block_id": "B6_6", "cell_id": "19_19"}],
+                              "next": 0, "new_fire": 0, "kind": "ORDER", "resource_type": "UAV", "since_s": 0}
+    orch._orders["A-uav2"] = dict(orch._orders["A-uav1"], stops=[])          # 다른 드론도 일하는 중
+    uav.state["A-uav1"]["battery"] = 25.0
+    orch._order_after_observation(_hook_task(), "A-uav1", 0, 180.0, ground=False)
+    end = _events(lg, "OBS_ORDER_END")[-1]
+    assert end["result"] == "RETURN_TO_CHARGE" and end["detail"]["stops_total"] == 1 and end["detail"]["stops_done"] == 0
+    assert "A-uav1" in orch._to_charge
+
+
+def test_new_fire_in_order_follows_fire_head_downwind(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _with_known_fire(orch, env, lg)
+    orch._order_after_observation(_hook_task(), "A-uav1", 2, 180.0, ground=False)
+    end = _events(lg, "OBS_ORDER_END")[-1]
+    assert end["result"] == "FOLLOW_HEAD"
+    assert end["detail"]["head"] == {"cell_id": "17_12", "bearing_deg": 90, "basis": "DOWNWIND"}   # 서풍 → 동쪽 끝
+    t = lg.get_task(_events(lg, "OBS_ORDER_STOP_QUEUED")[-1]["task_id"])
+    assert t.kind == "HEAD_FOLLOW" and t.target.cell_id == "17_12" and t.assigned_resource_id == "A-uav1"
+
+
+def test_no_new_fire_returns_to_charge_unless_last_drone_in_air(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _with_known_fire(orch, env, lg)
+    orch._order_after_observation(_hook_task(), "A-uav1", 0, 180.0, ground=False)
+    assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "FOLLOW_HEAD_LAST_AIRBORNE"   # 하늘에 혼자 → 남음
+    orch._order_after_observation(_hook_task(), "A-uav2", 0, 180.0, ground=False)
+    assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "RETURN_TO_CHARGE"           # A-uav1 이 하늘에 있음
+    orch._order_after_observation(_hook_task(), "A-ugv1", 0, 180.0, ground=True)
+    assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "WAIT"                       # UGV 는 충전 없음 → 대기
+
+
+def test_landed_drone_charges_30min_then_gets_rule_order(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    orch.obs_plan_cycle()
+    _poll(orch)                                          # normal_flight: 관측 → 복귀 → 착륙(DONE)
+    start = [e for e in _events(lg, "OBS_CHARGING_START") if e["resource_id"] == "A-uav1"][0]
+    assert start["result"] == "LANDED_AT_BASE" and start["detail"]["charge_s"] == 1800.0
+    assert start["detail"]["basis"] == "TEST_ONLY_ASSUMED_DOCK_CHARGE_30MIN"
+    b = orch._obs_build()
+    assert b["unavailable"]["A-uav1"] == "CHARGING"
+    assert {r["resource_id"] for r in b["inp"]["resources_charging"]} == {"A-uav1", "A-uav2"}
+    t, _ = orch.submit_task({"request_id": "ANY", "incident_id": "I", "kind": "OBSERVE",
+                             "target": {"lat": LAT0, "lon": LON0, "ground_amsl_m": 600.0, "cell_id": "0_0"},
+                             "requirements": {"resource_types": ["UAV"], "sensor": "THERMAL"}})
+    assert orch.dispatch(t.task_id)["excluded"]["A-uav1"] == "CHARGING"     # 어떤 출동에도 쓰지 않음
+    env.advance(31)                                      # 31분 뒤
+    orch._obs_planned_sim = env.simulation_time_s        # 정기 회의는 이미 한 것으로 (규칙 지시서만 보기)
+    orch._obs_last_hash = None
+    outs = orch.obs_plan_cycle()
+    assert {e["resource_id"] for e in _events(lg, "OBS_CHARGING_DONE")} == {"A-uav1", "A-uav2"}
+    after = [o for o in outs if o["source"] == "RULE_AFTER_CHARGE"]
+    assert {r["resource_id"] for o in after for r in o["assignments"]} == {"A-uav1", "A-uav2"}
+    assert not orch.llm                                  # LLM 없이
+
+
+def test_order_trimmed_to_stops_the_battery_can_return_from(pw):
+    orch = pw["orch"]
+    idx = orch._map_index()
+    r = {"resource_id": "A-uav1", "resource_type": "UAV", "lat": LAT0 + 0.02, "lon": LON0}
+    cells = ["12_12", "20_20", "28_28"]
+    assert orch._trim_order({**r, "battery_pct": 95}, cells, idx) == 3
+    assert orch._trim_order({**r, "battery_pct": 16}, cells, idx) == 0
+    full = orch._trim_order({**r, "battery_pct": 95}, cells, idx)
+    mid = [orch._trim_order({**r, "battery_pct": p}, cells, idx) for p in range(16, 96, 5)]
+    assert mid == sorted(mid) and mid[0] < full                          # 배터리가 적을수록 짧게
+    assert orch._trim_order({**r, "resource_type": "UGV", "battery_pct": 5}, cells, idx) == 3
+
+
+def test_human_risk_opens_meeting_now_once_per_site(pw, monkeypatch):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    assert orch.obs_plan_cycle()                         # 정기 회의
+    assert orch.obs_plan_cycle() == []                   # 같은 단계 — 회의 없음
+    site = {"key": "SITE-1", "site_id": "SITE-1", "cells": ["17_12"], "basis": ["FORECAST_REACHES_OCCUPIED_SITE"],
+            "earliest_arrival_s": 900.0, "target_cell": "17_12"}
+    monkeypatch.setattr(orch, "preemptive_candidates", lambda snap: [site])
+    env.state_version += 1
+    out = orch.obs_plan_cycle()
+    assert out and _events(lg, "OBS_EMERGENCY_CALL")[0]["result"] == "SITE-1"
+    env.state_version += 1
+    assert orch.obs_plan_cycle() == []                   # 같은 장소로는 다시 부르지 않음
+    assert len(_events(lg, "OBS_EMERGENCY_CALL")) == 1
+
+
+def test_edge_sweep_goes_toward_fire_head_20m_inside_burned_side():
+    fire, rest = grid()
+    env = FixtureEnv(fire_cells=fire, risk_cells=rest)
+    c = next(x for x in fire if x["cell_id"] == "14_12")
+    task = Task(task_id="T", incident_id="I", kind="OBSERVE",
+                target=Target(lat=c["lat"], lon=c["lon"], ground_amsl_m=600.0, cell_id="14_12"))
+    o = observation.simulate_edge_sweep(snapshot=env.read(), map_cells=env.map_cells(), task=task, attempt_id="A",
+                                        resource_id="A-uav1", position={"lat": c["lat"], "lon": c["lon"]},
+                                        report_point=None, head_bearing_deg=90.0)
+    fp = o["footprint"]
+    assert fp["mode"] == "EDGE_FOLLOW" and fp["edge_offset_m"] == 20.0 and fp["head_bearing_deg"] == 90.0
+    assert [p["cell_id"] for p in o["fire_points"]][:3] == ["14_12", "15_12", "16_12"]   # 동쪽(불 머리)으로
+    # 14_12 의 안 탄 이웃(15_11·15_13)은 동쪽 → 테두리선(칸 가운데 + 45 m)에서 20 m 안쪽 = 가운데에서 동쪽 25 m
+    east_m = (fp["path"][1]["lon"] - c["lon"]) * 111_320.0 * math.cos(math.radians(c["lat"]))
+    assert abs(east_m - 25.0) < 1.0

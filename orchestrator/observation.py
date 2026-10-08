@@ -209,7 +209,7 @@ _SAMPLES = 8          # 칸 한 변을 8등분한 64 점으로 띠가 덮은 비
 def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_id: str, position: dict,
                         report_point: Optional[dict], fallback_point: Optional[dict] = None,
                         burned_trail: Optional[list] = None, advance_point: Optional[dict] = None,
-                        orbit_duration_s: Optional[float] = None) -> dict:
+                        orbit_duration_s: Optional[float] = None, head_bearing_deg: Optional[float] = None) -> dict:
     """드론 테두리 추적 관측 (모의, TEST_ONLY — 드론 순찰 기능 UAV-08 대기).
 
     도착 위치의 카메라 범위(띠 폭의 절반 반경) 안에 불 테두리 칸(불타는 칸 중 옆에 안 탄 칸이 있는 칸)이 있으면
@@ -220,6 +220,9 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
     가지 않는다 (사용자 결정 2026-10-07). 그것도 없으면 제자리. 모두 같은 길이(speed×duration)다.
     orbit_duration_s 를 주면(첫 드론) 테두리를 따라가지 않고 도착 지점을 중심으로 원을 돈다: speed×orbit_duration_s 를
     '중심 → 원 위(북쪽)로 나가기 + 한 바퀴'에 쓰므로 반지름 = 길이 / (1 + 2π). 불 전체 모양을 보기 위함 (2026-10-07).
+    head_bearing_deg(불 머리 쪽 = 바람이 불어 가는 방향)를 주면 테두리를 그 방향으로 따라간다 (사용자 결정 2026-10-08).
+    테두리를 따라갈 때는 칸 가운데가 아니라 테두리선(불타는 칸과 안 탄 칸의 경계)에서 다 탄 쪽으로
+    config.OBS_EDGE_OFFSET_M 들어간 선 위를 난다 — 불 바로 위를 날지 않는다 (사용자 결정 2026-10-08).
     결과 footprint.mode 가 NO_FIRE_REFERENCE_NEARBY 계열이면 총괄이 앞질러 보내기 출동을 만든다. 지나간 경로 양옆 swath/2 안이 관측 범위다.
     정답(불 상태)은 이 범위 안의 칸에만 쓴다. 결과의 fire_points 는 불이 보인 칸 중심 좌표뿐이다 (드론 보고 계약)."""
     prof = config.EDGE_SWEEP_PROFILE
@@ -261,9 +264,22 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
         return math.hypot(max(abs(x) - h, 0.0), max(abs(y) - h, 0.0))
     start = sorted((to_square(c), c) for c in edge if to_square(c) <= half)
     path = [(0.0, 0.0)]
+    # 첫 드론의 원 (2026-10-08): 불 위가 아니라 불 테두리선에서 다 탄 쪽으로 OBS_EDGE_OFFSET_M 들어간 원을 돈다.
+    # 반지름 = (도착점에서 가장 먼 불타는 칸의 바깥 변까지) - OBS_EDGE_OFFSET_M. 그 원이 120초 길이에 안 들어가면
+    # (불이 이미 크면) 원 대신 가장 가까운 테두리부터 다른 드론처럼 테두리를 따라간다.
+    orbit_r, r_fit = None, length / (1 + 2 * math.pi)
     if orbit_duration_s:
-        mode = "ORBIT_SURVEY"
-        r = length / (1 + 2 * math.pi)
+        burn = [cid for cid, c in by_id.items() if c["fire_state"] == "BURNING"]
+        ext = max((math.hypot(*xy[cid]) + (by_id[cid].get("cell_size_m") or 0) / 2 for cid in burn), default=None)
+        if ext is None:
+            orbit_r = r_fit
+        elif ext - config.OBS_EDGE_OFFSET_M <= r_fit:
+            orbit_r = max(ext - config.OBS_EDGE_OFFSET_M, 1.0)
+        else:
+            start = sorted((to_square(c), c) for c in edge)
+    if orbit_r is not None:
+        mode = "ORBIT_SURVEY" if orbit_r == r_fit else "ORBIT_FIRE_EDGE"
+        r = orbit_r
         path.extend([(0.0, r)] + [(r * math.sin(math.radians(a)), r * math.cos(math.radians(a)))
                                   for a in range(10, 361, 10)])
     elif start:
@@ -274,13 +290,29 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
             cand = [n for n in nbrs(cur) if n in edge and n not in seen]
             if not cand:
                 break
-            # 신고 지점에서 더 먼 쪽으로 (같으면 칸 ID 순 — 결정론)
-            far = (lambda n: math.hypot(xy[n][0] - rep[0], xy[n][1] - rep[1])) if rep else (lambda n: 0.0)
+            if head_bearing_deg is not None:     # 불 머리 쪽으로 (같으면 칸 ID 순 — 결정론)
+                hx, hy = math.sin(math.radians(head_bearing_deg)), math.cos(math.radians(head_bearing_deg))
+                far = lambda n: xy[n][0] * hx + xy[n][1] * hy          # noqa: E731
+            else:                                # 신고 지점에서 더 먼 쪽으로
+                far = (lambda n: math.hypot(xy[n][0] - rep[0], xy[n][1] - rep[1])) if rep else (lambda n: 0.0)
             nxt = sorted(cand, key=lambda n: (-far(n), n))[0]
             walked += math.hypot(xy[nxt][0] - xy[cur][0], xy[nxt][1] - xy[cur][1])
             path.append(xy[nxt])
             seen.add(nxt)
             cur = nxt
+        # 칸 가운데 → 테두리선에서 다 탄 쪽으로 OBS_EDGE_OFFSET_M 들어간 점 (바깥쪽 = 안 탄 이웃 칸들의 평균 방향)
+        for i in range(1, len(path)):
+            cid = next((c for c in seen if xy[c] == path[i]), None)
+            out_n = [n for n in nbrs(cid) if by_id[n]["fire_state"] == "UNBURNED"] if cid else []
+            if not out_n:
+                continue
+            ox = sum(xy[n][0] - xy[cid][0] for n in out_n)
+            oy = sum(xy[n][1] - xy[cid][1] for n in out_n)
+            d = math.hypot(ox, oy)
+            if d < 1e-6:
+                continue
+            shift = max(0.0, (by_id[cid].get("cell_size_m") or 0) / 2 - config.OBS_EDGE_OFFSET_M)
+            path[i] = (path[i][0] + ox / d * shift, path[i][1] + oy / d * shift)
     else:
         fb = None if not fallback_point else _to_local_m(lat0, lon0, fallback_point["lat"], fallback_point["lon"])
         trail = [_to_local_m(lat0, lon0, p["lat"], p["lon"]) for p in (burned_trail or [])]
@@ -327,11 +359,13 @@ def simulate_edge_sweep(*, snapshot, map_cells, task, attempt_id: str, resource_
         return {"lat": round(lat0 + p[1] / _M_PER_DEG_LAT, 7),
                 "lon": round(lon0 + p[0] / (_M_PER_DEG_LAT * math.cos(math.radians(lat0))), 7)}
     fp = {"shape": "SWATH_ALONG_PATH", "mode": mode, "path": [back(p) for p in path], "length_m": round(flown, 1),
-          "orbit_radius_m": round(length / (1 + 2 * math.pi), 1) if orbit_duration_s else None,
+          "orbit_radius_m": round(orbit_r, 1) if orbit_r is not None else None,
           "swath_m": prof["swath_m"], "speed_ms": prof["speed_ms"],
           "duration_s": orbit_duration_s or prof["duration_s"],
           "width_m": prof["swath_m"], "height_m": round(flown, 1), "agl_m": None,
-          "method": "CAPSULE_BUFFER_8x8_CELL_SAMPLING"}
+          "method": "CAPSULE_BUFFER_8x8_CELL_SAMPLING",
+          "edge_offset_m": config.OBS_EDGE_OFFSET_M if mode in ("EDGE_FOLLOW", "ORBIT_FIRE_EDGE") else None,
+          "head_bearing_deg": head_bearing_deg}
     result = "DETECTED" if detections else ("NOT_DETECTED" if coverage else "NO_COVERAGE")
     return {**base, "result": result, "footprint": fp, "covered_cells": covered, "partial_cells": partial,
             "cell_coverage": coverage, "coverage_method": fp["method"], "detections": detections,

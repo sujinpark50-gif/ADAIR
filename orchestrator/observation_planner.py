@@ -173,8 +173,11 @@ def fire_progress(idx: MapIndex, belief: Dict[str, dict], origin_cell: Optional[
 
 def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[dict], weather: dict,
                 available: List[dict], busy: List[dict], rejections: List[dict], sim_time_s: float,
-                run_id: str, burn_out: Optional[float] = None, reserve: Optional[dict] = None) -> dict:
+                run_id: str, burn_out: Optional[float] = None, reserve: Optional[dict] = None,
+                charging: Optional[List[dict]] = None) -> dict:
     """LLM·규칙 공통 계획 입력. available/busy 는 자원 요약, reports 는 [{report_id, cell_id, sim_time_s}].
+    available 에는 지금 지시서의 한 지점을 보러 가는 자원도 들어간다 (now=ON_STOP, block_id=가는 구역) — 새 회의는
+    덜 끝난 지시서를 바꾸기 때문이다 (사용자 결정 2026-10-08). charging = 충전 중 드론 [{resource_id, ready_in_s}].
     전체 격자·관측 원문은 넣지 않는다. 결과에 input_hash 를 넣는다 (시각 제외)."""
     belief = belief_layers(fire_states, sim_time_s, burn_out)
     edge, frontier = known_edge(idx, belief)
@@ -252,7 +255,7 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
                    "last_observed_sim_s": last_obs[0] if last_obs else None,
                    "oldest_observed_sim_s": min(times) if times else None,
                    "last_observation_id": last_obs[1] if last_obs else None,
-                   "in_progress_by": sorted(x["resource_id"] for x in busy if x.get("block_id") == bid),
+                   "in_progress_by": sorted(x["resource_id"] for x in busy + available if x.get("block_id") == bid),
                    "distance_km_from": {}}
             if centre:
                 for res in available:
@@ -329,7 +332,8 @@ def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[di
         "reports": reports, "weather": weather, "fire_summary": fire_summary,
         "fire_progress": progress,
         "reserve_uavs": reserve,
-        "resources_available": available, "resources_busy": busy,
+        "resources_available": available, "resources_busy": busy, "resources_charging": list(charging or []),
+        "order_max_stops": config.OBS_ORDER_MAX_STOPS,
         "blocks": chosen, "deferred_blocks": deferred,
         "context_blocks": [context[k] for k in sorted(context)],
         "allowed_purposes": list(PURPOSES),
@@ -353,29 +357,16 @@ def known_ids(inp: dict) -> set:
 # LLM 계약
 # ---------------------------------------------------------------------------
 SYSTEM = (
-    "너는 산불 관측을 지휘하는 총괄 오케스트레이터의 계획 보조다. 스타크래프트 정찰처럼, 드론(UAV)과 지상 로봇(UGV)의 "
-    "부분 관측을 모아 지금 불이 어디까지 타고 있는지 알아내는 것이 목표다. 불을 끄는 일은 하지 않는다.\n"
-    "입력은 총괄이 아는 사실뿐이다: 신고, 관측으로 확인한 불(BURNING)·탄 곳(BURNED)·불 없음(CLEAR)·일부만 봄(PARTIAL), "
-    "아직 아무도 보지 않은 칸(UNOBSERVED), 다 타고 꺼졌다고 추정한 칸(PRESUMED_BURNED: 불 확인 뒤 burn_out_after_s 가 "
-    "지나도록 다시 확인되지 않음 — 관측이 아니라 추정), 기상(wind_dir_deg 는 바람이 불어오는 방향, 북 기준 시계방향 — 불은 대체로 "
-    "그 반대쪽(풍하)과 오르막으로 번진다), 지형(mean_ground_m), 자원 위치와 상태.\n"
-    "후보 구역(blocks)은 알려진 불 주변을 3×3 칸으로 묶은 것이다. 할 일 두 가지:\n"
-    "1) predicted_blocks: 지금 불이 있을 것 같지만 아직 확인하지 않은 구역(예상 지역)을 고른다.\n"
-    "2) assignments: resources_available 의 자원마다 다음에 볼 구역 하나를 고른다. 드론·UGV 가 보는 범위는 "
-    "resources_available[].observation 에 있다. 자원마다 서로 다른 구역을 고르고, 그 구역의 allowed_resources 에 있는 자원만 보낸다. "
-    "blocks 는 지금 고를 수 있는 구역 전부다. context_blocks 는 불이 확인됐거나 다른 자원이 보러 가는 참고용 구역이며 "
-    "assignments 와 predicted_blocks 에 쓸 수 없다.\n"
-    "fire_progress 가 있으면 관측으로 확인한 불의 실제 이동 방향(moved_toward_deg)이다. 바람·지형 추론보다 이것을 "
-    "우선해서, 그 방향 앞쪽 테두리 바깥과 newest_burning_blocks 주변을 먼저 확인하라.\n"
-    "우선 원칙: 불은 테두리에서 번진다. known_edge_cells 는 지금 아는 불의 가장자리, unobserved_next_to_fire 는 "
-    "그 바로 바깥의 아직 안 본 칸 수다. 알려진 테두리 바깥의 미관측 칸을 우선 확인하라.\n"
-    "번질 방향은 바람만으로 정하지 말라. 불은 오르막(elev_above_known_fire_m 이 양수인 쪽)으로 빨리 번지고, "
-    "도로(road_cells)는 넘지 못하며, 연료(mean_fuel)가 없는 곳으로는 번지지 않는다. 바람이 약하면 지형이 더 크게 작용한다. "
-    "road_cells·mean_fuel 이 입력에 없으면 그 정보는 모르는 것이다 (없다고 보지 말라).\n"
-    "규칙: 입력에 없는 ID·좌표·수치를 만들지 않는다. evidence_refs 에는 근거로 쓴 입력 ID(구역·관측·신고·자원)만 넣는다. "
-    "reserve_uavs 는 다른 기지에서 대기 중인 예비 드론이다. active=false 인데 불이 그 기지 쪽으로 다가온다고 판단하면 "
-    "request_reserve_uavs=true 와 근거(reserve_reason)를 낸다. 아니면 false 와 빈 문자열.\n"
-    "rationale 은 관제 요원이 읽는 한국어 1~2문장이다. input_hash 는 입력 값을 그대로 돌려준다."
+    "너는 산불 관측 총괄의 계획 보조다. 목표: 드론(UAV)·지상 로봇(UGV)의 관측으로 지금 불이 어디까지 타는지 알아내기.\n"
+    "입력은 총괄이 아는 사실뿐이다 (미관측 U 는 불 없음이 아니다. PX 는 관측이 아닌 추정).\n"
+    "할 일 1) predicted_blocks: 불이 있을 것 같은데 아직 확인 안 한 구역.\n"
+    "할 일 2) assignments = 작업 지시서. 너는 약 35분에 한 번만 불린다. res 의 자원마다 볼 구역을 순서대로 "
+    "1~order_max_stops 개(block_ids). 한 구역은 한 번만, ok 에 있는 자원만. 배터리(bat)가 적은 드론에는 가까운 구역을 적게.\n"
+    "우선순위: emergency(인명피해 예상) 근처 → progress 방향 앞쪽 → 테두리 바로 바깥 미관측(front) → 풍하·오르막(up+).\n"
+    "불은 도로(road)를 못 넘고 연료(fuel) 없는 곳으로 안 번진다. 입력에 없는 값은 모르는 것이다.\n"
+    "입력에 없는 ID·수치를 만들지 않는다. evidence_refs 는 입력 ID 만. "
+    "reserve.active=false 이고 불이 그 기지 쪽으로 오면 request_reserve_uavs=true + reserve_reason, 아니면 false·빈 문자열.\n"
+    "rationale 은 한국어 1문장. input_hash 는 그대로 돌려준다."
 )
 
 OUTPUT_SCHEMA = {
@@ -386,13 +377,13 @@ OUTPUT_SCHEMA = {
         "input_hash": {"type": "string"},
         "predicted_blocks": {"type": "array", "items": {"type": "string"}},
         "prediction_rationale": {"type": "string"},
-        "request_reserve_uavs": {"type": "boolean",
-                                 "description": "reserve_uavs.active=false 이고 불이 그 기지 쪽으로 다가온다고 보면 true"},
-        "reserve_reason": {"type": "string", "description": "request_reserve_uavs=true 이면 근거, 아니면 빈 문자열"},
+        "request_reserve_uavs": {"type": "boolean"},
+        "reserve_reason": {"type": "string"},
         "assignments": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["resource_id", "block_id", "purpose", "evidence_refs", "rationale"],
-            "properties": {"resource_id": {"type": "string"}, "block_id": {"type": "string"},
+            "required": ["resource_id", "block_ids", "purpose", "evidence_refs", "rationale"],
+            "properties": {"resource_id": {"type": "string"},
+                           "block_ids": {"type": "array", "items": {"type": "string"}},
                            "purpose": {"type": "string", "enum": list(PURPOSES)},
                            "evidence_refs": {"type": "array", "items": {"type": "string"}},
                            "rationale": {"type": "string"}}}},
@@ -435,21 +426,27 @@ def validate(out, inp: dict) -> List[str]:
     if not isinstance(out["assignments"], list):
         return v + ["ASSIGNMENTS_TYPE"]
     used_r, used_b = set(), set()
+    max_stops = inp.get("order_max_stops") or config.OBS_ORDER_MAX_STOPS
     for n, a in enumerate(out["assignments"]):
         if not isinstance(a, dict) or set(a) != set(OUTPUT_SCHEMA["properties"]["assignments"]["items"]["required"]):
             v.append(f"SCHEMA_MISMATCH:assignments[{n}]")
             continue
-        rid, bid = a["resource_id"], a["block_id"]
+        rid, bids = a["resource_id"], a["block_ids"]
         if not isinstance(rid, str) or rid not in avail:
             v.append(f"RESOURCE_NOT_AVAILABLE:{rid}")
         elif rid in used_r:
             v.append(f"RESOURCE_DUPLICATE:{rid}")
-        if not isinstance(bid, str) or bid not in blocks:
-            v.append(f"BLOCK_NOT_SELECTABLE:{bid}")
-        elif bid in used_b:
-            v.append(f"BLOCK_DUPLICATE:{bid}")
-        elif isinstance(rid, str) and rid in avail and rid not in blocks[bid]["allowed_resources"]:
-            v.append(f"RESOURCE_NOT_ALLOWED_FOR_BLOCK:{rid}:{bid}")
+        if not _str_list(bids) or not 1 <= len(bids) <= max_stops:
+            v.append(f"BLOCK_IDS_INVALID:{n}:1~{max_stops}")
+            bids = [b for b in bids if isinstance(b, str)] if isinstance(bids, list) else []
+        for bid in bids:
+            if bid not in blocks:
+                v.append(f"BLOCK_NOT_SELECTABLE:{bid}")
+            elif bid in used_b:
+                v.append(f"BLOCK_DUPLICATE:{bid}")
+            elif isinstance(rid, str) and rid in avail and rid not in blocks[bid]["allowed_resources"]:
+                v.append(f"RESOURCE_NOT_ALLOWED_FOR_BLOCK:{rid}:{bid}")
+            used_b.add(bid)
         if a["purpose"] not in PURPOSES:
             v.append(f"PURPOSE_INVALID:{n}")
         if not _str_list(a["evidence_refs"]):
@@ -462,9 +459,7 @@ def validate(out, inp: dict) -> List[str]:
             v.append(f"RATIONALE_INVALID:{n}")
         if isinstance(rid, str):
             used_r.add(rid)
-        if isinstance(bid, str):
-            used_b.add(bid)
-    # 고를 수 있는 구역이 남아 있는데 놀리는 자원이 있으면 위반 (자원마다 다음 관측 하나 — 계획서 §5)
+    # 고를 수 있는 구역이 남아 있는데 놀리는 자원이 있으면 위반 (자원마다 지시서 하나 — 계획서 §5)
     missing = sorted(r for r in avail - used_r
                      if any(r in b["allowed_resources"] and k not in used_b for k, b in blocks.items()))
     if missing:
@@ -476,23 +471,32 @@ def validate(out, inp: dict) -> List[str]:
 # 규칙 대체 (LLM 실패·검증 실패·한도 소진). 정답을 보지 않고 입력만 쓴다.
 #   테두리 바로 바깥 미관측이 많은 순 → 미관측이 있는 구역 → 미관측이 많은 순 → 알려진 불에 가까운 순 → 자원에서 가까운 순 → 구역 ID
 # ---------------------------------------------------------------------------
-def rule_plan(inp: dict) -> dict:
-    taken, out = set(), []
-    for res in sorted(inp["resources_available"], key=lambda r: r["resource_id"]):
-        rid = res["resource_id"]
-        cands = [b for b in inp["blocks"] if b["block_id"] not in taken and rid in b["allowed_resources"]]
-        if not cands:
-            continue
-        b = min(cands, key=lambda b: (-b["unobserved_next_to_fire"],
-                                      b["counts"]["UNOBSERVED"] == 0, -b["counts"]["UNOBSERVED"],
-                                      b["dist_to_known_fire_m"], b["distance_km_from"].get(rid, math.inf),
-                                      b["block_id"]))
-        taken.add(b["block_id"])
+def rule_plan(inp: dict, only: Optional[List[str]] = None) -> dict:
+    """자원마다 구역을 최대 order_max_stops 개 (돌아가며 한 개씩 골라 앞 순위 구역이 한 자원에 몰리지 않게).
+    only 를 주면 그 자원만 계획한다 (충전을 마친 드론 — 사용자 결정 2026-10-08)."""
+    taken, picks = set(), {}
+    res = sorted((r for r in inp["resources_available"] if only is None or r["resource_id"] in only),
+                 key=lambda r: r["resource_id"])
+    for _ in range(inp.get("order_max_stops") or config.OBS_ORDER_MAX_STOPS):
+        for r in res:
+            rid = r["resource_id"]
+            cands = [b for b in inp["blocks"] if b["block_id"] not in taken and rid in b["allowed_resources"]]
+            if not cands:
+                continue
+            b = min(cands, key=lambda b: (-b["unobserved_next_to_fire"],
+                                          b["counts"]["UNOBSERVED"] == 0, -b["counts"]["UNOBSERVED"],
+                                          b["dist_to_known_fire_m"], b["distance_km_from"].get(rid, math.inf),
+                                          b["block_id"]))
+            taken.add(b["block_id"])
+            picks.setdefault(rid, []).append(b)
+    out = []
+    for rid, bs in picks.items():
+        b = bs[0]
         purpose = ("INITIAL_REPORT" if b["counts"]["REPORTED"] else
                    "BOUNDARY_CHECK" if b["touches_known_fire_block"] else
                    "PREDICTED_SPREAD" if b["counts"]["UNOBSERVED"] else "RECHECK")
-        out.append({"resource_id": rid, "block_id": b["block_id"], "purpose": purpose,
-                    "evidence_refs": [b["block_id"]],
+        out.append({"resource_id": rid, "block_ids": [x["block_id"] for x in bs], "purpose": purpose,
+                    "evidence_refs": [x["block_id"] for x in bs],
                     "rationale": "규칙 대체: 알려진 테두리 바로 바깥 미관측이 많은 구역"})
     return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "규칙 대체 (예측 없음)",
             "assignments": out, "request_reserve_uavs": False, "reserve_reason": ""}
@@ -503,12 +507,12 @@ def rule_plan(inp: dict) -> dict:
 # 항목 이름을 줄이고 0·빈 값은 뺀다. 뜻은 LEGEND 로 지시문에 준다.
 # ---------------------------------------------------------------------------
 LEGEND = (
-    "입력 약어: blocks[] 고를 수 있는 구역 — id 구역ID, n 칸 수(U 미관측·C 불없음·P 일부만봄·B 불타는중·X 탄곳(관측)·"
-    "PX 꺼짐추정·R 신고, 0 은 생략), edge 알려진 테두리 칸 수, front 테두리 바로 바깥 미관측 칸 수, d 알려진 불까지 m, "
-    "brg 불 중심에서 본 방향°, ahead 진행 방향 앞쪽 여부, up 알려진 불보다 높은 m(+ 오르막), road 도로 칸 수, fuel 평균 연료, "
-    "t 마지막 관측 시각(s), obs 마지막 관측 ID, ok 보낼 수 있는 자원(없으면 가용 자원 모두), near [가장 가까운 자원, km]. "
-    "ctx[] 참고용 구역(고를 수 없음, busy 보러 가는 자원). res[] 가용 자원 [ID, 종류]. busy[] [ID, 구역]. "
-    "UAV 관측: 도착하면 불 테두리를 따라 비행하며 폭 52 m 를 본다. UGV 관측: 가까운 도로에 서서 주변 450 m 사각형을 본다."
+    "약어: blocks[] 고를 수 있는 구역 — id, n 칸 수(U 미관측·C 불없음·P 일부·B 불타는중·X 탄곳·PX 꺼짐추정·R 신고), "
+    "edge 테두리 칸, front 테두리 바로 바깥 미관측 칸, d 아는 불까지 m, brg 불 중심에서 방향°, ahead 진행 방향 앞쪽, "
+    "up 아는 불보다 높은 m, road 도로 칸, fuel 연료, t 마지막 관측 s, ok 보낼 수 있는 자원(없으면 전부), near [가까운 자원, km]. "
+    "ctx[] 참고용(고를 수 없음). res[] [ID, 종류, bat 배터리%, now(ON_STOP=지금 지점 본 뒤 시작)]. "
+    "chg[] 충전 중 [ID, 남은 s]. busy[] [ID, 구역]. weather {항목: [값, 기준, 관측 s]} (wind_dir_deg 는 불어오는 방향). "
+    "UAV: 테두리를 다 탄 쪽 20 m 안에서 따라 날며 폭 52 m 를 본다. UGV: 가까운 도로에서 주변 450 m 를 본다."
 )
 _COUNT_KEYS = {"UNOBSERVED": "U", "CLEAR": "C", "PARTIAL": "P", "BURNING": "B", "BURNED": "X", "PRESUMED_BURNED": "PX",
                "REPORTED": "R"}
@@ -538,14 +542,22 @@ def llm_view(inp: dict) -> dict:
                 out["near"] = [rid, km[rid]]
         return {k: v for k, v in out.items() if v not in (None, 0, [], {}, False) or k in ("id", "ahead") and v is not None}
     w = inp.get("weather") or {}
-    weather = {i: [r.get("value"), r.get("unit"), r.get("basis"), r.get("observed_sim_s")]
-               for i, r in (w.get("items") or {}).items()}
-    return {"input_hash": inp["input_hash"], "t": inp["simulation_time_s"], "end": inp["demo_end_sim_s"],
-            "block_m": inp.get("block_size_m"), "reports": [[r["report_id"], r["cell_id"], r["sim_time_s"]]
-                                                            for r in inp["reports"]],
-            "weather": weather, "fire": {k: v for k, v in inp["fire_summary"].items() if v and k != "unobserved_note"},
-            "progress": inp.get("fire_progress"), "reserve": inp.get("reserve_uavs"),
-            "res": [[r["resource_id"], r["resource_type"]] for r in inp["resources_available"]],
-            "busy": [[r["resource_id"], r.get("block_id")] for r in inp["resources_busy"]],
-            "blocks": [row(b) for b in inp["blocks"]], "ctx": [row(b, True) for b in inp["context_blocks"]],
-            "deferred_blocks": inp.get("deferred_blocks"), "purposes": inp["allowed_purposes"]}
+    weather = {i: [r.get("value"), r.get("basis"), r.get("observed_sim_s")] for i, r in (w.get("items") or {}).items()}
+    prog = {k: v for k, v in (inp.get("fire_progress") or {}).items() if k != "note"} or None
+    rsv = inp.get("reserve_uavs")
+    rsv = rsv and {k: rsv.get(k) for k in ("ids", "active", "bearing_fire_to_base_deg", "distance_km")}
+    out = {"input_hash": inp["input_hash"], "t": inp["simulation_time_s"], "end": inp["demo_end_sim_s"],
+           "order_max_stops": inp.get("order_max_stops"),
+           "reports": [[r["report_id"], r["cell_id"], r["sim_time_s"]] for r in inp["reports"]],
+           "weather": weather, "fire": {k: v for k, v in inp["fire_summary"].items()
+                                        if v and k not in ("unobserved_note", "burn_out_after_s")},
+           "progress": prog, "reserve": rsv,
+           "res": [[r["resource_id"], r["resource_type"], r.get("battery_pct"), r.get("now")]
+                   for r in inp["resources_available"]],
+           "chg": [[r["resource_id"], r.get("ready_in_s")] for r in inp.get("resources_charging") or []],
+           "busy": [[r["resource_id"], r.get("block_id")] for r in inp["resources_busy"]],
+           "blocks": [row(b) for b in inp["blocks"]], "ctx": [row(b, True) for b in inp["context_blocks"]],
+           "purposes": inp["allowed_purposes"]}
+    if inp.get("emergency"):
+        out["emergency"] = inp["emergency"]
+    return {k: v for k, v in out.items() if v not in (None, [], {})}

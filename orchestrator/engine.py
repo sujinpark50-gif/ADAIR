@@ -86,6 +86,12 @@ class Orchestrator:
         self._obs_rejections = (None, [])     # (지식 판, [{resource_id, block_id, reason}]) — 새 관측이 오면 비움
         self._map_idx = (None, None)          # (map_version, MapIndex)
         self._obs_end_logged = False
+        # 작업 지시서 (사용자 결정 2026-10-08). 프로세스 메모리 — 재시작하면 다음 회의에서 새로 받는다 (사건은 장부에 남음)
+        self._orders: Dict[str, dict] = {}    # 자원 → {plan_id, source, stops[{block_id, cell_id}], next, new_fire, kind}
+        self._charging: Dict[str, dict] = {}  # 드론 → {since_s, until_s} (착륙 뒤 OBS_DRONE_CHARGE_S, 시험용 가정)
+        self._to_charge = set()               # 충전하러 기지로 가는 드론 (계획에서 뺀다)
+        self._charged_ready = set()           # 충전을 마쳐 규칙 지시서를 받을 드론
+        self._emerg_cache = (None, [])        # (환경 상태 판, 인명피해 예상 장소 목록)
 
     # ------------------------------------------------------------------
     # 목적 상태 전이 (공통 경계)
@@ -438,6 +444,13 @@ class Orchestrator:
             return {"gate": gate, "created": []}
         created = self._sync_knowledge(truth)
         new_input, self._obs_new_input = self._obs_new_input, False
+        if config.OBS_PLANNER_ENABLED:
+            now = truth.simulation_time_s or 0.0
+            # 충전이 끝났거나 새 환경 단계(정기 회의)가 되면 배정 작업자를 깨운다 (시간만 흘러도 할 일이 생김)
+            step = self._env_step_key(now)
+            if any(now >= c["until_s"] for c in self._charging.values()) or step != getattr(self, "_obs_seen_step", step):
+                new_input = True
+            self._obs_seen_step = step
         return {"gate": None, "created": created, "observation_plan_wanted": new_input}
 
     def view(self):
@@ -591,6 +604,12 @@ class Orchestrator:
         ranked, excluded = filter_candidates(
             task, snap, views, unreachable, self.ledger.reservations(),
             age_of=lambda v: client_of[v.resource_id].source_age_s(v))
+        if self._charging:
+            # 기지 충전 중인 드론 (총괄 쪽 시험용 가정, 사용자 결정 2026-10-08) — 어떤 출동에도 쓰지 않는다
+            for _, v in ranked:
+                if self._charging_left(v.resource_id, sim) is not None:
+                    excluded[v.resource_id] = "CHARGING"
+            ranked = [(d, v) for d, v in ranked if excluded.get(v.resource_id) != "CHARGING"]
         if task.assigned_resource_id:
             # 관측 계획이 고른 자원만 평가한다. 다른 자원으로 조용히 바꾸지 않는다 (계획서 §6)
             for _, v in ranked:
@@ -1338,6 +1357,9 @@ class Orchestrator:
         sim = obs.get("simulation_time_s")
         after = {"received_after_purpose": after_label, "task_id": task.task_id} if closed else None
         visit = dataclasses.replace(task)      # 이번 방문 기준 (구역 임무는 판정 뒤 다음 방문 지점으로 바뀐다)
+        # 작업 지시서: 이번 관측 전에 이미 '불타는 중'으로 알던 칸 (새로 찾은 불 칸을 세기 위함)
+        known_fire = ({c for c, f in self.kb.fire_states(sim or 0.0).items() if f.get("status") == "CONFIRMED"}
+                      if task.plan_id and not closed and not replay else None)
         need_ack = task.requirements.needs_env_ack and not closed and obs["result"] != "FAILED"
         main_row = aux_row = None
         out = None
@@ -1390,8 +1412,12 @@ class Orchestrator:
         if ((obs.get("footprint") or {}).get("mode") in ("STRAIGHT_TO_PREDICTED_FRONT", "HOLD_AT_ARRIVAL")
                 and not closed and task.plan_id):
             self._request_advance_scouts(snap.simulation_time_s)
+        if known_fire is not None and config.OBS_PLANNER_ENABLED:
+            new = {d["cell_id"] for d in obs.get("detections", []) if d.get("fire_state") == "BURNING"} - known_fire
+            self._order_after_observation(task, rid, len(new), snap.simulation_time_s, ground)
         states = {d.get("fire_state") for d in obs.get("detections", [])}
-        if ground and task.plan_id and not closed and "BURNED" in states and "BURNING" not in states:
+        if (ground and task.plan_id and not closed and "BURNED" in states and "BURNING" not in states
+                and rid not in self._orders):    # 지시서가 남았으면 지시서대로 (2026-10-08)
             self._request_ugv_follow(task, obs, rid, snap.simulation_time_s)
         if closed:
             return {"attempt_id": aid, "substatus": "OBSERVED", "task": task.purpose_status}
@@ -1848,8 +1874,11 @@ class Orchestrator:
             v = None
         if v is not None and v.ready and v.current_task_id is None:
             # 기체 반납은 환경 반영 대기와 별개다. 대기 중인 관측은 장부(pending_applies)에 남아 계속 재반영된다
-            return move("RELEASED", "RESOURCE_READY_CONFIRMED", release=True,
-                        extra={"released_evidence": {"ready": True, "phase": phase}})
+            out = move("RELEASED", "RESOURCE_READY_CONFIRMED", release=True,
+                       extra={"released_evidence": {"ready": True, "phase": phase}})
+            if att["command"]["resource_type"] == "UAV" and config.OBS_PLANNER_ENABLED:
+                self._start_charging(att["resource_id"], "LANDED_AT_BASE", task_id=att["task_id"])
+            return out
         if att["substatus"] in ("RETURNING", "FAULTED"):
             return None                     # 아직 READY 아님 → 점유 유지
         return move("RETURNING", "LANDED_READY_UNCONFIRMED")
@@ -2021,41 +2050,61 @@ class Orchestrator:
             info["activated_by"] = act.get("basis")
         return info
 
-    def _obs_resources(self, idx) -> Tuple[List[dict], List[dict], Dict[str, str]]:
-        """(가용, 사용 중, 가용 아님 사유). 가용 = 열화상 가능·READY·예약 없음·상태 신선·위치 있음"""
+    def _obs_resources(self, idx, now=None) -> Tuple[List[dict], List[dict], Dict[str, str], List[dict]]:
+        """(가용, 사용 중, 가용 아님 사유, 충전 중). 가용 = 열화상 가능·READY·상태 신선·위치 있음이고
+        예약이 없거나, 지시서의 한 지점을 보러 가는 중(now=ON_STOP — 새 회의가 덜 끝난 지시서를 바꾼다, 2026-10-08)."""
         from .prefilter import valid_latlon
+        self._update_charging(now)
         views, unreachable, client_of = self._collect(("UAV", "UGV"))
         res = self.ledger.reservations()
-        avail, busy, why = [], [], {rid: "STATE_UNREACHABLE" for rid in unreachable}
+        avail, busy, why, charging = [], [], {rid: "STATE_UNREACHABLE" for rid in unreachable}, []
         for v in sorted(views, key=lambda v: v.resource_id):
             rid = v.resource_id
             if rid in config.OBS_RESERVE_UAVS and self._reserve_active() is None:
                 why[rid] = "RESERVE_STANDBY"              # 예비 드론 — 불이 그 기지 쪽으로 오면 투입
                 continue
+            left = self._charging_left(rid, now)
+            if left is not None:
+                why[rid] = "CHARGING"
+                charging.append({"resource_id": rid, "ready_in_s": round(left)})
+                continue
+            on_stop = None
             if rid in res:
                 t = self.ledger.get_task(res[rid]["task_id"])
-                busy.append({"resource_id": rid, "resource_type": v.resource_type,
-                             "block_id": obs_plan.MapIndex.block_id(t.target.cell_id) if t and t.plan_id else None,
-                             "task_kind": t.kind if t else None})
-                continue
+                if rid in self._to_charge:
+                    why[rid] = "RETURNING_TO_CHARGE"
+                    continue
+                if not (t and t.plan_id and config.OBS_PLANNER_ENABLED):
+                    busy.append({"resource_id": rid, "resource_type": v.resource_type,
+                                 "block_id": obs_plan.MapIndex.block_id(t.target.cell_id) if t and t.plan_id else None,
+                                 "task_kind": t.kind if t else None})
+                    continue
+                on_stop = obs_plan.MapIndex.block_id(t.target.cell_id)
             age = client_of[rid].source_age_s(v)
+            ready = v.ready or on_stop is not None          # 지점을 보러 가는 중이면 READY 가 아니어도 계획에 넣는다
             reason = ("NO_THERMAL" if "THERMAL" not in v.sensors else
                       "STATE_TIME_UNKNOWN" if age is None else
                       "STATE_STALE" if age >= config.RESOURCE_STALE_S else
-                      "FAILSAFE_ACTIVE" if v.failsafe else "NOT_READY" if not v.ready else
+                      "FAILSAFE_ACTIVE" if v.failsafe else "NOT_READY" if not ready else
                       "POSITION_UNKNOWN" if not valid_latlon(v.lat, v.lon) else None)
             if reason:
                 why[rid] = reason
                 continue
             sw = config.EDGE_SWEEP_PROFILE
             gp = config.SENSOR_PROFILES[config.GROUND_SENSOR_PROFILE_ID]
-            view = (f"도착하면 불 테두리를 따라 {sw['speed_ms'] * sw['duration_s']:g} m × 폭 {sw['swath_m']:g} m "
-                    f"({sw['duration_s']:g}초). 테두리가 없으면 아는 불 → 꺼진 자리 → 진행 방향 앞 순서로 그쪽을 본다"
+            view = (f"테두리를 다 탄 쪽 {config.OBS_EDGE_OFFSET_M:g} m 안에서 불 머리 쪽으로 "
+                    f"{sw['speed_ms'] * sw['duration_s']:g} m × 폭 {sw['swath_m']:g} m"
                     if v.resource_type == "UAV" else
-                    f"가까운 도로 지점에 서서 주변 {gp['footprint_width_m']:g} m 사각형 (도로로 이동, 시속 50~60 km)")
-            avail.append({"resource_id": rid, "resource_type": v.resource_type,
-                          "lat": round(v.lat, 5), "lon": round(v.lon, 5), "observation": view})
-        return avail, busy, why
+                    f"가까운 도로 지점에서 주변 {gp['footprint_width_m']:g} m 사각형 (도로로 이동)")
+            row = {"resource_id": rid, "resource_type": v.resource_type,
+                   "lat": round(v.lat, 5), "lon": round(v.lon, 5), "observation": view,
+                   "now": "ON_STOP" if on_stop is not None else "IDLE"}
+            if on_stop is not None:
+                row["block_id"] = on_stop
+            if v.resource_type == "UAV" and v.battery_pct is not None:
+                row["battery_pct"] = int(round(v.battery_pct))
+            avail.append(row)
+        return avail, busy, why, charging
 
     def _obs_weather(self, idx, fire_states, now) -> dict:
         cells = [idx.by_id[c] for c, f in fire_states.items()
@@ -2093,11 +2142,11 @@ class Orchestrator:
             self._obs_rejections = (version, [])
         layers = obs_plan.belief_layers(fire_states, now, self._burn_out_s())
         reserve = self._reserve_info(idx, layers, now)      # 투입 판단을 먼저 (투입되면 이번 입력부터 가용)
-        avail, busy, why = self._obs_resources(idx)
+        avail, busy, why, charging = self._obs_resources(idx, now)
         inp = obs_plan.build_input(idx=idx, fire_states=fire_states, reports=self._report_rows(),
                                    weather=self._obs_weather(idx, fire_states, now), available=avail, busy=busy,
                                    rejections=list(self._obs_rejections[1]), sim_time_s=now, run_id=snap.run_id,
-                                   burn_out=self._burn_out_s(), reserve=reserve)
+                                   burn_out=self._burn_out_s(), reserve=reserve, charging=charging)
         return {"inp": inp, "idx": idx, "unavailable": why, "sim": now}
 
     def obs_plan_request(self) -> Optional[dict]:
@@ -2122,14 +2171,37 @@ class Orchestrator:
             return self._obs_idle("NO_AVAILABLE_RESOURCE", b)
         if not b["inp"]["blocks"]:
             return self._obs_idle("NO_SELECTABLE_BLOCK", b)          # 고를 수 있는 구역이 없음 (후보 소진)
-        if (config.OBS_ONE_PLAN_PER_ENV_STEP and self._env_step_key(b["sim"]) == self._env_step_key(
-                getattr(self, "_obs_planned_sim", None))
-                and not getattr(self, "_obs_same_step_ok", False)):
-            return self._obs_idle("ALREADY_PLANNED_THIS_ENV_STEP", b)    # 다음 환경 단계에 모아서
-        if b["inp"]["input_hash"] == self._obs_last_hash:
-            return self._obs_idle("INPUT_UNCHANGED_SINCE_LAST_PLAN", b)
+        same_step = (config.OBS_ONE_PLAN_PER_ENV_STEP and self._env_step_key(b["sim"]) == self._env_step_key(
+            getattr(self, "_obs_planned_sim", None)) and not getattr(self, "_obs_same_step_ok", False))
+        unchanged = b["inp"]["input_hash"] == self._obs_last_hash
+        if same_step or unchanged:
+            # 정기 회의 사이: 인명피해 예상 장소가 새로 생겼을 때만 바로 회의 (장소마다 한 번, 사용자 결정 2026-10-08)
+            emerg = self._new_emergencies(b["sim"])
+            if not emerg:
+                return self._obs_idle("ALREADY_PLANNED_THIS_ENV_STEP" if same_step else "INPUT_UNCHANGED_SINCE_LAST_PLAN", b)
+            b["inp"]["emergency"] = [{"site": e["site_id"] or e["key"], "basis": e["basis"],
+                                      "target_cells": e["cells"][:5], "eta_s": e["earliest_arrival_s"]} for e in emerg]
         self._obs_idle_sig = None
         return b
+
+    def _new_emergencies(self, sim) -> List[dict]:
+        """인명피해 예상 장소 중 아직 긴급 회의를 열지 않은 곳. 기준은 상황판과 같다 — 환경 확산 예측이
+        주거지·사람 있는 보호대상에 닿음 (preemptive_candidates). 연 장소는 장부에 남겨 다시 열지 않는다."""
+        if not config.OBS_EMERGENCY_ON_HUMAN_RISK:
+            return []
+        snap = self.view()
+        ver = (snap.run_id, snap.state_version)
+        if self._emerg_cache[0] != ver:
+            self._emerg_cache = (ver, self.preemptive_candidates(snap))
+        out = []
+        for c in self._emerg_cache[1]:
+            body = {"site_id": c["site_id"], "cells": c["cells"], "basis": c["basis"],
+                    "earliest_arrival_s": c["earliest_arrival_s"]}
+            if self.ledger.add_knowledge("EMERGENCY_CALL", f"EMERGENCY_CALL:{c['key']}", c["key"], sim,
+                                         "FORECAST_HUMAN_RISK", body):
+                self.ledger.log("OBS_EMERGENCY_CALL", result=c["key"], sim_time_s=sim, detail=body)
+                out.append(c)
+        return out
 
     def _obs_idle(self, reason: str, b: Optional[dict]) -> None:
         """계획을 세우지 않는 이유를 남긴다 (이유·가용 자원이 바뀔 때만 한 번). 관제에서 '왜 쉬는지'를 보여 주기 위함."""
@@ -2235,38 +2307,278 @@ class Orchestrator:
             "note": "관측 전 가설 — 확인된 화재가 아니다"})
         self._obs_last_hash = inp["input_hash"]
         self._obs_planned_sim = sim
-        results, replan = [], False
-        rtype = {r["resource_id"]: r["resource_type"] for r in inp["resources_available"]}
-        for a in plan["assignments"]:
-            b = blocks[a["block_id"]]
-            c = req["idx"].by_id[b["target_cell"]]
-            task, _ = self.submit_task({
-                "request_id": f"OBSPLAN:{plan_id}:{a['resource_id']}", "incident_id": "INC-OBSERVATION",
-                "kind": "OBSERVE",
-                "target": {"lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"),
-                           "cell_id": c["cell_id"]},
-                "requirements": {"resource_types": [rtype[a["resource_id"]]], "sensor": "THERMAL",
-                                 "needs_env_ack": True},
-                "assigned_resource_id": a["resource_id"], "plan_id": plan_id})
-            out = self.dispatch(task.task_id)
-            row = {"resource_id": a["resource_id"], "block_id": a["block_id"], "purpose": a["purpose"],
-                   "task_id": task.task_id, "dispatch": out.get("status"), "reason": out.get("reason")}
-            if out.get("status") == "HOLD":
-                # 고른 자원이 거절·불가 → 이 조합은 빼고 다시 계획 (다른 자원으로 조용히 바꾸지 않는다)
-                t = self.ledger.get_task(task.task_id)
-                self._set_purpose(t, "CANCELLED", basis="PLANNED_RESOURCE_REJECTED",
-                                  hold_reason=f"PLANNED_RESOURCE_REJECTED:{out.get('reason')}", resume=None, sim=sim)
-                self._obs_rejections[1].append({"resource_id": a["resource_id"], "block_id": a["block_id"],
-                                                "reason": str((out.get("excluded") or {}).get(a["resource_id"])
-                                                              or out.get("reason"))})
-                replan = True
-            results.append(row)
+        results, replan = self._assign_orders(plan, inp, req["idx"], plan_id, source, sim)
         assigned = {a["resource_id"] for a in plan["assignments"]}
+        for r in inp["resources_available"]:
+            if r["resource_id"] not in assigned:
+                self._orders.pop(r["resource_id"], None)     # 새 회의가 덜 끝난 지시서를 바꾼다 (지시서 없음 = 대기)
         if any(r["resource_id"] not in assigned for r in inp["resources_available"]):
             replan = True                     # 호출 중에 새로 가용해진 자원 등 — 다음 계획에서 배정
         self.ledger.log("OBS_PLAN_EXECUTED", result="REPLAN_NEEDED" if replan else "OK", sim_time_s=sim,
                         detail={"plan_id": plan_id, "assignments": results})
         return {"status": "APPLIED", "plan_id": plan_id, "source": source, "assignments": results, "replan": replan}
+
+    def _assign_orders(self, plan: dict, inp: dict, idx, plan_id: str, source: str, sim) -> Tuple[List[dict], bool]:
+        """계획의 배정마다 작업 지시서를 만든다 (사용자 결정 2026-10-08). 드론은 기지로 돌아올 배터리가 되는
+        지점까지만 남긴다. 쉬고 있는 자원은 첫 지점을 바로 보내고, 지금 지점을 보러 가는 자원은 그 관측 뒤에 시작한다."""
+        blocks = {b["block_id"]: b for b in inp["blocks"]}
+        res = {r["resource_id"]: r for r in inp["resources_available"]}
+        results, replan = [], False
+        for a in plan["assignments"]:
+            rid, r = a["resource_id"], res[a["resource_id"]]
+            cells = [blocks[bid]["target_cell"] for bid in a["block_ids"]]
+            keep = self._trim_order(r, cells, idx)
+            stops = [{"block_id": bid, "cell_id": c} for bid, c in zip(a["block_ids"], cells)][:keep]
+            self._orders[rid] = {"plan_id": plan_id, "source": source, "stops": stops, "next": 0, "new_fire": 0,
+                                 "kind": "ORDER", "resource_type": r["resource_type"], "since_s": sim}
+            row = {"resource_id": rid, "block_id": a["block_ids"][0], "block_ids": a["block_ids"],
+                   "trimmed_for_battery": a["block_ids"][keep:], "purpose": a["purpose"]}
+            self.ledger.log("OBS_ORDER", resource_id=rid, result=source, sim_time_s=sim,
+                            detail={"plan_id": plan_id, "stops": stops, "trimmed_for_battery": row["trimmed_for_battery"],
+                                    "battery_pct": r.get("battery_pct"), "now": r.get("now")})
+            started = self._start_order(rid, sim)
+            if started is None:
+                results.append({**row, "task_id": None, "reason": None,
+                                "dispatch": "QUEUED_AFTER_CURRENT_STOP" if stops else "NO_STOP_WITHIN_BATTERY"})
+                continue
+            task, out = started
+            row.update({"task_id": task.task_id, "dispatch": out.get("status"), "reason": out.get("reason")})
+            if out.get("status") == "HOLD":
+                # 고른 자원이 거절·불가 → 이 조합은 빼고 다시 계획 (다른 자원으로 조용히 바꾸지 않는다)
+                self._obs_rejections[1].append({"resource_id": rid, "block_id": a["block_ids"][0],
+                                                "reason": str((out.get("excluded") or {}).get(rid) or out.get("reason"))})
+                replan = True
+            results.append(row)
+        return results, replan
+
+    def _trim_order(self, r: dict, cells: List[str], idx) -> int:
+        """드론 지시서에서 '기지로 돌아올 배터리'가 되는 지점 수 (효율 규칙 2, 사용자 결정 2026-10-08).
+        드론팀 가정값(순항 속도·초당 소모·복귀 후 최소 배터리·관측 체류)으로 어림한다. UGV·배터리 모름은 자르지 않는다."""
+        import config as team_config
+        bat = r.get("battery_pct")
+        base = r["resource_id"].split("-")[0]
+        home = (getattr(team_config, f"BASE_{base}_LAT", None), getattr(team_config, f"BASE_{base}_LON", None))
+        if r["resource_type"] != "UAV" or bat is None or home[0] is None:
+            return len(cells)
+        cur, t, keep = (r["lat"], r["lon"]), 0.0, 0
+        for cid in cells:
+            c = idx.by_id.get(cid)
+            if c is None:
+                break
+            leg = (obs_plan._dist_m(cur[0], cur[1], c["lat"], c["lon"]) / config.UAV_ASSUMED_CRUISE_MS
+                   + config.UAV_ASSUMED_OBSERVE_S)
+            back = obs_plan._dist_m(c["lat"], c["lon"], home[0], home[1]) / config.UAV_ASSUMED_CRUISE_MS
+            if bat - (t + leg + back) * config.UAV_ASSUMED_DRAIN_PCT_S < config.UAV_ASSUMED_RETURN_RESERVE_PCT:
+                break
+            t, cur, keep = t + leg, (c["lat"], c["lon"]), keep + 1
+        return keep
+
+    def _start_order(self, rid: str, sim):
+        """지시서의 첫 지점: 자원이 쉬고 있거나 지금 지점 관측을 마쳤으면 바로 Task 를 만들고 보낸다 → (task, 배정 결과).
+        아직 지점을 보러 가는 중이면 None (그 관측 뒤 _order_after_observation 이 시작한다)."""
+        o = self._orders.get(rid)
+        if not o or not o["stops"]:
+            return None
+        held = self.ledger.reservations().get(rid)
+        if held:
+            att = self.ledger.get_attempt(held["attempt_id"])
+            if not att or att["substatus"] not in POST_MISSION:
+                return None
+        task = self._queue_stop(rid, sim)
+        return task, self._dispatch_order_stop(task)
+
+    def _queue_stop(self, rid: str, sim) -> Task:
+        o = self._orders[rid]
+        st = o["stops"][o["next"]]
+        o["next"] += 1
+        c = self._map_index().by_id[st["cell_id"]]
+        task, _ = self.submit_task({
+            "request_id": f"OBSORDER:{o['plan_id']}:{rid}:{o['next']}", "incident_id": "INC-OBSERVATION",
+            "kind": "HEAD_FOLLOW" if o["kind"] == "HEAD" else "OBSERVE",
+            "target": {"lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"), "cell_id": c["cell_id"]},
+            "requirements": {"resource_types": [o["resource_type"]], "sensor": "THERMAL", "needs_env_ack": True},
+            "assigned_resource_id": rid, "plan_id": o["plan_id"]})
+        self.ledger.log("OBS_ORDER_STOP_QUEUED", task_id=task.task_id, resource_id=rid, sim_time_s=sim,
+                        detail={"plan_id": o["plan_id"], "stop": o["next"], "of": len(o["stops"]), "kind": o["kind"],
+                                "block_id": st["block_id"], "cell_id": st["cell_id"]})
+        return task
+
+    def _dispatch_order_stop(self, task: Task) -> dict:
+        """지시서 지점 Task 를 보낸다. 드론이 앞 지점을 보고 기지로 돌아가는 중이면(RETURNING) 그 점유를 풀고
+        이어서 보낸다 — 드론팀 '돌아가는 중에 새 임무 받기'(UAV-06, 사용자 결정 2026-10-08). 다른 단계면 다음에 다시."""
+        rid = task.assigned_resource_id
+        held = self.ledger.reservations().get(rid)
+        retasked = False
+        if held:
+            att = self.ledger.get_attempt(held["attempt_id"])
+            if (att and att["substatus"] == "RETURNING" and att["command"]["resource_type"] == "UAV"
+                    and config.OBS_RETASK_WHILE_RETURNING and (att["detail"] or {}).get("mission_end")):
+                self.ledger.set_attempt_status(att["attempt_id"], "RELEASED", {
+                    **(att["detail"] or {}), "released_evidence": {"retask_while_returning": True,
+                                                                   "next_task_id": task.task_id}}, release=True)
+                self.ledger.log("OBS_RETASK_WHILE_RETURNING", task_id=task.task_id, attempt_id=att["attempt_id"],
+                                resource_id=rid, detail={"previous_task_id": att["task_id"]})
+                retasked = True
+            elif att and att["substatus"] != "RELEASED":
+                return {"status": "WAITING_RESOURCE", "reason": f"ATTEMPT_{att['substatus']}"}
+        out = self.dispatch(task.task_id)
+        if out.get("status") == "HOLD":
+            t = self.ledger.get_task(task.task_id)
+            self._set_purpose(t, "CANCELLED", basis="PLANNED_RESOURCE_REJECTED",
+                              hold_reason=f"PLANNED_RESOURCE_REJECTED:{out.get('reason')}", resume=None)
+            self._orders.pop(rid, None)
+            if retasked:      # 드론은 그대로 기지로 돌아가 내린다 — 추적을 끊었으니 지금부터 충전으로 본다
+                self._start_charging(rid, "RETASK_REJECTED_RETURNING_HOME", task_id=task.task_id)
+        self.ledger.log("OBS_ORDER_STOP_DISPATCH", task_id=task.task_id, resource_id=rid, result=out.get("status"),
+                        reason=out.get("reason"), detail={"retask_while_returning": retasked,
+                                                          "excluded": out.get("excluded")})
+        return out
+
+    def _order_after_observation(self, task: Task, rid: str, new_fire: int, sim, ground: bool) -> None:
+        """관측이 끝난 자원의 다음 행동 (LLM 을 부르지 않는다, 사용자 결정 2026-10-08).
+        지시서가 남았고 (드론이면) 배터리 30% 이상 → 다음 지점.
+        일찍 끝남 → 지시서 동안 새로 찾은 불 칸이 있으면 불 머리 따라가기 (드론 배터리는 복귀 안전선 15% 까지 —
+        드론이 거절하면 멈춤) / 없으면 드론은 충전 복귀(마지막으로 하늘에 남은 드론이고 배터리 30% 이상이면 불 머리),
+        UGV 는 대기."""
+        o = self._orders.get(rid)
+        rtype = "UGV" if ground else "UAV"
+        if o is None:          # 첫 출동·앞질러 보내기 같은 한 지점 출동도 같은 규칙으로 끝낸다
+            o = self._orders[rid] = {"plan_id": task.plan_id, "source": "SINGLE", "stops": [], "next": 0,
+                                     "new_fire": 0, "kind": "SINGLE", "resource_type": rtype, "since_s": sim}
+        o["new_fire"] += new_fire
+        bat = None if ground else self._battery(rid)
+        low = bat is not None and bat < config.OBS_ORDER_BATTERY_MIN_PCT
+        detail = {"plan_id": o["plan_id"], "task_id": task.task_id, "new_fire_this_obs": new_fire,
+                  "new_fire_in_order": o["new_fire"], "battery_pct": bat, "stops_done": o["next"],
+                  "stops_total": len(o["stops"])}
+        if o["next"] < len(o["stops"]) and not low:
+            self._queue_stop(rid, sim)
+            self.ledger.log("OBS_ORDER_NEXT", resource_id=rid, result="NEXT_STOP", sim_time_s=sim, detail=detail)
+            return
+        if o["new_fire"] > 0:
+            action = "FOLLOW_HEAD"
+        elif not ground and not low and self._last_airborne(rid):
+            action = "FOLLOW_HEAD_LAST_AIRBORNE"      # 한꺼번에 충전하지 않게 (효율 규칙 3)
+        else:
+            action = "WAIT" if ground else "RETURN_TO_CHARGE"
+        head = self._fire_head(sim) if action.startswith("FOLLOW_HEAD") else None
+        if action.startswith("FOLLOW_HEAD") and head is None:
+            detail["head_unknown"] = True
+            action = "WAIT" if ground else "RETURN_TO_CHARGE"
+        self._orders.pop(rid, None)
+        if head is not None:
+            self._orders[rid] = {"plan_id": new_id("HEAD"), "source": "RULE_FIRE_HEAD",
+                                 "stops": [{"block_id": obs_plan.MapIndex.block_id(head["cell_id"]),
+                                            "cell_id": head["cell_id"]}],
+                                 "next": 0, "new_fire": 0, "kind": "HEAD", "resource_type": rtype, "since_s": sim}
+            self._queue_stop(rid, sim)
+            detail["head"] = head
+        elif action == "RETURN_TO_CHARGE":
+            self._to_charge.add(rid)
+        self.ledger.log("OBS_ORDER_END", resource_id=rid, result=action, sim_time_s=sim, detail=detail)
+
+    def _battery(self, rid: str) -> Optional[float]:
+        try:
+            return self.uav.state(rid).battery_pct if self.uav else None
+        except Unreachable:
+            return None
+
+    def _last_airborne(self, rid: str) -> bool:
+        """rid 말고 일하는 드론(지시서가 있거나, 충전 복귀가 아닌 출동 중)이 OBS_MIN_AIRBORNE_UAVS 보다 적은가"""
+        uavs = set(self.uav.resource_ids()) if self.uav else set()
+        res = self.ledger.reservations()
+        working = {u for u in uavs if u != rid and u not in self._to_charge and (u in self._orders or u in res)}
+        return len(working) < config.OBS_MIN_AIRBORNE_UAVS
+
+    def _head_bearing(self, now) -> Tuple[Optional[float], Optional[str]]:
+        """불 머리 방향 = 바람이 불어 가는 쪽 (총괄이 아는 기상). 바람을 모르면 관측으로 본 불의 진행 방향."""
+        idx = self._map_index()
+        fire_states = self.kb.fire_states(now or 0.0)
+        w = (self._obs_weather(idx, fire_states, now).get("items") or {}).get("wind_dir_deg") or {}
+        if w.get("value") is not None:
+            return (float(w["value"]) + 180.0) % 360.0, "DOWNWIND"
+        rows = self._report_rows()
+        prog = obs_plan.fire_progress(idx, obs_plan.belief_layers(fire_states, now, self._burn_out_s()),
+                                      rows[0]["cell_id"] if rows else None)
+        if prog and prog.get("moved_toward_deg") is not None:
+            return float(prog["moved_toward_deg"]), "FIRE_PROGRESS"
+        return None, None
+
+    def _fire_head(self, now) -> Optional[dict]:
+        """불 머리 칸: 총괄이 '불타는 중'으로 아는 칸 중 머리 방향으로 가장 앞선 칸."""
+        brg, basis = self._head_bearing(now)
+        if brg is None:
+            return None
+        idx = self._map_index()
+        layers = obs_plan.belief_layers(self.kb.fire_states(now or 0.0), now, self._burn_out_s())
+        burning = [idx.by_id[c] for c, b in layers.items() if b["state"] == "BURNING" and c in idx.by_id]
+        if not burning:
+            return None
+        clat = sum(c["lat"] for c in burning) / len(burning)
+        clon = sum(c["lon"] for c in burning) / len(burning)
+        hx, hy = math.sin(math.radians(brg)), math.cos(math.radians(brg))
+
+        def ahead(c):
+            x, y = obs_plan._xy(clat, clon, c["lat"], c["lon"])
+            return x * hx + y * hy
+        best = max(burning, key=lambda c: (ahead(c), c["cell_id"]))
+        return {"cell_id": best["cell_id"], "bearing_deg": round(brg), "basis": basis}
+
+    # ------------------------------------------------------------------
+    # 드론 충전 (총괄 쪽 시험용 가정 — 드론 mock 은 착륙하면 배터리를 바로 100% 로 바꾼다, 사용자 결정 2026-10-08)
+    # ------------------------------------------------------------------
+    def _start_charging(self, rid: str, why: str, task_id=None) -> None:
+        sim = self.env.read().simulation_time_s or 0.0
+        self._to_charge.discard(rid)
+        self._orders.pop(rid, None)
+        self._charged_ready.discard(rid)
+        self._charging[rid] = {"since_s": sim, "until_s": sim + config.OBS_DRONE_CHARGE_S}
+        for t in self.ledger.list_tasks(["PENDING", "HOLD"]):     # 내려앉았으니 남은 지시서 지점은 거둔다
+            if t.assigned_resource_id == rid and (t.request_key or "").startswith("OBSORDER:") \
+                    and not self.ledger.open_mission_attempts(t.task_id):
+                self._set_purpose(t, "CANCELLED", basis="RESOURCE_CHARGING", hold_reason="RESOURCE_CHARGING",
+                                  resume=None, sim=sim)
+        self.ledger.log("OBS_CHARGING_START", task_id=task_id, resource_id=rid, result=why, sim_time_s=sim,
+                        detail={**self._charging[rid], "charge_s": config.OBS_DRONE_CHARGE_S,
+                                "basis": config.OBS_DRONE_CHARGE_BASIS})
+
+    def _charging_left(self, rid: str, now) -> Optional[float]:
+        c = self._charging.get(rid)
+        if c is None:
+            return None
+        left = c["until_s"] - (now if now is not None else (self.env.read().simulation_time_s or 0.0))
+        return left if left > 0 else None
+
+    def _update_charging(self, now=None) -> None:
+        if not self._charging:
+            return
+        now = now if now is not None else (self.env.read().simulation_time_s or 0.0)
+        for rid in [r for r, c in self._charging.items() if now >= c["until_s"]]:
+            c = self._charging.pop(rid)
+            self._charged_ready.add(rid)
+            self.ledger.log("OBS_CHARGING_DONE", resource_id=rid, sim_time_s=now, detail=c)
+
+    def _orders_after_charge(self) -> List[dict]:
+        """충전을 마친 드론에는 다음 회의를 기다리지 않고 규칙으로 지시서를 바로 준다 (LLM 없음, 효율 규칙 4)."""
+        outs = []
+        for rid in sorted(self._charged_ready):
+            self._charged_ready.discard(rid)
+            if rid in self._orders or rid in self.ledger.reservations():
+                continue
+            b = self._obs_build()
+            if b is None or not b["inp"]["reports"] or b["sim"] > config.OBS_DEMO_END_SIM_S:
+                break
+            if rid not in {r["resource_id"] for r in b["inp"]["resources_available"]}:
+                continue
+            plan = obs_plan.rule_plan(b["inp"], only=[rid])
+            if not plan["assignments"]:
+                continue
+            plan_id = new_id("PLAN")
+            self.ledger.log("OBS_PLAN_AFTER_CHARGE", resource_id=rid, result="RULE_AFTER_CHARGE", sim_time_s=b["sim"],
+                            detail={"plan_id": plan_id, "plan": plan, "input_hash": b["inp"]["input_hash"]})
+            rows, _ = self._assign_orders(plan, b["inp"], b["idx"], plan_id, "RULE_AFTER_CHARGE", b["sim"])
+            outs.append({"status": "APPLIED", "plan_id": plan_id, "source": "RULE_AFTER_CHARGE", "assignments": rows})
+        return outs
 
     @staticmethod
     def _revalidate(plan: dict, inp: dict) -> Tuple[dict, List[dict]]:
@@ -2275,25 +2587,32 @@ class Orchestrator:
         avail = {r["resource_id"] for r in inp["resources_available"]}
         keep, dropped, used_r, used_b = [], [], set(), set()
         for a in plan["assignments"]:
-            rid, bid = a["resource_id"], a["block_id"]
+            rid = a["resource_id"]
+            ok = [b for b in a["block_ids"] if b in blocks and rid in blocks[b]["allowed_resources"] and b not in used_b]
             why = ("RESOURCE_NO_LONGER_AVAILABLE" if rid not in avail else
-                   "BLOCK_NO_LONGER_SELECTABLE" if bid not in blocks else
-                   "RESOURCE_NOT_ALLOWED_FOR_BLOCK_NOW" if rid not in blocks[bid]["allowed_resources"] else
-                   "DUPLICATE" if rid in used_r or bid in used_b else None)
+                   "DUPLICATE" if rid in used_r else
+                   "BLOCK_NO_LONGER_SELECTABLE" if not ok else None)
             if why:
                 dropped.append({**a, "dropped_reason": why})
                 continue
-            keep.append(a)
+            if len(ok) < len(a["block_ids"]):
+                dropped.append({**a, "block_ids": [b for b in a["block_ids"] if b not in ok],
+                                "dropped_reason": "SOME_BLOCKS_NO_LONGER_SELECTABLE"})
+            keep.append({**a, "block_ids": ok})
             used_r.add(rid)
-            used_b.add(bid)
+            used_b.update(ok)
         pred = [b for b in plan.get("predicted_blocks") or [] if b in blocks]
         return {**plan, "assignments": keep, "predicted_blocks": pred, "input_hash": inp["input_hash"]}, dropped
 
     def obs_plan_cycle(self, max_rounds: int = 3) -> List[dict]:
         """한 번에 계획 → 적용 (거절로 다시 계획할 때 최대 max_rounds 번). 서버·시험 공용."""
         outs = []
-        for t in self.ledger.list_tasks(["PENDING"]):   # 앞질러 보내기 출동 먼저 (가장 가까운 가용 드론)
-            if t.kind in ("ADVANCE_SCOUT", "UGV_EDGE_FOLLOW") and config.OBS_PLANNER_ENABLED:
+        if config.OBS_PLANNER_ENABLED:
+            self._update_charging()
+        for t in self.ledger.list_tasks(["PENDING"]):   # 지시서 다음 지점·앞질러 보내기 출동 먼저 (LLM 없이)
+            if (t.request_key or "").startswith("OBSORDER:") and config.OBS_PLANNER_ENABLED:
+                self._dispatch_order_stop(t)
+            elif t.kind in ("ADVANCE_SCOUT", "UGV_EDGE_FOLLOW") and config.OBS_PLANNER_ENABLED:
                 out = self.dispatch(t.task_id)
                 self.ledger.log("OBS_ADVANCE_SCOUT_DISPATCH" if t.kind == "ADVANCE_SCOUT" else "OBS_UGV_FOLLOW_DISPATCH",
                                 task_id=t.task_id, result=out.get("status"),
@@ -2311,6 +2630,8 @@ class Orchestrator:
                 self._obs_same_step_ok = True        # 같은 계획 중 다시 짜기 (거절·호출 중 변화)는 같은 단계에서 허용
         finally:
             self._obs_same_step_ok = False
+        if config.OBS_PLANNER_ENABLED and self._charged_ready:
+            outs.extend(self._orders_after_charge())       # 충전을 마친 드론은 규칙 지시서 (회의를 기다리지 않음)
         return outs
 
     def _planned_observation(self, snap, task, aid, rid, pos, data, ground) -> dict:
@@ -2335,7 +2656,8 @@ class Orchestrator:
                                                advance_point=next(iter(self._advance_targets(snap.simulation_time_s)),
                                                                   None),
                                                orbit_duration_s=(config.OBS_INITIAL_ORBIT_DURATION_S
-                                                                 if task.plan_id == "INITIAL_NEAREST_UAV" else None))
+                                                                 if task.plan_id == "INITIAL_NEAREST_UAV" else None),
+                                               head_bearing_deg=self._head_bearing(snap.simulation_time_s)[0])
 
     def _advance_targets(self, now) -> List[dict]:
         """앞질러 보낼 예상 지점 (사용자 결정 2026-10-07). 아는 세계만 쓴다 (정답 아님).
