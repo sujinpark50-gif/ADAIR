@@ -45,7 +45,8 @@ from src.grid import EnvironmentGrid                      # noqa: E402
 
 KST = timezone(timedelta(hours=9))
 START_KST = "2019-04-04T14:45:00+09:00"      # 신고 시각 (기사·백서). 실화 추정 14:43 — 2분 차이는 무시
-CONFIG = ENV_DIR / "config" / "environment_config.yaml"
+# 재현을 만든 CA 설정 (2026-10-03 환경 기본 설정이 새로 보정되며 legacy 로 격리됨). 트윈 환경 서버도 같은 파일을 쓴다 (twin_env.ENV_CONFIG)
+CONFIG = ENV_DIR / "config" / "scenario_whatif_2019_legacy.yaml"
 WEATHER_CSV = ROOT / "data" / "weather" / "kma_asos_hourly_20190404_20190405.csv"
 STATIONS_JSON = ROOT / "data" / "weather" / "kma_asos_stations.json"
 ROADS_JSON = ROOT / "ugv" / "data" / "road_network.json"
@@ -413,7 +414,7 @@ def main():
         "timeline": timeline, "events": [{"kst": e[0], "t": sim_s(e[0]), "text": e[1], "src": e[2]} for e in EVENTS],
         "resources": [{**r, "t": sim_s(r["kst"])} for r in RESOURCES],
         "twin_env": {"ENV_IGNITION": f"{ignition[0]},{ignition[1]}", "ENV_TICK_S": str(int(tick)), "ENV_SEED": str(seed),
-                     "ENV_SCENARIO_START_KST": START_KST},
+                     "ENV_SCENARIO_START_KST": START_KST, "ENV_CONFIG": CONFIG.relative_to(ROOT).as_posix()},
         "calibration": {"anchor": f"19:00 추정 {ANCHOR_19H_HA} ha", "target_cells": round(target_cells, 1),
                         "chosen": best, "table": table},
         "summary": summary,
