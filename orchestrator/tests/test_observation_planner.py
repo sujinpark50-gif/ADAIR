@@ -1113,15 +1113,34 @@ def test_battery_below_30_ends_order_early(pw, monkeypatch):
     assert "A-uav1" in orch._to_charge
 
 
-def test_new_fire_in_order_follows_fire_head_downwind(pw):
+def test_new_fire_in_order_follows_fire_head(pw):
     orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
     _with_known_fire(orch, env, lg)
     orch._order_after_observation(_hook_task(), "A-uav1", 2, 180.0, ground=False)
     end = _events(lg, "OBS_ORDER_END")[-1]
     assert end["result"] == "FOLLOW_HEAD"
-    assert end["detail"]["head"] == {"cell_id": "17_12", "bearing_deg": 90, "basis": "DOWNWIND"}   # 서풍 → 동쪽 끝
+    # 신고 칸 12_12 → 동쪽으로 뻗은 불: 관측으로 본 진행 방향(동쪽)이 머리 방향
+    assert end["detail"]["head"] == {"cell_id": "17_12", "bearing_deg": 90, "basis": "FIRE_PROGRESS"}
     t = lg.get_task(_events(lg, "OBS_ORDER_STOP_QUEUED")[-1]["task_id"])
     assert t.kind == "HEAD_FOLLOW" and t.target.cell_id == "17_12" and t.assigned_resource_id == "A-uav1"
+
+
+def test_fire_head_prefers_observed_progress_over_opposite_wind(pw):
+    """사용자 결정 2026-10-08: 풍향보다 실제 현장에서 불이 진행되는 쪽 우선 (2019 인제: 관측소 남남동풍, 불은 남동쪽)."""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    env.wind_dir_deg = 90.0                              # 동풍 → 풍하는 서쪽. 그러나 불은 동쪽으로 진행
+    _with_known_fire(orch, env, lg)
+    assert orch._head_bearing(env.simulation_time_s) == (90.0, "FIRE_PROGRESS")
+    orch._order_after_observation(_hook_task(), "A-uav1", 2, 180.0, ground=False)
+    end = _events(lg, "OBS_ORDER_END")[-1]
+    assert end["result"] == "FOLLOW_HEAD" and end["detail"]["head"]["cell_id"] == "17_12"
+
+
+def test_fire_head_falls_back_to_downwind_without_progress(pw):
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _with_known_fire(orch, env, lg)
+    orch._progress_bearing = lambda now: None            # 진행을 아직 못 본 경우
+    assert orch._head_bearing(env.simulation_time_s) == (90.0, "DOWNWIND")    # 서풍 270° → 동쪽
 
 
 def test_no_new_fire_returns_to_charge_unless_last_drone_in_air(pw):

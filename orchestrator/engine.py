@@ -1619,15 +1619,19 @@ class Orchestrator:
         y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
         return (math.degrees(math.atan2(x, y)) + 360) % 360
 
-    def sense_points(self, fire_cell: dict, snap) -> dict:
-        """불난 칸 + 바람이 향하는 쪽 위험 칸(환경이 표시한 위험 칸 중 방위가 가장 가까운 것)."""
+    def sense_points(self, fire_cell: dict, snap, progress_deg: Optional[float] = None) -> dict:
+        """불난 칸 + 불이 향하는 쪽 위험 칸(환경이 표시한 위험 칸 중 방위가 가장 가까운 것).
+        향하는 쪽 = 관측으로 본 불의 진행 방향(progress_deg) → 없으면 바람이 불어 가는 쪽 (사용자 결정 2026-10-08)."""
         points, note = [fire_cell], None
-        if snap.wind_dir_deg is None:
-            note = "WIND_DIRECTION_MISSING"
+        if progress_deg is None and snap.wind_dir_deg is None:
+            note = "DIRECTION_UNKNOWN"
         elif not snap.risk_cells:
             note = "NO_RISK_CELLS"
         else:
-            toward = (snap.wind_dir_deg + 180.0) % 360.0
+            if progress_deg is not None:
+                toward, basis = float(progress_deg) % 360.0, "FIRE_PROGRESS"
+            else:
+                toward, basis = (snap.wind_dir_deg + 180.0) % 360.0, "DOWNWIND"
             best = None
             for c in snap.risk_cells:
                 if c.get("lat") is None or c.get("lon") is None:
@@ -1639,7 +1643,7 @@ class Orchestrator:
                     best = (key, c, round(diff, 1))
             if best:
                 points.append(best[1])
-                note = {"downwind_bearing_deg": round(toward, 1), "angle_off_deg": best[2]}
+                note = {"toward_bearing_deg": round(toward, 1), "basis": basis, "angle_off_deg": best[2]}
         return {"points": points, "note": note}
 
     # ------------------------------------------------------------------
@@ -1770,10 +1774,12 @@ class Orchestrator:
 
     def _plan_auto_sense(self, source_task_id: str, kind: str, visit_cell: Optional[str], detections: List[dict],
                          snap, measured_here: bool = False) -> List[dict]:
-        """불 발견 → 불난 칸 + 바람이 향하는 쪽 위험 칸. 측정할 칸마다 좌표·지면고도·요청 ID 까지 정한다."""
+        """불 발견 → 불난 칸 + 불이 향하는 쪽 위험 칸 (관측으로 본 진행 방향 우선, 없으면 풍하).
+        측정할 칸마다 좌표·지면고도·요청 ID 까지 정한다."""
         if not config.AUTO_ENV_SENSE_ENABLED or kind == "ENV_SENSE" or snap.run_gate:
             return []
         cells = {c["cell_id"]: c for c in snap.fire_cells + snap.risk_cells}
+        progress_deg = self._progress_bearing(snap.simulation_time_s)
         plans = []
         for det in detections:
             fire = cells.get(det["cell_id"])
@@ -1782,7 +1788,8 @@ class Orchestrator:
             # 풍향은 아는 세계에서: 불난 칸의 유효한 현장 측정 → 가장 가까운 관측소 (진짜 풍향을 보지 않음)
             w = self.kb.weather_for(fire["lat"], fire["lon"], fire["cell_id"], snap.simulation_time_s or 0.0)
             wd = w["items"].get("wind_dir_deg") or {}
-            sp = self.sense_points(fire, dataclasses.replace(snap, wind_dir_deg=w["values"].get("wind_dir_deg")))
+            sp = self.sense_points(fire, dataclasses.replace(snap, wind_dir_deg=w["values"].get("wind_dir_deg")),
+                                   progress_deg=progress_deg)
             wind_ref = {k: wd.get(k) for k in ("basis", "source", "station_id", "distance_m", "status")}
             wind_ref["sim_time_s"] = wd.get("observed_sim_s")
             targets = [{"cell_id": c["cell_id"], "lat": c["lat"], "lon": c["lon"], "ground_amsl_m": c.get("ground_amsl_m"),
@@ -2920,18 +2927,28 @@ class Orchestrator:
         working = {u for u in uavs if u != rid and u not in self._to_charge and (u in self._orders or u in res)}
         return len(working) < config.OBS_MIN_AIRBORNE_UAVS
 
+    def _progress_bearing(self, now) -> Optional[float]:
+        """관측으로 본 불의 진행 방향 (북 기준 시계방향, 불이 향해 간 쪽). 계산할 수 없으면 None."""
+        rows = self._report_rows()
+        prog = obs_plan.fire_progress(self._map_index(),
+                                      obs_plan.belief_layers(self.kb.fire_states(now or 0.0), now, self._burn_out_s()),
+                                      rows[0]["cell_id"] if rows else None)
+        if prog and prog.get("moved_toward_deg") is not None:
+            return float(prog["moved_toward_deg"])
+        return None
+
     def _head_bearing(self, now) -> Tuple[Optional[float], Optional[str]]:
-        """불 머리 방향 = 바람이 불어 가는 쪽 (총괄이 아는 기상). 바람을 모르면 관측으로 본 불의 진행 방향."""
+        """불 머리 방향 = 관측으로 본 불의 진행 방향. 아직 진행을 못 봤으면 바람이 불어 가는 쪽 (총괄이 아는 기상).
+        사용자 결정 2026-10-08: 풍향보다 실제 현장에서 불이 진행되는 쪽을 우선한다 — 관측소 풍향은 발화지와 떨어져
+        있어 실제 진행과 다를 수 있다 (2019 인제: 관측소는 남남동풍 160° 인데 불은 남동쪽으로 번졌다)."""
+        brg = self._progress_bearing(now)
+        if brg is not None:
+            return brg, "FIRE_PROGRESS"
         idx = self._map_index()
         fire_states = self.kb.fire_states(now or 0.0)
         w = (self._obs_weather(idx, fire_states, now).get("items") or {}).get("wind_dir_deg") or {}
         if w.get("value") is not None:
             return (float(w["value"]) + 180.0) % 360.0, "DOWNWIND"
-        rows = self._report_rows()
-        prog = obs_plan.fire_progress(idx, obs_plan.belief_layers(fire_states, now, self._burn_out_s()),
-                                      rows[0]["cell_id"] if rows else None)
-        if prog and prog.get("moved_toward_deg") is not None:
-            return float(prog["moved_toward_deg"]), "FIRE_PROGRESS"
         return None, None
 
     def _ugv_head_post(self, now) -> Optional[dict]:

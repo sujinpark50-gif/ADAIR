@@ -46,6 +46,19 @@ def test_fire_detection_measures_weather_in_same_visit_and_senses_downwind(world
     assert len([x for x in lg.list_tasks() if x.kind == "ENV_SENSE"]) == 1
 
 
+def test_sense_point_prefers_observed_progress_over_wind(world):
+    """사용자 결정 2026-10-08: 풍향보다 실제로 불이 진행된 쪽의 위험 칸을 잰다."""
+    orch, env = world["orch"], world["env"]
+    _setup(world)                                         # 서풍 → 풍하는 동쪽
+    snap = env.read()
+    snap = snap.__class__(**{**snap.__dict__, "risk_cells": world["analysis"].risk_cells})
+    sp = orch.sense_points(dict(FIRE), snap, progress_deg=270.0)   # 그러나 불은 서쪽으로 진행
+    assert [c["cell_id"] for c in sp["points"]] == ["C1", "WEST"]
+    assert sp["note"]["basis"] == "FIRE_PROGRESS" and sp["note"]["toward_bearing_deg"] == 270.0
+    sp = orch.sense_points(dict(FIRE), snap)              # 진행을 모르면 풍하
+    assert [c["cell_id"] for c in sp["points"]] == ["C1", "EAST"] and sp["note"]["basis"] == "DOWNWIND"
+
+
 def test_without_wind_direction_fire_cell_measured_in_same_visit_only(world):
     orch, lg = world["orch"], world["ledger"]
     _setup(world, wind_dir=None)
@@ -55,7 +68,7 @@ def test_without_wind_direction_fire_cell_measured_in_same_visit_only(world):
     assert [x for x in lg.list_tasks() if x.kind == "ENV_SENSE"] == []
     assert len(_weather_obs(lg, t.task_id)) == 1
     ev = [e for e in lg.events() if e["event_type"] == "ENV_SENSE_PLANNED"][0]["detail"]
-    assert ev["selection"] == "WIND_DIRECTION_MISSING"
+    assert ev["selection"] == "DIRECTION_UNKNOWN"
 
 
 def test_sense_point_with_open_recon_gets_weather_attached_not_new_task(world):
