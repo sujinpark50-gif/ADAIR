@@ -1125,7 +1125,7 @@ def test_no_new_fire_returns_to_charge_unless_last_drone_in_air(pw):
     for rid in ("A-uav1", "A-uav2"):
         pw["uav"].state[rid]["battery"] = 40.0           # 30% 이상 50% 미만
     orch._order_after_observation(_hook_task(), "A-uav1", 0, 180.0, ground=False)
-    assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "FOLLOW_HEAD_LAST_AIRBORNE"   # 하늘에 혼자 → 남음
+    assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "SEEK_UNSEEN_EDGE_LAST_AIRBORNE"   # 하늘에 혼자 → 남음
     orch._order_after_observation(_hook_task(), "A-uav2", 0, 180.0, ground=False)
     assert _events(lg, "OBS_ORDER_END")[-1]["result"] == "RETURN_TO_CHARGE"           # A-uav1 이 하늘에 있음
     orch._order_after_observation(_hook_task(), "A-ugv1", 0, 180.0, ground=True)
@@ -1234,7 +1234,14 @@ def test_no_new_fire_but_battery_50_keeps_watching_head(pw):
     pw["uav"].state["A-uav1"]["battery"] = 60.0
     orch._order_after_observation(_hook_task(), "A-uav1", 0, 180.0, ground=False)
     end = _events(lg, "OBS_ORDER_END")[-1]
-    assert end["result"] == "FOLLOW_HEAD_BATTERY_OK" and end["detail"]["head"]["cell_id"] == "17_12"
+    # 그 근처는 다 봄 → 방금 본 곳(12_12)에서 가장 가까운, 아직 안 본 테두리 바깥 칸으로
+    assert end["result"] == "SEEK_UNSEEN_EDGE_BATTERY_OK" and end["detail"]["head"]["basis"] == "NEAREST_UNSEEN_EDGE"
+    target = end["detail"]["head"]["cell_id"]
+    assert target not in orch.kb.fire_states(180.0)                     # 아직 아무도 안 본 칸
+    c, r = map(int, target.split("_"))
+    assert any(f"{c + dc}_{r + dr}" in {"12_12", "14_12", "15_12", "16_12", "17_12"}
+               for dc in (-1, 0, 1) for dr in (-1, 0, 1))                # 아는 불 바로 바깥
+    assert end["detail"]["head"]["distance_m"] <= 130                    # 12_12 바로 옆
     assert "A-uav1" not in orch._to_charge
 
 

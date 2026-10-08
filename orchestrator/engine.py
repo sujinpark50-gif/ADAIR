@@ -2499,13 +2499,21 @@ class Orchestrator:
             action = "FOLLOW_HEAD_LAST_AIRBORNE"      # 한꺼번에 충전하지 않게 (효율 규칙 3)
         else:
             action = "WAIT" if ground else "RETURN_TO_CHARGE"
-        head = self._fire_head(sim) if action.startswith("FOLLOW_HEAD") else None
-        if action.startswith("FOLLOW_HEAD") and head is None:
+        head = None
+        if action in ("FOLLOW_HEAD_BATTERY_OK", "FOLLOW_HEAD_LAST_AIRBORNE"):
+            # 새 불이 없음 = 그 근처는 다 봄 → 아직 아무도 안 본 테두리 바깥 칸 중 가장 가까운 곳으로 (2026-10-08).
+            # 없으면 불 머리
+            head = self._nearest_unseen_edge(rid, task, sim)
+            if head is not None:
+                action = action.replace("FOLLOW_HEAD", "SEEK_UNSEEN_EDGE")
+        if head is None and action.startswith("FOLLOW_HEAD"):
+            head = self._fire_head(sim)
+        if action.startswith(("FOLLOW_HEAD", "SEEK_UNSEEN_EDGE")) and head is None:
             detail["head_unknown"] = True
             action = "WAIT" if ground else "RETURN_TO_CHARGE"
         self._orders.pop(rid, None)
         if head is not None:
-            self._orders[rid] = {"plan_id": new_id("HEAD"), "source": "RULE_FIRE_HEAD",
+            self._orders[rid] = {"plan_id": new_id("HEAD"), "source": "RULE_" + head.get("basis", "FIRE_HEAD"),
                                  "stops": [{"block_id": obs_plan.MapIndex.block_id(head["cell_id"]),
                                             "cell_id": head["cell_id"]}],
                                  "next": 0, "new_fire": 0, "kind": "HEAD", "resource_type": rtype, "since_s": sim}
@@ -2514,6 +2522,31 @@ class Orchestrator:
         elif action == "RETURN_TO_CHARGE":
             self._to_charge.add(rid)
         self.ledger.log("OBS_ORDER_END", resource_id=rid, result=action, sim_time_s=sim, detail=detail)
+
+    def _nearest_unseen_edge(self, rid: str, task: Task, sim) -> Optional[dict]:
+        """아는 불 바로 바깥의 아직 안 본 칸(frontier) 중 방금 본 지점에서 가장 가까운 칸.
+        다른 자원이 가는 중이거나 갈 예정인 구역은 뺀다."""
+        here = task.target
+        if here.lat is None or here.lon is None:
+            return None
+        idx = self._map_index()
+        layers = obs_plan.belief_layers(self.kb.fire_states(sim or 0.0), sim, self._burn_out_s())
+        _, frontier = obs_plan.known_edge(idx, layers)
+        taken = set()
+        for r, h in self.ledger.reservations().items():
+            t = self.ledger.get_task(h["task_id"])
+            if r != rid and t and t.target.cell_id:
+                taken.add(obs_plan.MapIndex.block_id(t.target.cell_id))
+        for t in self.ledger.list_tasks(["PENDING"]):
+            if t.assigned_resource_id not in (None, rid) and t.target.cell_id:
+                taken.add(obs_plan.MapIndex.block_id(t.target.cell_id))
+        cands = [idx.by_id[c] for c in frontier if c in idx.by_id and obs_plan.MapIndex.block_id(c) not in taken
+                 and idx.by_id[c].get("ground_amsl_m") is not None]
+        if not cands:
+            return None
+        best = min(cands, key=lambda c: (obs_plan._dist_m(here.lat, here.lon, c["lat"], c["lon"]), c["cell_id"]))
+        return {"cell_id": best["cell_id"], "basis": "NEAREST_UNSEEN_EDGE",
+                "distance_m": round(obs_plan._dist_m(here.lat, here.lon, best["lat"], best["lon"]))}
 
     def _battery(self, rid: str) -> Optional[float]:
         try:
