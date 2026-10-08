@@ -57,7 +57,7 @@ start orch     "$PY" -m orchestrator.api
 start web      "$PY" -m uvicorn web.app:app --host 0.0.0.0 --port 8080 --log-level warning
 wait_http http://127.0.0.1:8200/health && wait_http http://127.0.0.1:8080/inje3d
 start clock    "$PY" tools/twin_clock.py --speed "$SPEED"
-[[ "${TWIN_OPERATOR:-1}" == 1 ]] && start operator "$PY" tools/twin_operator.py     # 일몰 뒤 순찰 요청 (끄기: TWIN_OPERATOR=0)
+[[ "${TWIN_OPERATOR:-1}" == 1 ]] && start operator "$PY" tools/twin_operator.py     # 일몰 뒤 순찰 요청 — 총괄 관측 계획이 켜져 있으면 요청 안 함 (끄기: TWIN_OPERATOR=0)
 echo
 echo "✔ 브라우저:  http://localhost:8080/inje3d  → '실시간 연결 LIVE'"
 echo "  총괄 화면:  http://localhost:8200/board"

@@ -528,7 +528,7 @@ def test_initial_nearest_uav_goes_first_then_llm_plans_with_its_observation(pw, 
     assert out and out[0]["source"] == "LLM"
     inp = seen[0]
     assert inp["fire_summary"]["burning_cells"] > 0                      # 첫 관측의 불 좌표가 LLM 입력에 들어감
-    assert inp["raw"]["progress"]["basis"] in ("IGNITION_TO_BURNING", "PAST_FIRE_TO_BURNING")   # 첫 비행으로 진행 방향
+    assert inp["raw"]["progress"]["basis"] == "IGNITION_TO_KNOWN_FIRE"   # 첫 비행으로 진행 방향 (신고 칸 → 아는 불)
     assert len(_events(lg, "OBS_INITIAL_DISPATCH")) == 1                 # 첫 출동은 한 번만
 
 
@@ -656,6 +656,20 @@ def test_fire_progress_from_burned_to_burning():
     p = fire_progress(idx, lay)
     assert p["basis"] == "PAST_FIRE_TO_BURNING" and 80 <= p["moved_toward_deg"] <= 100     # 동쪽으로 이동
     assert p["moved_m"] > 300 and p["newest_burning_blocks"][0]["block_id"] == "B5_4"
+
+
+def test_fire_progress_from_ignition_ignores_where_drones_last_looked():
+    """발화 지점을 알면 '발화 지점 → 아는 불 전체 중심' (2026-10-08). 동쪽으로 크게 번진 불에서 드론이 최근 서쪽 가장자리
+    몇 칸만 '불타는 중'으로 봤어도 방향은 동쪽 — 예전 방식(지난 불 → 지금 불타는 중)은 서쪽을 가리켰다."""
+    from orchestrator.observation_planner import belief_layers, fire_progress
+    fire, rest = grid()
+    idx = MapIndex(fire + rest)
+    fs = {f"{c}_12": {"status": "CONFIRMED_BURNED", "sim_time_s": 5000.0} for c in range(11, 18)}   # 동쪽으로 탄 띠
+    fs["10_12"] = {"status": "CONFIRMED", "sim_time_s": 9000.0}                                        # 최근 본 서쪽 끝
+    lay = belief_layers(fs, now_s=9500.0, burn_out=6300.0)
+    p = fire_progress(idx, lay, origin_cell="12_12")
+    assert p["basis"] == "IGNITION_TO_KNOWN_FIRE" and 80 <= p["moved_toward_deg"] <= 100
+    assert 260 <= fire_progress(idx, lay)["moved_toward_deg"] <= 280          # 발화 지점 모름 → 예전 방식 (서쪽)
 
 
 def test_fire_progress_without_past_uses_observation_times():
@@ -914,7 +928,7 @@ def test_candidate_blocks_capped_ahead_first_and_spread_around_fire():
     inp = build_input(idx=idx, fire_states=fs, reports=[{"report_id": "R1", "cell_id": "9_12", "sim_time_s": 120.0}],
                       weather={}, available=[{"resource_id": "A-uav1", "resource_type": "UAV", "lat": LAT0, "lon": LON0}],
                       busy=[], rejections=[], sim_time_s=3000.0, run_id="R", burn_out=6300.0)
-    assert inp["fire_progress"]["basis"] == "IGNITION_TO_BURNING" and 80 <= inp["fire_progress"]["moved_toward_deg"] <= 100
+    assert inp["fire_progress"]["basis"] == "IGNITION_TO_KNOWN_FIRE" and 80 <= inp["fire_progress"]["moved_toward_deg"] <= 100
     assert len(inp["blocks"]) == config.OBS_MAX_CANDIDATE_BLOCKS == 10 and inp["deferred_blocks"] > 0
     assert inp["blocks"][0]["ahead_of_progress"]                         # 동쪽(진행 방향) 구역부터
     sectors = {int(((b["bearing_from_fire_centre_deg"] + 22.5) % 360) // 45) for b in inp["blocks"]}

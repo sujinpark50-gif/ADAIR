@@ -9,6 +9,10 @@
 그것도 없으면 바람이 불어가는 쪽(기상청 관측, 공개 정보). 불은 바람만이 아니라 지형·연료에 따라 번지므로
 풍향만으로 순서를 정하지 않는다 (사용자 결정 2026-10-08). 무엇을 찾았는지는 총괄이 관측으로 안다.
 
+총괄의 관측 계획(OBS_PLANNER)이 켜져 있으면 순찰을 요청하지 않는다 — 관측 계획이 밤 관측까지 맡는다 (사용자 결정
+2026-10-08). 트윈 실행(logs/twin/20261008_211407)에서 단계마다 보낸 순찰 임무가 드론 2대를 붙잡아(보류 81건) 관측 계획
+몫의 관측이 33→20 으로 줄고, 신고 칸 둘레 고정 고리만 돌아 밤 테두리 재현율이 36~52% 로 떨어졌다.
+
     python tools/twin_operator.py               # run_twin.sh 가 함께 띄운다 (TWIN_OPERATOR=0 이면 끔)
 """
 import argparse
@@ -44,7 +48,13 @@ def main():
     # 총괄이 LLM 응답을 기다리는 동안(최대 60초)에는 POST /tasks 가 늦게 돌아온다 → 넉넉히 기다리고, 실패하면 다음 바퀴에 다시
     slow = httpx.Client(timeout=180)
     done = set()
+    said = False
     while True:
+        if _planner_on(cx, a.orch):
+            if not said:
+                print("총괄 관측 계획이 켜져 있다 — 순찰을 요청하지 않는다 (밤 관측도 관측 계획이 맡음)", flush=True)
+                said = True
+            time.sleep(5); continue
         try:
             s = cx.get(f"{a.env}/snapshot").json()
             reps = cx.get(f"{a.env}/reports", params={"until": s["simulation_time_s"]}).json()["reports"]
@@ -74,6 +84,13 @@ def main():
                   flush=True)
             done.add((s["run_id"], k))
         time.sleep(1.0)
+
+
+def _planner_on(cx, orch) -> bool:
+    try:
+        return bool(cx.get(f"{orch}/observation_plan", timeout=10).json().get("enabled"))
+    except (httpx.HTTPError, ValueError):
+        return False
 
 
 def _head(cx, orch):

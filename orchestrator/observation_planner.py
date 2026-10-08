@@ -142,10 +142,12 @@ def known_edge(idx: MapIndex, belief: Dict[str, dict], now_s: Optional[float] = 
 
 def fire_progress(idx: MapIndex, belief: Dict[str, dict], origin_cell: Optional[str] = None) -> Optional[dict]:
     """관측으로 본 불의 진행 방향 (사용자 결정 2026-10-07). 아는 세계만 쓴다 (정답 아님).
-    지난 불 = 다 탄 곳(관측)·다 타고 꺼짐(추정)·신고 칸, 지금 불 = 불타는 중(관측).
+    처음 발화 지점(origin_cell = 첫 신고 칸)을 알면 '발화 지점 → 아는 불 전체(불타는 중·다 탄 곳·꺼짐 추정) 중심'을 쓴다
+    (IGNITION_TO_KNOWN_FIRE, 2026-10-08). '지난 불 중심 → 지금 불타는 중 중심' 은 밤에 불타는 중으로 아는 칸이 드론이
+    최근에 본 몇 칸(4~10칸)뿐이라 불이 가는 쪽이 아니라 '최근에 본 쪽'을 가리켰다 — 트윈 실행(logs/twin/20261008_211407)
+    에서 실제 불 중심이 59~68° 로 가는 동안 117°·133°·15° 로 튀었다. 아는 불 전체를 쓰면 일부만 본 관측에 덜 흔들린다.
+    발화 지점을 모르면: 지난 불 = 다 탄 곳(관측)·다 타고 꺼짐(추정)·신고 칸, 지금 불 = 불타는 중(관측).
     지난 불이 없으면 '불타는 중' 칸을 확인 시각으로 나눠 (가장 이른 시각 묶음 → 가장 늦은 시각 묶음) 비교한다.
-    지난 불이 없고 처음 발화 지점(origin_cell = 첫 신고 칸)을 알면 '발화 지점 → 지금 불 중심'을 쓴다 — 첫 드론이 원으로
-    돌고 오면 본 칸이 모두 같은 시각이라 시각 비교로는 방향이 안 나오기 때문 (사용자 결정 2026-10-07).
     두 묶음의 중심을 잇는 방향·거리를 준다. 계산할 수 없으면 None."""
     def centre(cids):
         cs = [idx.by_id[c] for c in cids if c in idx.by_id]
@@ -153,10 +155,18 @@ def fire_progress(idx: MapIndex, belief: Dict[str, dict], origin_cell: Optional[
             return None
         return sum(c["lat"] for c in cs) / len(cs), sum(c["lon"] for c in cs) / len(cs)
     now_cells = [c for c, b in belief.items() if b["state"] == "BURNING" and c in idx.by_id]
-    past_cells = [c for c, b in belief.items() if b["state"] in ("BURNED", "PRESUMED_BURNED", "REPORTED") and c in idx.by_id]
+    burnt = [c for c, b in belief.items() if b["state"] in ("BURNED", "PRESUMED_BURNED") and c in idx.by_id]
+    known_fire = [c for c in now_cells + burnt if c != origin_cell]
+    if origin_cell in idx.by_id and known_fire:
+        a, b = centre([origin_cell]), centre(known_fire)
+        dist = _dist_m(a[0], a[1], b[0], b[1])
+        return {"basis": "IGNITION_TO_KNOWN_FIRE",
+                "moved_toward_deg": None if dist < 1 else round(_bearing(a[0], a[1], b[0], b[1])),
+                "moved_m": round(dist), "past_cells": len(burnt), "burning_cells": len(now_cells),
+                "known_fire_cells": len(known_fire), "newest_burning_blocks": _newest_blocks(belief, now_cells),
+                "note": "관측으로 확인한 이동이다 (예측 아님). 방향은 북 기준 시계방향, 발화 지점에서 아는 불 전체 중심 쪽"}
+    past_cells = burnt + [c for c, b in belief.items() if b["state"] == "REPORTED" and c in idx.by_id]
     basis = "PAST_FIRE_TO_BURNING"
-    if now_cells and not past_cells and origin_cell in idx.by_id:
-        past_cells, basis = [origin_cell], "IGNITION_TO_BURNING"
     if now_cells and not past_cells:
         times = sorted({belief[c]["sim_time_s"] for c in now_cells if belief[c]["sim_time_s"] is not None})
         if len(times) < 2:
@@ -168,16 +178,20 @@ def fire_progress(idx: MapIndex, belief: Dict[str, dict], origin_cell: Optional[
     if a is None or b is None:
         return None
     dist = _dist_m(a[0], a[1], b[0], b[1])
-    newest = sorted(now_cells, key=lambda c: (-(belief[c]["sim_time_s"] or 0.0), c))
+    return {"basis": basis, "moved_toward_deg": None if dist < 1 else round(_bearing(a[0], a[1], b[0], b[1])),
+            "moved_m": round(dist), "past_cells": len(past_cells), "burning_cells": len(now_cells),
+            "newest_burning_blocks": _newest_blocks(belief, now_cells),
+            "note": "관측으로 확인한 이동이다 (예측 아님). 방향은 북 기준 시계방향, 불이 '향해 간' 쪽"}
+
+
+def _newest_blocks(belief: Dict[str, dict], now_cells: List[str]) -> List[dict]:
+    """가장 최근에 불타는 중으로 확인한 칸의 구역부터 (구역마다 한 번)"""
     blocks = []
-    for c in newest:
+    for c in sorted(now_cells, key=lambda c: (-(belief[c]["sim_time_s"] or 0.0), c)):
         bid = MapIndex.block_id(c)
         if bid not in [x["block_id"] for x in blocks]:
             blocks.append({"block_id": bid, "last_burning_sim_s": belief[c]["sim_time_s"]})
-    return {"basis": basis, "moved_toward_deg": None if dist < 1 else round(_bearing(a[0], a[1], b[0], b[1])),
-            "moved_m": round(dist), "past_cells": len(past_cells), "burning_cells": len(now_cells),
-            "newest_burning_blocks": blocks,
-            "note": "관측으로 확인한 이동이다 (예측 아님). 방향은 북 기준 시계방향, 불이 '향해 간' 쪽"}
+    return blocks
 
 
 def build_input(*, idx: MapIndex, fire_states: Dict[str, dict], reports: List[dict], weather: dict,
