@@ -124,7 +124,7 @@ def test_map_fuel_is_static_not_truth(env):
 
 def test_stations_single_source(env):
     st = env.stations()
-    assert {s["base_id"] for s in st} == {"A", "B"} and all("lat" in s and "lon" in s for s in st)
+    assert {"A", "B"} <= {s["base_id"] for s in st} and all("lat" in s and "lon" in s for s in st)
 
 
 # ---------------------------------------------------------------- ENV-03

@@ -21,6 +21,12 @@ RESOURCES = [
     {"resource_id": "B-ugv1",  "resource_type": "UGV",
      "base": "B", "home_node": "B", "px4_instance": 2, "px4_model": "r1_rover", "max_speed_mps": 60 / 3.6},
 ]
+# 추가 UGV (sim 전용, 기본 없음). UGV_EXTRA="자원:거점[:출발노드],..." — 출발노드를 생략하면 거점 노드.
+# 예: 트윈 --extra-fleet 의 원통(C)은 도로망 밖이라 가장 가까운 도로 노드(495165 광치령로, 1.3 km 남쪽)에서 출발
+for _i, _p in enumerate(p for p in os.getenv("UGV_EXTRA", "").split(",") if ":" in p):
+    _rid, _base, *_node = _p.split(":")
+    RESOURCES.append({"resource_id": _rid, "resource_type": "UGV", "base": _base, "home_node": _node[0] if _node else _base,
+                      "px4_instance": 10 + _i, "px4_model": "r1_rover", "max_speed_mps": 60 / 3.6})
 for _r in RESOURCES:
     _r["px4_port"] = 14540 + _r["px4_instance"]
 

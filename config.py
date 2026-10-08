@@ -46,6 +46,8 @@ if "A" in _STATIONS:
     BASE_A_NAME, BASE_A_LAT, BASE_A_LON = _STATIONS["A"]["name"], float(_STATIONS["A"]["lat"]), float(_STATIONS["A"]["lon"])
 if "B" in _STATIONS:
     BASE_B_NAME, BASE_B_LAT, BASE_B_LON = _STATIONS["B"]["name"], float(_STATIONS["B"]["lat"]), float(_STATIONS["B"]["lon"])
+if "C" in _STATIONS:   # 원통119안전센터 (2026-10-08 추가, 좌표 미확인). 원점 계산에는 넣지 않는다
+    BASE_C_NAME, BASE_C_LAT, BASE_C_LON = _STATIONS["C"]["name"], float(_STATIONS["C"]["lat"]), float(_STATIONS["C"]["lon"])
 STATIONS_SOURCE = "fire_stations.json" if _STATIONS else "config.py 기본값"
 
 COORDINATE_ORIGIN_LAT = (BASE_A_LAT + BASE_B_LAT) / 2
@@ -80,8 +82,10 @@ ORCHESTRATOR_SERVER_URL = "TBD"
 UAV_ENDPOINTS = {
     "A-uav1": "http://127.0.0.1:8000",   # 로컬 mock (클라우드 서버는 김동현님께 기동 요청 시 주소 교체)
     "A-uav2": "http://127.0.0.1:8001",   # 로컬 mock
-    "B-uav1": "TBD",
-    "B-uav2": "TBD",
+    # 원통119(C) 예비 드론 — 트윈은 run_servers 가 8002·8003 에 띄우고 ORCH_UAV_ENDPOINTS 로 주소를 준다.
+    # 기린(B) 드론은 발화점 약 18 km 로 항속 반경 밖이라 뺌 (2026-10-08)
+    "C-uav1": "TBD",
+    "C-uav2": "TBD",
 }
 
 # UAV 판단에 필요한 풍속의 출처 — PX4/Gazebo가 풍속을 제공하지 않아(uav/NOTE.md, docs/uav/R01_R05.md 1-4 확인됨),

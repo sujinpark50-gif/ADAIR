@@ -13,7 +13,8 @@ ADAIR 서버 일괄 실행·중지·상태 확인 (통합 담당)
     python run_servers.py start --demo-extinguish   # 도착 시 진화 반영 (INT-02 시연 전용)
     python run_servers.py start --uav-url http://<EC2 IP>:8000   # 원격(real) UAV 에 연결, 로컬 UAV 는 띄우지 않음
     python run_servers.py start --twin          # 2019 인제 디지털 트윈 (멘토 패치, tools/run_twin.sh 와 같은 구성)
-                                                #   환경 계약 서버(8300) + UAV 2대 + UGV + 총괄(팀 환경) + 관제판 + 트윈 시계 + 야간 순찰
+                                                #   환경 계약 서버(8300) + UAV 2대(인제) + 예비 UAV 2대(원통 8002·8003) + UGV + 총괄(팀 환경) + 관제판 + 트윈 시계 + 야간 순찰
+    python run_servers.py start --twin --extra-fleet   # + 원통 UGV 2대 (C-ugv1·2)
                                                 #   + 지상 출동 요청(불 확인 → 소방차 마을회관 방어, TWIN_DISPATCH_ARGS 로 옵션)
                                                 #   관제판은 환경 서버를 읽기만 하고 출동은 총괄 경유. 3D 화면: /inje3d
     python run_servers.py status                # 켜진 서버와 응답 여부
@@ -92,6 +93,14 @@ def server_defs(opts: dict) -> dict:
                  "UAV_MOCK_TIME_SCALE": speed,
                  "UAV_RETASK_WHILE_RETURNING": os.environ.get("UAV_RETASK_WHILE_RETURNING", "1")} if tw else {}
     orch_env = {**tw, "ORCH_ENV_MODE": "team_http", "ORCH_DB_PATH": str(run / "orchestrator.sqlite3")} if tw else {}
+    # 드론 (2026-10-08): A 인제119 2대(트윈은 차량 집결지에서 이륙) + C 원통119 예비 2대(8002·8003, 기지에서 이륙).
+    #   기린(B)은 발화점 18 km 로 드론 항속 반경(약 12.5 km) 밖이라 드론을 두지 않는다.
+    # --extra-fleet: 원통에 UGV C-ugv1·2 추가. 원통은 UGV 도로망 밖이라 가장 가까운 도로 노드
+    #   495165(광치령로, 원통 남쪽 1.3 km)에서 출발한다.
+    extra = opts.get("extra_fleet")
+    reserve_uav_env = {k: v for k, v in uav_extra.items() if k != "UAV_HOME"}   # 전진 이륙 지점 말고 소속 기지(C)
+    if tw:
+        orch_env["ORCH_UAV_ENDPOINTS"] = "C-uav1=http://127.0.0.1:8002,C-uav2=http://127.0.0.1:8003"
     uv = [PY, "-m", "uvicorn"]
     return {
         "env":  {"cwd": ROOT, "port": 8300, "health": "/health",
@@ -103,9 +112,16 @@ def server_defs(opts: dict) -> dict:
         "uav2": {"cwd": ROOT / "uav" / "uav-agent", "port": 8001, "health": "/health",
                  "cmd": uv + ["main:app", "--host", "127.0.0.1", "--port", "8001"],
                  "env": {"UAV_ID": "A-uav2", "UAV_MODE": "mock", **uav_extra}, "desc": "UAV A-uav2 (mock)"},
+        "cuav1": {"cwd": ROOT / "uav" / "uav-agent", "port": 8002, "health": "/health",
+                  "cmd": uv + ["main:app", "--host", "127.0.0.1", "--port", "8002"],
+                  "env": {"UAV_ID": "C-uav1", "UAV_MODE": "mock", **reserve_uav_env}, "desc": "예비 UAV C-uav1 원통 (mock)"},
+        "cuav2": {"cwd": ROOT / "uav" / "uav-agent", "port": 8003, "health": "/health",
+                  "cmd": uv + ["main:app", "--host", "127.0.0.1", "--port", "8003"],
+                  "env": {"UAV_ID": "C-uav2", "UAV_MODE": "mock", **reserve_uav_env}, "desc": "예비 UAV C-uav2 원통 (mock)"},
         "ugv":  {"cwd": ROOT, "port": 8100, "health": "/health",
                  "cmd": uv + ["ugv.server:app", "--host", "127.0.0.1", "--port", "8100"],
                  "env": {"UGV_DRIVER": "sim", **({"UGV_STATE_DIR": str(run / "ugv")} if tw else {}),
+                         **({"UGV_EXTRA": "C-ugv1:C:495165,C-ugv2:C:495165"} if extra else {}),
                          # 트윈: 차량 배속 = 트윈 시계 배속 (밖에서 UGV_TIME_SCALE 을 주면 그 값을 쓴다)
                          **({"UGV_TIME_SCALE": os.environ.get("UGV_TIME_SCALE", speed)} if tw else {})},
                  "desc": "UGV 서버 (sim)"},
@@ -126,8 +142,8 @@ def server_defs(opts: dict) -> dict:
     }
 
 
-ORDER = ["env", "uav1", "uav2", "ugv", "orch", "web", "clock", "operator", "dispatch"]   # 켜는 순서
-TWIN_SET = ORDER                                   # --twin 일 때 전부
+ORDER = ["env", "uav1", "uav2", "cuav1", "cuav2", "ugv", "orch", "web", "clock", "operator", "dispatch"]   # 켜는 순서
+TWIN_SET = ORDER                                   # --twin 일 때 전부 (원통 예비 드론 포함)
 BASIC = ["env", "uav1", "uav2", "ugv", "orch", "web"]   # 포트가 있는 서버
 
 
@@ -239,12 +255,12 @@ def start_one(name: str, defs: dict, st: dict) -> None:
 def cmd_start(a) -> None:
     st = load_state()
     opts = {"uav_url": a.uav_url, "via_orch": a.via_orch, "demo_extinguish": a.demo_extinguish,
-            "twin": a.twin, "twin_speed": a.twin_speed}
+            "twin": a.twin, "twin_speed": a.twin_speed, "extra_fleet": a.extra_fleet}
     if a.twin:
         opts["twin_dir"] = str(ROOT / "logs" / "twin" / time.strftime("%Y%m%d_%H%M%S"))
     # 전체 시작(이름 생략)은 이번에 준 설정으로 새로 정하고,
     # 일부만 켤 때(start orch 등)는 옵션을 주지 않으면 지난 설정을 그대로 쓴다.
-    if not a.names or any([a.uav_url, a.via_orch, a.demo_extinguish, a.twin]):
+    if not a.names or any([a.uav_url, a.via_orch, a.demo_extinguish, a.twin, a.extra_fleet]):
         st["opts"] = opts
     defs = server_defs(st["opts"])
     if st["opts"].get("twin") and not a.names:
@@ -326,6 +342,8 @@ def main() -> None:
     s.add_argument("--demo-extinguish", action="store_true", help="도착 시 진화 반영 (INT-02 시연 전용)")
     s.add_argument("--twin", action="store_true", help="2019 인제 디지털 트윈 (멘토 패치) 구성으로 전부 켜기")
     s.add_argument("--twin-speed", type=int, default=100, help="트윈 시계 배속 (기본 100, real 드론이면 1)")
+    s.add_argument("--extra-fleet", action="store_true",
+                   help="원통119(C)에 UGV C-ugv1·2 추가 (--twin 과 함께)")
     s.set_defaults(fn=cmd_start)
     for name, fn, h in (("stop", cmd_stop, "서버 끄기 (이름 생략 시 전부)"),
                         ("restart", cmd_restart, "서버 다시 켜기")):

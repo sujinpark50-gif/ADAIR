@@ -65,6 +65,8 @@ ENV_STATE_DIR = os.getenv("ORCH_ENV_STATE_DIR", str(Path(__file__).resolve().par
 # 외부 자원 주소 — 통합 config 를 그대로 따른다 (단일 출처)
 # ---------------------------------------------------------------------------
 UAV_ENDPOINTS = dict(team_config.UAV_ENDPOINTS)
+# 실행별 덮어쓰기 (예: 트윈이 원통 예비 드론 C-uav1·2 주소를 준다). "C-uav1=http://127.0.0.1:8002,C-uav2=..."
+UAV_ENDPOINTS.update(p.split("=", 1) for p in os.getenv("ORCH_UAV_ENDPOINTS", "").split(",") if "=" in p)
 UGV_SERVER_URL = team_config.UGV_SERVER_URL
 HTTP_TIMEOUT_S = float(os.getenv("ORCH_HTTP_TIMEOUT_S", "10"))   # PROVISIONAL (실제 시계)
 
@@ -290,12 +292,13 @@ OBS_INITIAL_ORBIT_DURATION_S = 120.0
 # 시각부터 3 × 환경 단계 길이(tick_s)가 지나면 '다 타고 꺼짐(추정)'으로 표시한다. 트윈(2,100초)이면 1시간 45분.
 # 관측으로 확인한 '탄 곳'(BURNED)과 구분한다. 환경 단계 길이를 모르면 추정하지 않는다.
 OBS_BURN_OUT_STEPS = 3
-# 예비 드론 (사용자 결정 2026-10-07): B 기지(기린119) 드론 3·4번은 대기하다가, 불이 B 쪽으로 다가온다고 판단되면 투입한다.
-#   물리 판단: 관측으로 본 불의 이동 방향(fire_progress)이 '불 → B 기지' 방향과 ±45° 이내이고 한 칸(90 m) 이상 움직였을 때
+# 예비 드론 (사용자 결정 2026-10-07, 기지 변경 2026-10-08): C 기지(원통119) 드론 C-uav1·2 는 대기하다가,
+#   불이 C 쪽으로 다가온다고 판단되면 투입한다. (전에는 B 기린119 — 발화점 약 18 km 로 항속 반경 약 12.5 km 밖이라 뺌)
+#   물리 판단: 관측으로 본 불의 이동 방향(fire_progress)이 '불 → 예비 기지' 방향과 ±45° 이내이고 한 칸(90 m) 이상 움직였을 때
 #   LLM 판단: 계획 답변의 request_reserve_uavs=true (이유 필수)
-#   한 번 투입하면 그 run 동안 계속 쓴다. B 기지 좌표는 팀 공통 config (fire_stations.json)
-OBS_RESERVE_UAVS = ("B-uav1", "B-uav2")
-OBS_RESERVE_BASE = "B"
+#   한 번 투입하면 그 run 동안 계속 쓴다. 기지 좌표는 팀 공통 config (fire_stations.json)
+OBS_RESERVE_UAVS = tuple(r for r in os.getenv("ORCH_RESERVE_UAVS", "C-uav1,C-uav2").split(",") if r)
+OBS_RESERVE_BASE = os.getenv("ORCH_RESERVE_BASE", "C")
 OBS_RESERVE_TRIGGER_DEG = 45.0
 OBS_RESERVE_MIN_MOVE_M = 90.0
 # 앞질러 보내기 (사용자 결정 2026-10-07): 드론이 도착했는데 테두리·불타는 곳·안 본 꺼진 자리가 모두 없으면

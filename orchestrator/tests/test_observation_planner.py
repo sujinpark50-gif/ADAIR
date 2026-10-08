@@ -674,16 +674,16 @@ def test_fire_progress_without_past_uses_observation_times():
 
 @pytest.fixture
 def pw4(tmp_path, obs_planner, monkeypatch):
-    """B 기지를 시험 지도 동쪽(오른쪽)에 둔 세계. UAV 4대 (B-uav1·2 는 예비)"""
+    """C 기지를 시험 지도 동쪽(오른쪽)에 둔 세계. UAV 4대 (C-uav1·2 는 예비)"""
     import config as team_config
-    monkeypatch.setattr(team_config, "BASE_B_LAT", LAT0 - 12 * DLAT, raising=False)
-    monkeypatch.setattr(team_config, "BASE_B_LON", LON0 + 40 * DLON, raising=False)
+    monkeypatch.setattr(team_config, "BASE_C_LAT", LAT0 - 12 * DLAT, raising=False)
+    monkeypatch.setattr(team_config, "BASE_C_LON", LON0 + 40 * DLON, raising=False)
     fire, rest = grid()
     env = FixtureEnv(fire_cells=fire, risk_cells=rest, wind_dir_deg=270.0,
                      reports=[{"cell_id": REPORT_CELL, "sim_time_s": 120.0, "source": "119_CALL"}])
-    ids = ("A-uav1", "A-uav2", "B-uav1", "B-uav2")
+    ids = ("A-uav1", "A-uav2", "C-uav1", "C-uav2")
     uav = FakeUav(ids=ids, positions={"A-uav1": (LAT0 + 0.02, LON0), "A-uav2": (LAT0 + 0.02, LON0 + 0.01),
-                                      "B-uav1": (LAT0 - 0.01, LON0 + 0.05), "B-uav2": (LAT0 - 0.01, LON0 + 0.05)})
+                                      "C-uav1": (LAT0 - 0.01, LON0 + 0.05), "C-uav2": (LAT0 - 0.01, LON0 + 0.05)})
     uav.default_script = normal_flight()
     ugv = FakeUgv()
     _ugv_arrives_at_target(ugv)
@@ -702,14 +702,14 @@ def test_reserve_uavs_stand_by_until_fire_moves_toward_base(pw4):
     _to_report_time(env)
     orch.sync()
     b = orch._obs_build()
-    assert {"B-uav1", "B-uav2"}.isdisjoint(r["resource_id"] for r in b["inp"]["resources_available"])
-    assert b["unavailable"]["B-uav1"] == "RESERVE_STANDBY" and b["inp"]["reserve_uavs"]["active"] is False
+    assert {"C-uav1", "C-uav2"}.isdisjoint(r["resource_id"] for r in b["inp"]["resources_available"])
+    assert b["unavailable"]["C-uav1"] == "RESERVE_STANDBY" and b["inp"]["reserve_uavs"]["active"] is False
     _known(lg, "12_12", "CONFIRMED_BURNED", 100.0)                       # 지난 불 (서쪽)
-    _known(lg, "16_12", "CONFIRMED", 120.0)                              # 지금 불 (동쪽 = B 쪽으로 이동)
+    _known(lg, "16_12", "CONFIRMED", 120.0)                              # 지금 불 (동쪽 = C 쪽으로 이동)
     b = orch._obs_build()
     ev = [e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]
     assert ev and ev[0]["result"] == "PHYSICAL_FIRE_PROGRESS" and ev[0]["detail"]["angle_diff_deg"] <= 45
-    assert {"B-uav1", "B-uav2"} <= {r["resource_id"] for r in b["inp"]["resources_available"]}
+    assert {"C-uav1", "C-uav2"} <= {r["resource_id"] for r in b["inp"]["resources_available"]}
     orch._obs_build()
     assert len([e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]) == 1   # 한 번만
 
@@ -719,7 +719,7 @@ def test_reserve_not_activated_when_fire_moves_away(pw4):
     _to_report_time(env)
     orch.sync()
     _known(lg, "16_12", "CONFIRMED_BURNED", 100.0)
-    _known(lg, "12_12", "CONFIRMED", 120.0)                              # 서쪽으로 이동 (B 반대)
+    _known(lg, "12_12", "CONFIRMED", 120.0)                              # 서쪽으로 이동 (C 반대)
     b = orch._obs_build()
     assert b["inp"]["reserve_uavs"]["active"] is False
     assert not [e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]
@@ -730,19 +730,19 @@ def test_llm_can_request_reserve_uavs(pw4):
 
     def reply(kw):
         inp = _seen(kw)
-        return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "B 쪽으로 번질 위험",
+        return {"input_hash": inp["input_hash"], "predicted_blocks": [], "prediction_rationale": "C 쪽으로 번질 위험",
                 "assignments": [{"resource_id": r["resource_id"], "block_ids": [inp["blocks"][n]["block_id"]],
                                  "purpose": "BOUNDARY_CHECK", "evidence_refs": [], "rationale": "확인"}
                                 for n, r in enumerate(inp["resources_available"])],
-                "request_reserve_uavs": True, "reserve_reason": "불이 동쪽 오르막으로 번져 B 기지 쪽으로 다가옴"}
+                "request_reserve_uavs": True, "reserve_reason": "불이 동쪽 오르막으로 번져 C 기지 쪽으로 다가옴"}
     orch.llm = LlmPlanner(client=FakeOpenAI(reply), timeout_s=30, max_calls=6)
     _to_report_time(env)
     orch.obs_plan_cycle()
     ev = [e for e in lg.events() if e["event_type"] == "RESERVE_UAVS_ACTIVATED"]
-    assert ev and ev[0]["result"] == "LLM_REQUEST" and "B 기지" in ev[0]["detail"]["reason"]
+    assert ev and ev[0]["result"] == "LLM_REQUEST" and "C 기지" in ev[0]["detail"]["reason"]
     assigned = {a["resource_id"] for e in lg.events() if e["event_type"] == "OBS_PLAN_EXECUTED"
                 for a in e["detail"]["assignments"]}
-    assert assigned & {"B-uav1", "B-uav2"}                                # 투입 뒤 다음 계획에서 배정됨
+    assert assigned & {"C-uav1", "C-uav2"}                                # 투입 뒤 다음 계획에서 배정됨
 
 
 def test_reserve_request_needs_reason():
