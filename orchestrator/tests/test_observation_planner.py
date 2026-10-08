@@ -933,10 +933,9 @@ def test_one_plan_per_env_step_then_gathered_next_step(pw):
     assert any("OBSERVATION" == e["event_type"] for e in lg.events())   # 관측 반영은 기다리지 않음
     env.advance(1)
     nxt = orch.obs_plan_cycle()
-    # 기지에 내린 드론 둘은 30분 충전 중 (2026-10-08) → 다음 단계 회의는 UGV 만 배정하고 충전 중 드론을 알려 준다
-    assert nxt and [r["resource_id"] for r in nxt[0]["assignments"]] == ["A-ugv1"]
-    plan = _events(lg, "OBS_PLAN")[-1]["detail"]
-    assert plan["resources_unavailable"] == {"A-uav1": "CHARGING", "A-uav2": "CHARGING"}
+    # 드론은 다음 지점을 받기 전에 내려앉았지만 충전 결정이 아니라 충전하지 않는다 (2026-10-08) → 셋 모두 다음 회의에
+    assert {e["resource_id"] for e in _events(lg, "OBS_LANDED_BEFORE_NEXT_STOP")} == {"A-uav1", "A-uav2"}
+    assert nxt and len(nxt[0]["assignments"]) == 3
 
 
 def test_frontier_includes_unobserved_next_to_passed_fire():
@@ -1135,6 +1134,7 @@ def test_landed_drone_charges_30min_then_gets_rule_order(pw):
     orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
     _to_report_time(env)
     orch.obs_plan_cycle()
+    orch._to_charge |= {"A-uav1", "A-uav2"}              # 충전 복귀로 정한 드론 (규칙 판단은 다른 시험)
     _poll(orch)                                          # normal_flight: 관측 → 복귀 → 착륙(DONE)
     start = [e for e in _events(lg, "OBS_CHARGING_START") if e["resource_id"] == "A-uav1"][0]
     assert start["result"] == "LANDED_AT_BASE" and start["detail"]["charge_s"] == 1800.0

@@ -1877,7 +1877,12 @@ class Orchestrator:
             out = move("RELEASED", "RESOURCE_READY_CONFIRMED", release=True,
                        extra={"released_evidence": {"ready": True, "phase": phase}})
             if att["command"]["resource_type"] == "UAV" and config.OBS_PLANNER_ENABLED:
-                self._start_charging(att["resource_id"], "LANDED_AT_BASE", task_id=att["task_id"])
+                if self._queued_stop(att["resource_id"]) and att["resource_id"] not in self._to_charge:
+                    # 다음 지점을 보내기 전에 내려앉음 (충전 결정이 아님) → 충전하지 않고 기지에서 다음 지점으로 출발
+                    self.ledger.log("OBS_LANDED_BEFORE_NEXT_STOP", task_id=att["task_id"], resource_id=att["resource_id"],
+                                    detail={"charging": False})
+                else:
+                    self._start_charging(att["resource_id"], "LANDED_AT_BASE", task_id=att["task_id"])
             return out
         if att["substatus"] in ("RETURNING", "FAULTED"):
             return None                     # 아직 READY 아님 → 점유 유지
@@ -2147,7 +2152,38 @@ class Orchestrator:
                                    weather=self._obs_weather(idx, fire_states, now), available=avail, busy=busy,
                                    rejections=list(self._obs_rejections[1]), sim_time_s=now, run_id=snap.run_id,
                                    burn_out=self._burn_out_s(), reserve=reserve, charging=charging)
+        inp = self._drop_out_of_range(inp, idx, why)
         return {"inp": inp, "idx": idx, "unavailable": why, "sim": now}
+
+    def _drop_out_of_range(self, inp: dict, idx, why: Dict[str, str]) -> dict:
+        """배터리로 그 구역 한 곳도 다녀올 수 없는 드론은 구역의 보낼 수 있는 자원에서 뺀다. 어느 구역에도 못 가는
+        드론은 가용 자원에서 뺀다 (OUT_OF_RANGE) — 안 되는 것은 LLM 에 주기 전에 뺀다 (2026-10-08 실제 환경 실행:
+        먼 기지의 예비 드론에 매번 구역을 주고 전부 잘려 나갔다). 입력 해시는 다시 계산한다."""
+        uavs = {r["resource_id"]: r for r in inp["resources_available"] if r["resource_type"] == "UAV"}
+        if not uavs:
+            return inp
+        reach = {rid: set() for rid in uavs}
+        blocks = []
+        for b in inp["blocks"]:
+            ok = [x for x in b["allowed_resources"]
+                  if x not in uavs or self._trim_order(uavs[x], [b["target_cell"]], idx) == 1]
+            for x in ok:
+                if x in reach:
+                    reach[x].add(b["block_id"])
+            if ok:
+                blocks.append({**b, "allowed_resources": ok,
+                               "distance_km_from": {k: v for k, v in b["distance_km_from"].items() if k in ok}})
+        gone = sorted(rid for rid, bs in reach.items() if not bs)
+        if not gone and len(blocks) == len(inp["blocks"]) and all(
+                len(a["allowed_resources"]) == len(b["allowed_resources"]) for a, b in zip(blocks, inp["blocks"])):
+            return inp
+        for rid in gone:
+            why[rid] = "OUT_OF_RANGE"
+        out = {**inp, "blocks": blocks,
+               "resources_available": [r for r in inp["resources_available"] if r["resource_id"] not in gone]}
+        out["input_hash"] = content_hash({k: v for k, v in out.items()
+                                          if k not in ("simulation_time_s", "input_hash")})[:16]
+        return out
 
     def obs_plan_request(self) -> Optional[dict]:
         """관측 계획이 필요하면 재료, 아니면 None. 필요 = 신고가 있고, 가용 자원이 있고, 입력이 지난 계획과 다름."""
@@ -2636,9 +2672,17 @@ class Orchestrator:
     def _dispatch_queued_order_stops(self) -> None:
         if not config.OBS_PLANNER_ENABLED:
             return
-        for t in self.ledger.list_tasks(["PENDING"]):
-            if (t.request_key or "").startswith("OBSORDER:"):
-                self._dispatch_order_stop(t)
+        res = self.ledger.reservations()
+        queued = [t for t in self.ledger.list_tasks(["PENDING"]) if (t.request_key or "").startswith("OBSORDER:")]
+        # 기지로 돌아가는 중인 드론 먼저 (늦으면 내려앉는다) → 그다음 드론 → UGV
+        queued.sort(key=lambda t: (t.assigned_resource_id not in res, t.requirements.resource_types[0] != "UAV",
+                                   t.task_id))
+        for t in queued:
+            self._dispatch_order_stop(t)
+
+    def _queued_stop(self, rid: str) -> bool:
+        return any(t.assigned_resource_id == rid and (t.request_key or "").startswith("OBSORDER:")
+                   for t in self.ledger.list_tasks(["PENDING"]))
 
     def _call_while_dispatching_orders(self, req: dict) -> dict:
         """LLM 계획 호출(수십 초)을 기다리는 동안에도 같은 배정 작업자가 지시서 다음 지점을 보낸다 (2026-10-08 실제
