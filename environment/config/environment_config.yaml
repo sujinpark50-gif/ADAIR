@@ -95,7 +95,9 @@ ignition:
 #   - "toward": wind_direction_deg represents direction wind blows TOWARD.
 weather:
   mode: "timeseries"       # supported: "fixed", "timeseries"
-  wind_direction_convention: "from"  # supported: "from", "toward"
+  # "toward": REPORT.md 보정값(seed 43, Step 47 IoU 0.33·Dice 0.50)이 toward 기준이고, 실제 불길도 남남동쪽으로 퍼졌다.
+  # "from" 이면 같은 설정에서 IoU 0.02 (불이 23칸에서 꺼짐) — 2026-10-08 evaluate_2019_inje.py 재확인
+  wind_direction_convention: "toward"  # supported: "from", "toward"
 
   fixed:
     wind_speed_ms: 6.6
