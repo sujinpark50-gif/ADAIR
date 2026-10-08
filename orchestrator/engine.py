@@ -92,6 +92,9 @@ class Orchestrator:
         self._to_charge = set()               # 충전하러 기지로 가는 드론 (계획에서 뺀다)
         self._charged_ready = set()           # 충전을 마쳐 규칙 지시서를 받을 드론
         self._emerg_cache = (None, [])        # (환경 상태 판, 인명피해 예상 장소 목록)
+        # 지시서 장부 잠금: 배정 작업자(회의 적용)와 추적 루프(관측 뒤 다음 행동)가 동시에 바꾸지 않게 (2026-10-08 run5)
+        import threading
+        self._order_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # 목적 상태 전이 (공통 경계)
@@ -2374,19 +2377,21 @@ class Orchestrator:
             cells = [blocks[bid]["target_cell"] for bid in a["block_ids"]]
             keep = self._trim_order(r, cells, idx)
             stops = [{"block_id": bid, "cell_id": c} for bid, c in zip(a["block_ids"], cells)][:keep]
-            self._orders[rid] = {"plan_id": plan_id, "source": source, "stops": stops, "next": 0, "new_fire": 0,
-                                 "kind": "ORDER", "resource_type": r["resource_type"], "since_s": sim}
+            with self._order_lock:
+                self._cancel_queued_stops(rid, f"REPLACED_BY_ORDER:{plan_id}", sim)   # 아직 안 보낸 앞 지시서 지점
+                self._orders[rid] = {"plan_id": plan_id, "source": source, "stops": stops, "next": 0, "new_fire": 0,
+                                     "kind": "ORDER", "resource_type": r["resource_type"], "since_s": sim}
+                task = self._start_order(rid, sim)
             row = {"resource_id": rid, "block_id": a["block_ids"][0], "block_ids": a["block_ids"],
                    "trimmed_for_battery": a["block_ids"][keep:], "purpose": a["purpose"]}
             self.ledger.log("OBS_ORDER", resource_id=rid, result=source, sim_time_s=sim,
                             detail={"plan_id": plan_id, "stops": stops, "trimmed_for_battery": row["trimmed_for_battery"],
                                     "battery_pct": r.get("battery_pct"), "now": r.get("now")})
-            started = self._start_order(rid, sim)
-            if started is None:
+            if task is None:
                 results.append({**row, "task_id": None, "reason": None,
                                 "dispatch": "QUEUED_AFTER_CURRENT_STOP" if stops else "NO_STOP_WITHIN_BATTERY"})
                 continue
-            task, out = started
+            out = self._dispatch_order_stop(task)                  # 출동 HTTP 는 잠금 밖에서
             row.update({"task_id": task.task_id, "dispatch": out.get("status"), "reason": out.get("reason")})
             if out.get("status") == "HOLD":
                 # 고른 자원이 거절·불가 → 이 조합은 빼고 다시 계획 (다른 자원으로 조용히 바꾸지 않는다)
@@ -2418,9 +2423,15 @@ class Orchestrator:
             t, cur, keep = t + leg, (c["lat"], c["lon"]), keep + 1
         return keep
 
-    def _start_order(self, rid: str, sim):
-        """지시서의 첫 지점: 자원이 쉬고 있거나 지금 지점 관측을 마쳤으면 바로 Task 를 만들고 보낸다 → (task, 배정 결과).
-        아직 지점을 보러 가는 중이면 None (그 관측 뒤 _order_after_observation 이 시작한다)."""
+    def _cancel_queued_stops(self, rid: str, why: str, sim) -> None:
+        for t in self.ledger.list_tasks(["PENDING", "HOLD"]):
+            if (t.assigned_resource_id == rid and (t.request_key or "").startswith("OBSORDER:")
+                    and not self.ledger.open_mission_attempts(t.task_id)):
+                self._set_purpose(t, "CANCELLED", basis=why, hold_reason=why, resume=None, sim=sim)
+
+    def _start_order(self, rid: str, sim) -> Optional[Task]:
+        """지시서의 첫 지점: 자원이 쉬고 있거나 지금 지점 관측을 마쳤으면 바로 Task 를 만든다 (보내기는 부른 쪽이 잠금 밖에서).
+        아직 지점을 보러 가는 중이면 None (그 관측 뒤 _order_after_observation 이 시작한다). _order_lock 안에서 부른다."""
         o = self._orders.get(rid)
         if not o or not o["stops"]:
             return None
@@ -2429,11 +2440,12 @@ class Orchestrator:
             att = self.ledger.get_attempt(held["attempt_id"])
             if not att or att["substatus"] not in POST_MISSION:
                 return None
-        task = self._queue_stop(rid, sim)
-        return task, self._dispatch_order_stop(task)
+        return self._queue_stop(rid, sim)
 
-    def _queue_stop(self, rid: str, sim) -> Task:
-        o = self._orders[rid]
+    def _queue_stop(self, rid: str, sim) -> Optional[Task]:
+        o = self._orders.get(rid)
+        if not o or o["next"] >= len(o["stops"]):
+            return None
         st = o["stops"][o["next"]]
         o["next"] += 1
         c = self._map_index().by_id[st["cell_id"]]
@@ -2471,7 +2483,10 @@ class Orchestrator:
             t = self.ledger.get_task(task.task_id)
             self._set_purpose(t, "CANCELLED", basis="PLANNED_RESOURCE_REJECTED",
                               hold_reason=f"PLANNED_RESOURCE_REJECTED:{out.get('reason')}", resume=None)
-            self._orders.pop(rid, None)
+            with self._order_lock:
+                o = self._orders.get(rid)
+                if o and any(st["cell_id"] == task.target.cell_id for st in o["stops"]):
+                    self._orders.pop(rid, None)        # 이 지점을 가진 지시서만 거둔다 (그 사이 바뀐 새 지시서는 둔다)
             if retasked:      # 드론은 그대로 기지로 돌아가 내린다 — 추적을 끊었으니 지금부터 충전으로 본다
                 self._start_charging(rid, "RETASK_REJECTED_RETURNING_HOME", task_id=task.task_id)
         self.ledger.log("OBS_ORDER_STOP_DISPATCH", task_id=task.task_id, resource_id=rid, result=out.get("status"),
@@ -2485,6 +2500,10 @@ class Orchestrator:
         일찍 끝남 → 지시서 동안 새로 찾은 불 칸이 있으면 불 머리 따라가기 (드론 배터리는 복귀 안전선 15% 까지 —
         드론이 거절하면 멈춤) / 없으면 드론은 충전 복귀(마지막으로 하늘에 남은 드론이고 배터리 30% 이상이면 불 머리),
         UGV 는 대기."""
+        with self._order_lock:
+            self._order_after_observation_locked(task, rid, new_fire, sim, ground)
+
+    def _order_after_observation_locked(self, task: Task, rid: str, new_fire: int, sim, ground: bool) -> None:
         o = self._orders.get(rid)
         rtype = "UGV" if ground else "UAV"
         if o is None:          # 첫 출동·앞질러 보내기 같은 한 지점 출동도 같은 규칙으로 끝낸다
@@ -2609,8 +2628,9 @@ class Orchestrator:
     # ------------------------------------------------------------------
     def _start_charging(self, rid: str, why: str, task_id=None) -> None:
         sim = self.env.read().simulation_time_s or 0.0
-        self._to_charge.discard(rid)
-        self._orders.pop(rid, None)
+        with self._order_lock:
+            self._to_charge.discard(rid)
+            self._orders.pop(rid, None)
         self._charged_ready.discard(rid)
         self._charging[rid] = {"since_s": sim, "until_s": sim + config.OBS_DRONE_CHARGE_S}
         for t in self.ledger.list_tasks(["PENDING", "HOLD"]):     # 내려앉았으니 남은 지시서 지점은 거둔다

@@ -1325,3 +1325,18 @@ def test_ugv_sees_600m_always_and_up_to_2km_unless_terrain_blocks():
     assert "20_15" not in seen and not ridge["target_covered"]              # 능선 너머 불은 안 보임
     assert [p["cell_id"] for p in ridge["fire_points"]] == ["5_15"]
     assert ridge["footprint"]["hidden_cells"] > 0
+
+
+def test_new_order_replaces_queued_stop_and_never_overruns(pw):
+    """회의 적용과 관측 뒤 다음 행동이 겹쳐도 지시서 범위를 넘지 않고, 아직 안 보낸 앞 지점은 거둔다 (2026-10-08 run5)"""
+    orch, env, lg = pw["orch"], pw["env"], pw["ledger"]
+    _to_report_time(env)
+    b = orch._obs_build()
+    orch._orders["A-uav1"] = {"plan_id": "HEAD-X", "source": "RULE", "stops": [{"block_id": "B6_6", "cell_id": "19_19"}],
+                              "next": 0, "new_fire": 0, "kind": "HEAD", "resource_type": "UAV", "since_s": 0}
+    old = orch._queue_stop("A-uav1", 120.0)                         # 관측 뒤 다음 행동이 넣어 둔 지점
+    assert orch._queue_stop("A-uav1", 120.0) is None                # 지시서 끝을 넘지 않음
+    plan = rule_plan(b["inp"], only=["A-uav1"])
+    rows, _ = orch._assign_orders(plan, b["inp"], b["idx"], "PLAN-NEW", "LLM", 120.0)
+    assert lg.get_task(old.task_id).purpose_status == "CANCELLED"
+    assert rows[0]["dispatch"] == "STARTED" and orch._orders["A-uav1"]["plan_id"] == "PLAN-NEW"
