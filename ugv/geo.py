@@ -2,8 +2,8 @@
 """ugv/geo.py — 좌표 변환·거리.
 
 UGV 내부 계산은 지역 평면 좌표(m)로 한다. 원점 = 팀 공통 datum (gz_bridge.DATUM_*, Gazebo spherical_coordinates).
-지역 평면 = datum 중심 횡메르카토르 (WGS84, k=1) — 도로 월드(ugv/gazebo/worlds/kangwon_ugv2.sdf)의 도로 면·스폰 좌표를
-만든 투영과 같다 (221a497 ugv/tools/build_road_world.py LOCAL). PROJ 와 mm 단위로 일치 (ugv/tests 에서 대조).
+지역 평면 = datum 중심 횡메르카토르 (WGS84, k=1). Gazebo 도로 월드(kangwon_flat)의 도로 메시·스폰 좌표도 이 평면이다
+(ugv/tools/build_road_mesh.py, spawn_pose.py). PROJ 와 mm 단위로 일치 (ugv/tests/test_geo.py 에서 대조).
 Gazebo/PX4 위경도(구면 좌표 → 지역 ENU)와는 27 km 떨어진 곳에서도 0.6 m 이내.
 처음에는 원점 위도 하나로 경도 길이를 잡는 평면 근사를 썼는데, 원점에서 북쪽 5.6 km(거점 A)에서 동서 2.8 m 가
 어긋나 도로 월드 주행 중 차가 도로 면 가장자리로 밀렸다 (2026-10-09 실측) → 이 투영으로 바꿨다.

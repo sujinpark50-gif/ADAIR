@@ -111,6 +111,53 @@ class DriveGraph:
                 self.rev.setdefault(t.to, []).append(s)
 
     # ------------------------------------------------------------------ 정적 속성
+    def states(self) -> List[State]:
+        """들어가 달릴 수 있는 방향 상태 전부 (일방통행·급커브 반영)."""
+        return [(rid, to) for rid, r in self.net.roads.items() for to in (r.a, r.b) if self.allowed(rid, self.other(rid, to))]
+
+    def components(self) -> List[List[State]]:
+        """방향 상태 그래프의 강연결 성분 (서로 오갈 수 있는 묶음), 큰 순서."""
+        succ = {s: [t.to for t in self.turns.get(s, ())] for s in self.states()}
+        index, low, on, stack, comps, counter = {}, {}, set(), [], [], [0]
+        for root in succ:
+            if root in index:
+                continue
+            work = [(root, iter(succ[root]))]
+            index[root] = low[root] = counter[0]; counter[0] += 1; stack.append(root); on.add(root)
+            while work:
+                v, it = work[-1]
+                pushed = False
+                for w in it:
+                    if w not in succ:
+                        continue
+                    if w not in index:
+                        index[w] = low[w] = counter[0]; counter[0] += 1; stack.append(w); on.add(w)
+                        work.append((w, iter(succ[w])))
+                        pushed = True
+                        break
+                    if w in on:
+                        low[v] = min(low[v], index[w])
+                if pushed:
+                    continue
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[v])
+                if low[v] == index[v]:
+                    comp = []
+                    while True:
+                        w = stack.pop(); on.discard(w); comp.append(w)
+                        if w == v:
+                            break
+                    comps.append(comp)
+        return sorted(comps, key=len, reverse=True)
+
+    @property
+    def core(self) -> set:
+        """가장 큰 강연결 성분 — 그 안 어디서든 그 안 어디로든 갈 수 있다."""
+        if getattr(self, "_core", None) is None:
+            self._core = set(self.components()[0])
+        return self._core
+
     def oneway_ok(self, rid: str, frm: str) -> bool:
         r = self.net.roads[rid]
         ow = r.attrs.get("oneway", "BOTH")
@@ -558,20 +605,29 @@ def heading_of_yaw(yaw_enu_rad: float) -> float:
     return (90.0 - math.degrees(yaw_enu_rad)) % 360.0
 
 
-def access_point(net: RoadNetwork, base_id: str):
-    """소속 거점의 차량 출입 지점 (도로 위). 소방서 좌표와 따로 둔다 — 소방서 좌표에서 가장 가까운 도로가 막다른 길일 수
-    있다 (인제119: 43.5 m 떨어진 682503090 은 176 m 막다른 도로). 도로망의 거점 노드(nodes[base_id], 빌더가 소방서 근처
-    교차 도로에 넣은 노드)와 그 거점 스폰 방향을 쓴다. (RoadPos, 방위°, 출처)"""
-    if base_id not in net.nodes or not net.adj.get(base_id):
-        return None
-    yaw = next((sp["yaw"] for sp in net.spawn.values() if sp.get("node") == base_id), None)
-    hd = heading_of_yaw(yaw) if yaw is not None else 0.0
-    hx, hy = math.sin(math.radians(hd)), math.cos(math.radians(hd))
+def access_point(net: RoadNetwork, base_id: str, search_m: float = 1000.0):
+    """소속 거점의 차량 출입 지점: 소방서 좌표(environment/config/fire_stations.json)에서 가장 가까운 도로 지점 중
+    양방향 통행이고 두 방향 모두 가장 큰 강연결 성분(서로 오갈 수 있는 묶음)에 드는 곳. 소방서 좌표와 따로 둔다 —
+    좌표에서 가장 가까운 도로가 막다른 길일 수 있다 (인제119: 약 44 m 떨어진 도로가 막다른 길).
+    진행 방향은 그 도로의 a → b. (RoadPos, 방위°, 설명) 또는 None"""
+    st = config.load_station(base_id)
+    from .geo import FRAME
+    sx, sy = FRAME.to_xy(st["lat"], st["lon"])
     g = net.graph
-    # 거점 노드는 교차점이라 그 위에서는 방향이 모호하다 → 스폰 방향과 가장 잘 맞게 거점 노드에서 나가는 도로의 시작점
-    rid, _ = max(net.adj[base_id], key=lambda e: (g.oneway_ok(e[0], base_id),
-                                                   sum(a * b for a, b in zip(g._dir(e[0], base_id, out=True), (hx, hy)))))
-    r = net.roads[rid]
-    pos = net.at(rid, min(1.0, r.length / 2) if r.a == base_id else max(r.length - 1.0, r.length / 2))
-    w = g._dir(rid, base_id, out=True)
-    return pos, bearing_deg(*w), f"road_network.json nodes[{base_id}] 에서 나가는 도로 {rid} (spawn 방향 {hd:.0f}° 에 가장 가까움)"
+    best = None
+    for p in net.samples() + [net.snap(sx, sy)]:
+        d = math.hypot(p.x - sx, p.y - sy)
+        if d > search_m or (best is not None and d >= best[0]):
+            continue
+        r = net.roads[p.road_id]
+        if r.attrs.get("oneway", "BOTH") != "BOTH" or p.road_id in g.sharp_roads:
+            continue
+        if (p.road_id, r.a) in g.core and (p.road_id, r.b) in g.core:
+            best = (d, p)
+    if best is None:
+        return None
+    d, p = best
+    r = net.roads[p.road_id]
+    q0 = net.at(p.road_id, max(0.0, p.s - 2.0))[2:4]
+    q1 = net.at(p.road_id, min(r.length, p.s + 2.0))[2:4]
+    return p, bearing_deg(q1[0] - q0[0], q1[1] - q0[1]),         f"소방서 {st['base_id']} 좌표에서 {d:.0f} m, 서로 오갈 수 있는 도로 {p.road_id} (a→b 방향)"

@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import config
 config.FIRE_CONNECTION_MODE = "real"
 config.UAV_CONNECTION_MODE = "real"          # ▶ 변경: auto_tick이 uav_connector로 실제 서버에 붙게 함
-# UGV 목록·위치는 박유홍님 실제 도로망 기반 브리지(integrated)에서 가져온다 (이전: 커넥터 mock 좌표)
+# UGV 목록·위치는 같은 프로세스 도로 경로 브리지(integrated, integration/bridge_ugv.py)에서 가져온다
 config.UGV_CONNECTION_MODE = "integrated"
 config.UAV_ENDPOINTS = {
     os.environ.get("UAV_ID", "A-uav1"): os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
@@ -20,20 +20,9 @@ from main import process_task                # ▶ 변경
 import ids                                   # ▶ 변경
 import gz_bridge as gb
 import math
-from ugv.road_graph import RoadGraph
-# 경로 그리기도 실제 도로망(roads_clipped.gpkg, 노드 534)을 쓴다 (이전: 데모 6노드 그래프)
-from ugv.graph_gpkg import NODES, ROADS
 from connectors import ugv_connector
-from ugv.geo import distance_m
-_RG = RoadGraph(NODES, ROADS)
-_NODE_LL = {n["node_id"]:(n["lat"],n["lon"]) for n in NODES}
-def _nearest_node(lat, lon):
-    """(노드 id, 거리 m). 미터 거리로 비교 — 위경도 제곱합은 경도 방향을 과대평가한다."""
-    best=None; bd=float("inf")
-    for nid,(la,lo) in _NODE_LL.items():
-        d=distance_m((lat,lon),(la,lo))
-        if d<bd: bd=d; best=nid
-    return best, bd
+# 경로 미리보기: UGV 서버와 같은 도로망(원자료 gpkg)·진행 방향 규칙 (ugv/route_preview.py)
+from ugv import route_preview
 
 UAV_AGENT = os.environ.get("UAV_AGENT_URL", "http://localhost:8000")
 UAV_ID    = os.environ.get("UAV_ID", "A-uav1")
@@ -198,7 +187,8 @@ def ugv(col: int = 60, row: int = 70):
                       "cap": r.capability or {}})
     # 화재셀 → 위경도 → 최근접 도로노드(goal)
     flat, flon = gb.grid_cell_to_latlon(col, row)
-    goal, goal_dist = _nearest_node(flat, flon)
+    near = route_preview.nearest_road(flat, flon)
+    goal, goal_dist = near["node_id"], near["dist_m"]
     snap_limit = getattr(config, "UGV_TARGET_SNAP_M", 2000.0)
     routes=[]
     for u in units:
@@ -207,16 +197,13 @@ def ugv(col: int = 60, row: int = 70):
             routes.append({"id": u["id"], "reachable": False, "eta_sec": None, "path": [],
                            "err": "GOAL_TOO_FAR"})
             continue
-        start, _ = _nearest_node(u["lat"], u["lon"])
         try:
-            rr = _RG.find_route(start, goal)
-            path = [{"lat": _NODE_LL[nid][0], "lon": _NODE_LL[nid][1]} for nid in getattr(rr,"path",[]) or []]
-            routes.append({"id": u["id"], "reachable": rr.reachable,
-                           "eta_sec": getattr(rr,"eta_s",None), "path": path})
+            rr = route_preview.plan(u["lat"], u["lon"], flat, flon, snap_limit_m=snap_limit)
+            routes.append({"id": u["id"], "reachable": rr["reachable"], "eta_sec": rr["eta_s"],
+                           "path": rr["path"], "err": rr["reason"]})
         except Exception as e:
             routes.append({"id": u["id"], "reachable": False, "eta_sec": None, "path": [], "err": str(e)})
-    # 차단 도로 수
-    blocked = sum(1 for rd in ROADS if rd.get("blocked"))
+    blocked = 0                    # 도로 차단 상태는 아직 없다 (UGV 서버가 화재 안전거리로 도로를 피한다)
     return {"fire_cell":{"col":col,"row":row,"lat":round(flat,6),"lon":round(flon,6)},
             "goal_node": goal, "goal_distance_m": round(goal_dist, 1), "units": units, "routes": routes, "blocked_roads": blocked}
 

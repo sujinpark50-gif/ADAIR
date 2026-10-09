@@ -1,6 +1,9 @@
 {
  "conditions": {
-  "network": "ugv/data/road_network.json",
+  "network": "data/inje2019/roads/roads_clipped_2019.gpkg",
+  "excluded": {
+   "motorway": 50
+  },
   "rules": "ugv/drive_graph.py: 같은 도로 즉시 되짚기 금지, 일방통행, 차체가 도로 안에 들어오는 회전만, 급커브 도로 제외",
   "vehicle": {
    "wheelbase_m": 2.7,
@@ -22,22 +25,27 @@
   }
  },
  "roads": {
-  "count": 820,
-  "total_km": 235.76,
-  "oneway": 109
+  "count": 851,
+  "total_km": 255.78,
+  "oneway": 119
  },
  "dead_end_nodes": {
-  "count": 65,
+  "count": 83,
   "by_class": {
-   "CLIP_BOUNDARY": 11,
-   "OTHER": 54
+   "CLIP_BOUNDARY": 28,
+   "OTHER": 55
   },
   "note": "OTHER = 실제 막다른 길인지 자료에서 끊긴 길인지 미확인",
   "list": [
    {
+    "node": "494014",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": -0.0
+   },
+   {
     "node": "494040",
     "class": "CLIP_BOUNDARY",
-    "dist_to_clip_edge_m": 0.0
+    "dist_to_clip_edge_m": -0.0
    },
    {
     "node": "494084",
@@ -45,14 +53,24 @@
     "dist_to_clip_edge_m": -0.0
    },
    {
+    "node": "494181",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": -0.0
+   },
+   {
     "node": "494195",
     "class": "CLIP_BOUNDARY",
-    "dist_to_clip_edge_m": 0.0
+    "dist_to_clip_edge_m": -0.0
    },
    {
     "node": "494253",
     "class": "OTHER",
     "dist_to_clip_edge_m": 437.0
+   },
+   {
+    "node": "494767",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
    },
    {
     "node": "494815",
@@ -63,6 +81,11 @@
     "node": "494821",
     "class": "OTHER",
     "dist_to_clip_edge_m": 3082.8
+   },
+   {
+    "node": "494822",
+    "class": "OTHER",
+    "dist_to_clip_edge_m": 3344.1
    },
    {
     "node": "494908",
@@ -165,9 +188,14 @@
     "dist_to_clip_edge_m": 3704.0
    },
    {
+    "node": "495153",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": -0.0
+   },
+   {
     "node": "495200",
     "class": "CLIP_BOUNDARY",
-    "dist_to_clip_edge_m": 0.0
+    "dist_to_clip_edge_m": -0.0
    },
    {
     "node": "495290",
@@ -177,7 +205,7 @@
    {
     "node": "495332",
     "class": "CLIP_BOUNDARY",
-    "dist_to_clip_edge_m": 0.0
+    "dist_to_clip_edge_m": -0.0
    },
    {
     "node": "495594",
@@ -187,12 +215,12 @@
    {
     "node": "495695",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 4362.8
+    "dist_to_clip_edge_m": 4362.7
    },
    {
     "node": "495707",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 8435.6
+    "dist_to_clip_edge_m": 8435.7
    },
    {
     "node": "495713",
@@ -202,7 +230,7 @@
    {
     "node": "495715",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 1883.7
+    "dist_to_clip_edge_m": 1883.8
    },
    {
     "node": "495717",
@@ -232,7 +260,7 @@
    {
     "node": "495767",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 3425.1
+    "dist_to_clip_edge_m": 3425.2
    },
    {
     "node": "495773",
@@ -242,7 +270,7 @@
    {
     "node": "495779",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 9186.9
+    "dist_to_clip_edge_m": 9186.8
    },
    {
     "node": "495783",
@@ -252,7 +280,7 @@
    {
     "node": "495785",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 3326.5
+    "dist_to_clip_edge_m": 3326.4
    },
    {
     "node": "495836",
@@ -287,7 +315,7 @@
    {
     "node": "496330",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 1563.4
+    "dist_to_clip_edge_m": 1563.3
    },
    {
     "node": "496346",
@@ -302,17 +330,17 @@
    {
     "node": "496364",
     "class": "CLIP_BOUNDARY",
-    "dist_to_clip_edge_m": -0.0
+    "dist_to_clip_edge_m": 0.0
    },
    {
     "node": "496431",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 3804.1
+    "dist_to_clip_edge_m": 3804.2
    },
    {
     "node": "496434",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 3353.3
+    "dist_to_clip_edge_m": 3353.4
    },
    {
     "node": "496447",
@@ -321,6 +349,11 @@
    },
    {
     "node": "496460",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "572719",
     "class": "CLIP_BOUNDARY",
     "dist_to_clip_edge_m": -0.0
    },
@@ -332,7 +365,7 @@
    {
     "node": "572759",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 9934.0
+    "dist_to_clip_edge_m": 9934.1
    },
    {
     "node": "622567",
@@ -352,80 +385,161 @@
    {
     "node": "659494",
     "class": "OTHER",
-    "dist_to_clip_edge_m": 4333.6
+    "dist_to_clip_edge_m": 4333.5
    },
    {
     "node": "659495",
     "class": "OTHER",
     "dist_to_clip_edge_m": 4382.2
+   },
+   {
+    "node": "EDGE:682600238:a",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": -0.0
+   },
+   {
+    "node": "EDGE:682601141:b",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": -0.0
+   },
+   {
+    "node": "EDGE:682601145:b",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": -0.0
+   },
+   {
+    "node": "EDGE:682601782:a",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": -0.0
+   },
+   {
+    "node": "EDGE:683301221:a",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "EDGE:683301223:a",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "EDGE:683301225:b",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "EDGE:683301226:b",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "EDGE:683301227:b",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "EDGE:683301229:b",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "EDGE:683301255:a",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
+   },
+   {
+    "node": "EDGE:683301265:a",
+    "class": "CLIP_BOUNDARY",
+    "dist_to_clip_edge_m": 0.0
    }
   ]
  },
  "turns": {
-  "legal_entry_total": 2448,
-  "allowed": 2366,
-  "blocked_by_geometry": 82,
+  "legal_entry_total": 2500,
+  "allowed": 2409,
+  "blocked_by_geometry": 91,
   "blocked_by_deflection_deg": {
-   "120-150": 39,
-   "150-180": 40,
+   "120-150": 37,
+   "150-180": 49,
    "30-60": 1,
-   "90-120": 2
+   "90-120": 4
   },
   "blocked_list": [
+   {
+    "node": "659567",
+    "from_road": "683402115",
+    "to_road": "683402113",
+    "deflect_deg": 145.6,
+    "entry_legal": true
+   },
    {
     "node": "659566",
     "from_road": "683402032",
     "to_road": "683402024",
-    "deflect_deg": 148.5,
+    "deflect_deg": 150.9,
     "entry_legal": true
    },
    {
     "node": "659568",
     "from_road": "683402024",
     "to_road": "683402029",
-    "deflect_deg": 150.9,
+    "deflect_deg": 153.2,
     "entry_legal": true
    },
    {
     "node": "659568",
     "from_road": "683402029",
     "to_road": "683402023",
-    "deflect_deg": 146.1,
+    "deflect_deg": 146.4,
     "entry_legal": true
    },
    {
     "node": "659569",
     "from_road": "683402023",
     "to_road": "683402033",
-    "deflect_deg": 146.3,
+    "deflect_deg": 146.0,
     "entry_legal": true
    },
    {
     "node": "494869",
     "from_road": "682500573",
     "to_road": "682501697",
-    "deflect_deg": 164.0,
+    "deflect_deg": 163.0,
     "entry_legal": true
    },
    {
     "node": "494869",
     "from_road": "682501697",
     "to_road": "682501573",
-    "deflect_deg": 167.1,
+    "deflect_deg": 166.2,
     "entry_legal": true
    },
    {
     "node": "494989",
     "from_road": "682501567",
     "to_road": "682501571",
-    "deflect_deg": 165.9,
+    "deflect_deg": 167.5,
+    "entry_legal": true
+   },
+   {
+    "node": "494803",
+    "from_road": "682400166",
+    "to_road": "682400170",
+    "deflect_deg": 164.6,
+    "entry_legal": true
+   },
+   {
+    "node": "494804",
+    "from_road": "682400180",
+    "to_road": "682400176",
+    "deflect_deg": 165.8,
     "entry_legal": true
    },
    {
     "node": "494255",
     "from_road": "681500516",
     "to_road": "681500512",
-    "deflect_deg": 148.0,
+    "deflect_deg": 158.4,
     "entry_legal": true
    },
    {
@@ -436,101 +550,94 @@
     "entry_legal": true
    },
    {
-    "node": "494258",
-    "from_road": "681500514",
-    "to_road": "681500528",
-    "deflect_deg": 135.1,
-    "entry_legal": true
-   },
-   {
     "node": "494256",
     "from_road": "681500512",
     "to_road": "681500526",
-    "deflect_deg": 153.2,
+    "deflect_deg": 157.9,
     "entry_legal": true
    },
    {
     "node": "494257",
     "from_road": "681500524",
     "to_road": "681500514",
-    "deflect_deg": 142.9,
+    "deflect_deg": 148.9,
     "entry_legal": true
    },
    {
     "node": "494962",
     "from_road": "682501562",
     "to_road": "682502040",
-    "deflect_deg": 168.0,
+    "deflect_deg": 165.2,
     "entry_legal": true
    },
    {
     "node": "494962",
     "from_road": "682502718",
     "to_road": "682501562",
-    "deflect_deg": 162.7,
+    "deflect_deg": 165.9,
     "entry_legal": true
    },
    {
     "node": "494991",
     "from_road": "682502842",
     "to_road": "682502852",
-    "deflect_deg": 158.6,
+    "deflect_deg": 159.1,
     "entry_legal": true
    },
    {
     "node": "572715",
     "from_road": "682503068",
     "to_road": "682503072",
-    "deflect_deg": 153.3,
+    "deflect_deg": 153.4,
     "entry_legal": true
    },
    {
     "node": "494966",
     "from_road": "682501467",
     "to_road": "682502722",
-    "deflect_deg": 158.1,
+    "deflect_deg": 162.0,
     "entry_legal": true
    },
    {
     "node": "494965",
     "from_road": "682501562",
     "to_road": "682501466",
-    "deflect_deg": 167.1,
+    "deflect_deg": 169.0,
     "entry_legal": true
    },
    {
     "node": "494988",
     "from_road": "682502050",
     "to_road": "682501563",
-    "deflect_deg": 168.7,
+    "deflect_deg": 167.4,
     "entry_legal": true
    },
    {
     "node": "495066",
     "from_road": "682502036",
     "to_road": "682502044",
-    "deflect_deg": 144.2,
+    "deflect_deg": 151.4,
+    "entry_legal": true
+   },
+   {
+    "node": "495066",
+    "from_road": "682502044",
+    "to_road": "682502038",
+    "deflect_deg": 137.3,
     "entry_legal": true
    },
    {
     "node": "495119",
     "from_road": "682502724",
     "to_road": "682502716",
-    "deflect_deg": 137.2,
+    "deflect_deg": 138.3,
     "entry_legal": true
    },
    {
     "node": "494949",
     "from_road": "682501407",
     "to_road": "682501408",
-    "deflect_deg": 164.8,
-    "entry_legal": true
-   },
-   {
-    "node": "494949",
-    "from_road": "682501397",
-    "to_road": "682501407",
-    "deflect_deg": 163.0,
+    "deflect_deg": 167.8,
     "entry_legal": true
    },
    {
@@ -544,63 +651,56 @@
     "node": "494959",
     "from_road": "682501898",
     "to_road": "682501428",
-    "deflect_deg": 138.6,
+    "deflect_deg": 136.5,
     "entry_legal": true
    },
    {
     "node": "495050",
     "from_road": "682501898",
     "to_road": "682501900",
-    "deflect_deg": 136.8,
+    "deflect_deg": 136.9,
     "entry_legal": true
    },
    {
     "node": "495050",
     "from_road": "682501900",
     "to_road": "682501898",
-    "deflect_deg": 136.8,
-    "entry_legal": true
-   },
-   {
-    "node": "494952",
-    "from_road": "682501401",
-    "to_road": "682501403",
-    "deflect_deg": 138.7,
+    "deflect_deg": 136.9,
     "entry_legal": true
    },
    {
     "node": "494952",
     "from_road": "682501403",
     "to_road": "682501397",
-    "deflect_deg": 142.4,
+    "deflect_deg": 156.9,
     "entry_legal": true
    },
    {
     "node": "494950",
     "from_road": "682501408",
     "to_road": "682501403",
-    "deflect_deg": 134.8,
+    "deflect_deg": 135.5,
     "entry_legal": true
    },
    {
     "node": "494918",
     "from_road": "682502862",
     "to_road": "682502188",
-    "deflect_deg": 158.4,
+    "deflect_deg": 159.9,
     "entry_legal": true
    },
    {
     "node": "494917",
     "from_road": "682502186",
     "to_road": "682501678",
-    "deflect_deg": 167.3,
+    "deflect_deg": 166.7,
     "entry_legal": true
    },
    {
     "node": "572716",
     "from_road": "682503076",
     "to_road": "682503074",
-    "deflect_deg": 148.4,
+    "deflect_deg": 154.5,
     "entry_legal": true
    },
    {
@@ -614,252 +714,294 @@
     "node": "494992",
     "from_road": "682501581",
     "to_road": "682501580",
-    "deflect_deg": 165.8,
+    "deflect_deg": 165.2,
     "entry_legal": true
    },
    {
     "node": "494999",
     "from_road": "682501788",
     "to_road": "682501604",
-    "deflect_deg": 164.1,
+    "deflect_deg": 165.3,
     "entry_legal": true
    },
    {
     "node": "495003",
     "from_road": "682501613",
     "to_road": "682501614",
-    "deflect_deg": 34.8,
-    "entry_legal": true
-   },
-   {
-    "node": "494889",
-    "from_road": "682501375",
-    "to_road": "682501376",
-    "deflect_deg": 136.0,
+    "deflect_deg": 30.8,
     "entry_legal": true
    },
    {
     "node": "495035",
     "from_road": "682501918",
     "to_road": "682501817",
-    "deflect_deg": 111.0,
+    "deflect_deg": 111.6,
     "entry_legal": true
    },
    {
     "node": "494998",
     "from_road": "682501599",
     "to_road": "682501600",
-    "deflect_deg": 165.8,
-    "entry_legal": true
-   },
-   {
-    "node": "494854",
-    "from_road": "682501590",
-    "to_road": "682500722",
-    "deflect_deg": 162.3,
+    "deflect_deg": 168.8,
     "entry_legal": true
    },
    {
     "node": "494996",
     "from_road": "682501592",
     "to_road": "682501595",
-    "deflect_deg": 141.1,
+    "deflect_deg": 139.5,
     "entry_legal": true
    },
    {
     "node": "494915",
     "from_road": "682501168",
     "to_road": "682501174",
-    "deflect_deg": 144.2,
+    "deflect_deg": 143.8,
     "entry_legal": true
    },
    {
     "node": "495038",
     "from_road": "682501846",
     "to_road": "682501847",
-    "deflect_deg": 151.1,
+    "deflect_deg": 157.3,
     "entry_legal": true
    },
    {
     "node": "494867",
     "from_road": "682501699",
     "to_road": "682500588",
-    "deflect_deg": 170.1,
+    "deflect_deg": 171.2,
     "entry_legal": true
    },
    {
     "node": "494914",
     "from_road": "682501171",
     "to_road": "682501168",
-    "deflect_deg": 149.2,
+    "deflect_deg": 152.5,
+    "entry_legal": true
+   },
+   {
+    "node": "495149",
+    "from_road": "682600553",
+    "to_road": "682600045",
+    "deflect_deg": 134.7,
     "entry_legal": true
    },
    {
     "node": "495149",
     "from_road": "682600045",
     "to_road": "682600552",
-    "deflect_deg": 138.1,
+    "deflect_deg": 138.0,
     "entry_legal": true
    },
    {
     "node": "572724",
     "from_road": "682602252",
     "to_road": "682602246",
-    "deflect_deg": 153.1,
+    "deflect_deg": 153.9,
     "entry_legal": true
    },
    {
     "node": "572723",
     "from_road": "682602246",
     "to_road": "682602248",
-    "deflect_deg": 167.1,
+    "deflect_deg": 161.3,
     "entry_legal": true
    },
    {
     "node": "495677",
     "from_road": "683400260",
     "to_road": "683400334",
-    "deflect_deg": 143.5,
+    "deflect_deg": 153.5,
     "entry_legal": true
    },
    {
     "node": "495139",
     "from_road": "682502928",
     "to_road": "682502922",
-    "deflect_deg": 144.2,
+    "deflect_deg": 144.3,
     "entry_legal": true
    },
    {
     "node": "495140",
     "from_road": "682502920",
     "to_road": "682502934",
-    "deflect_deg": 146.4,
+    "deflect_deg": 146.2,
+    "entry_legal": true
+   },
+   {
+    "node": "495754",
+    "from_road": "683401006",
+    "to_road": "683400715",
+    "deflect_deg": 141.4,
     "entry_legal": true
    },
    {
     "node": "495754",
     "from_road": "683400715",
     "to_road": "683401006",
-    "deflect_deg": 143.4,
+    "deflect_deg": 141.4,
     "entry_legal": true
    },
    {
     "node": "495692",
     "from_road": "683400570",
     "to_road": "683400731",
-    "deflect_deg": 163.4,
+    "deflect_deg": 159.4,
     "entry_legal": true
    },
    {
     "node": "495692",
     "from_road": "683400731",
     "to_road": "683400570",
-    "deflect_deg": 163.4,
+    "deflect_deg": 159.4,
+    "entry_legal": true
+   },
+   {
+    "node": "495876",
+    "from_road": "683501010",
+    "to_road": "683500996",
+    "deflect_deg": 140.7,
     "entry_legal": true
    },
    {
     "node": "495887",
     "from_road": "683501100",
     "to_road": "683501094",
-    "deflect_deg": 136.1,
+    "deflect_deg": 138.7,
     "entry_legal": true
    },
    {
     "node": "495878",
     "from_road": "683501012",
     "to_road": "683501016",
-    "deflect_deg": 150.2,
+    "deflect_deg": 151.6,
     "entry_legal": true
    },
    {
     "node": "495891",
     "from_road": "683501074",
     "to_road": "683501072",
-    "deflect_deg": 135.0,
+    "deflect_deg": 140.4,
+    "entry_legal": true
+   },
+   {
+    "node": "495884",
+    "from_road": "683501050",
+    "to_road": "683501018",
+    "deflect_deg": 134.9,
+    "entry_legal": true
+   },
+   {
+    "node": "495879",
+    "from_road": "683501028",
+    "to_road": "683501026",
+    "deflect_deg": 154.1,
     "entry_legal": true
    },
    {
     "node": "495170",
     "from_road": "682600781",
     "to_road": "682600299",
-    "deflect_deg": 160.2,
+    "deflect_deg": 161.6,
     "entry_legal": true
    },
    {
     "node": "495281",
     "from_road": "682601148",
     "to_road": "682601141",
-    "deflect_deg": 115.3,
+    "deflect_deg": 117.7,
     "entry_legal": true
    },
    {
     "node": "495166",
     "from_road": "682600238",
     "to_road": "682600298",
-    "deflect_deg": 147.1,
+    "deflect_deg": 157.5,
     "entry_legal": true
    },
    {
     "node": "495166",
     "from_road": "682600298",
     "to_road": "682600779",
-    "deflect_deg": 159.7,
+    "deflect_deg": 165.4,
     "entry_legal": true
    },
    {
     "node": "495173",
     "from_road": "682600299",
     "to_road": "682600297",
-    "deflect_deg": 152.0,
+    "deflect_deg": 154.5,
     "entry_legal": true
    },
    {
     "node": "495231",
     "from_road": "682600779",
     "to_road": "682601780",
-    "deflect_deg": 163.5,
+    "deflect_deg": 165.2,
     "entry_legal": true
    },
    {
     "node": "495282",
     "from_road": "682601276",
     "to_road": "682601142",
-    "deflect_deg": 126.3,
+    "deflect_deg": 126.5,
     "entry_legal": true
    },
    {
     "node": "495172",
     "from_road": "682600297",
     "to_road": "682601778",
-    "deflect_deg": 170.6,
+    "deflect_deg": 169.8,
+    "entry_legal": true
+   },
+   {
+    "node": "572763",
+    "from_road": "683501586",
+    "to_road": "683501596",
+    "deflect_deg": 107.7,
     "entry_legal": true
    },
    {
     "node": "495818",
     "from_road": "683500208",
     "to_road": "683500210",
-    "deflect_deg": 154.9,
+    "deflect_deg": 163.5,
     "entry_legal": true
    },
    {
     "node": "495817",
     "from_road": "683500207",
     "to_road": "683500211",
-    "deflect_deg": 138.9,
+    "deflect_deg": 140.7,
     "entry_legal": true
    },
    {
     "node": "495816",
     "from_road": "683500214",
     "to_road": "683500207",
-    "deflect_deg": 163.6,
+    "deflect_deg": 167.4,
+    "entry_legal": true
+   },
+   {
+    "node": "572762",
+    "from_road": "683501584",
+    "to_road": "683501586",
+    "deflect_deg": 101.9,
     "entry_legal": true
    },
    {
     "node": "572762",
     "from_road": "683501584",
     "to_road": "683501592",
-    "deflect_deg": 149.6,
+    "deflect_deg": 149.8,
+    "entry_legal": true
+   },
+   {
+    "node": "572762",
+    "from_road": "683501592",
+    "to_road": "683501586",
+    "deflect_deg": 132.2,
     "entry_legal": true
    },
    {
@@ -873,77 +1015,91 @@
     "node": "572794",
     "from_road": "684400752",
     "to_road": "684400758",
-    "deflect_deg": 133.3,
+    "deflect_deg": 134.3,
     "entry_legal": true
    },
    {
     "node": "572793",
     "from_road": "684400754",
     "to_road": "684400752",
-    "deflect_deg": 131.5,
+    "deflect_deg": 132.8,
     "entry_legal": true
    },
    {
     "node": "495870",
     "from_road": "683500938",
     "to_road": "683500926",
-    "deflect_deg": 139.1,
+    "deflect_deg": 141.9,
     "entry_legal": true
    },
    {
     "node": "495865",
     "from_road": "683500912",
     "to_road": "683500914",
-    "deflect_deg": 144.2,
+    "deflect_deg": 144.4,
     "entry_legal": true
    },
    {
     "node": "495866",
     "from_road": "683500918",
     "to_road": "683500912",
-    "deflect_deg": 144.5,
+    "deflect_deg": 144.3,
     "entry_legal": true
    },
    {
     "node": "495869",
     "from_road": "683500928",
     "to_road": "683500934",
-    "deflect_deg": 140.1,
+    "deflect_deg": 142.0,
     "entry_legal": true
    },
    {
     "node": "495868",
     "from_road": "683500926",
     "to_road": "683500930",
-    "deflect_deg": 154.8,
+    "deflect_deg": 158.9,
     "entry_legal": true
    },
    {
     "node": "495811",
     "from_road": "683500188",
     "to_road": "683500232",
-    "deflect_deg": 150.0,
+    "deflect_deg": 157.4,
     "entry_legal": true
    },
    {
     "node": "495810",
     "from_road": "683500228",
     "to_road": "683500188",
-    "deflect_deg": 140.4,
+    "deflect_deg": 146.3,
     "entry_legal": true
    },
    {
     "node": "495810",
     "from_road": "683500231",
     "to_road": "683500228",
-    "deflect_deg": 133.3,
+    "deflect_deg": 141.8,
+    "entry_legal": true
+   },
+   {
+    "node": "496411",
+    "from_road": "684500206",
+    "to_road": "683500231",
+    "deflect_deg": 131.4,
     "entry_legal": true
    },
    {
     "node": "496449",
     "from_road": "684600056",
     "to_road": "684600053",
-    "deflect_deg": 146.1,
+    "deflect_deg": 147.9,
+    "entry_legal": true
+   },
+   {
+    "node": "496450",
+    "from_road": "684600054",
+    "to_road": "684600056",
+    "deflect_deg": 134.5,
     "entry_legal": true
    }
   ]
@@ -951,87 +1107,94 @@
  "sharp_bend_roads": [
   {
    "road_id": "682502150",
-   "min_radius_m": 4.39,
-   "length_m": 554.9
-  },
-  {
-   "road_id": "683400874",
-   "min_radius_m": 4.53,
-   "length_m": 245.2
+   "min_radius_m": 4.38,
+   "length_m": 555.5
   },
   {
    "road_id": "684500365",
-   "min_radius_m": 3.18,
-   "length_m": 139.1
+   "min_radius_m": 3.51,
+   "length_m": 144.2
   }
  ],
  "strongly_connected": {
-  "states_total": 1525,
-  "largest_states": 1126,
-  "largest_pct": 73.8,
-  "both_directions_km": 165.52,
-  "one_direction_km": 13.23,
-  "neither_km": 57.01
+  "states_total": 1579,
+  "largest_states": 1055,
+  "largest_pct": 66.8,
+  "both_directions_km": 152.17,
+  "one_direction_km": 9.28,
+  "neither_km": 94.33
  },
  "return_to_station_A": {
   "access_point": {
    "road_id": "682501660",
-   "s_m": 1.0,
+   "s_m": 46.0,
    "heading_deg": 226.6
   },
   "start_state_in_largest_component": true,
   "meaning": "그 방향으로 서 있는 차가 출입 지점 A 까지 갈 수 있는 도로 길이 (화재 없음)",
-  "both_directions_km": 174.58,
-  "one_direction_km": 54.98,
-  "neither_km": 6.2
+  "both_directions_km": 158.03,
+  "one_direction_km": 76.45,
+  "neither_km": 21.3
  },
  "random_pairs": {
-  "unreachable": 54,
-  "unreachable_pct": 18.0,
+  "unreachable": 67,
+  "unreachable_pct": 22.3,
   "detour_ratio": {
-   "n": 244,
+   "n": 233,
    "median": 1.01,
-   "p90": 1.44,
-   "max": 13.3
+   "p90": 1.33,
+   "max": 10.75
   },
   "large_detour_examples": [
    {
     "start": [
-     "682502442",
-     "622561"
+     "682503106",
+     "622564"
     ],
     "target": [
-     "682502094",
-     61.7
+     "682500198",
+     2819.7
     ],
-    "directed_m": 22142,
-    "undirected_m": 3074
+    "directed_m": 24154,
+    "undirected_m": 4416
    },
    {
     "start": [
-     "683500258",
-     "496415"
+     "682502460",
+     "495322"
     ],
     "target": [
-     "683500304",
-     1224.4
+     "682501747",
+     1203.6
     ],
-    "directed_m": 31532,
-    "undirected_m": 4245
+    "directed_m": 30268,
+    "undirected_m": 2817
    },
    {
     "start": [
-     "683400136",
-     "495721"
+     "682501563",
+     "494988"
     ],
     "target": [
-     "683400136",
-     446.7
+     "682501458",
+     922.8
     ],
-    "directed_m": 9575,
-    "undirected_m": 720
+    "directed_m": 2256,
+    "undirected_m": 378
+   },
+   {
+    "start": [
+     "684600113",
+     "496477"
+    ],
+    "target": [
+     "684600101",
+     1404.0
+    ],
+    "directed_m": 27476,
+    "undirected_m": 3066
    }
   ]
  },
- "runtime_s": 6.0
+ "runtime_s": 22.2
 }

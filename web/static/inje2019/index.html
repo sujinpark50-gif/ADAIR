@@ -205,7 +205,7 @@ geo.setAttribute('color', new THREE.BufferAttribute(col,3));
 geo.setIndex(idx); geo.computeVertexNormals();
 scene.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({vertexColors:true})));
 
-// 도로 (박유홍 실제 도로망)
+// 도로 (원자료 도로망)
 {
   const pts = [];
   for (const [ax,ay,bx,by] of D.roads){

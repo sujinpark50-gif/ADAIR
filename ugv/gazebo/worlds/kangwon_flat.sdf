@@ -2,8 +2,8 @@
 <!--
   kangwon_flat — 실제 도로 선형 + 평탄한 주행면 (도로 주행 검증 A안, 2026-10-09 사용자 결정)
   - 충돌: 윗면 z=0 인 평탄한 상자 하나뿐. 도로별 충돌 메시를 겹치지 않으므로 교차로 턱이 없다.
-  - 도로: kangwon_ugv2 도로 면 메시(폭 10 m)를 높이 방향으로 납작하게 눌러 시각 표시만 한다 (충돌 없음).
-  - 좌표 원점·투영은 kangwon_ugv2 와 같다 (datum 중심 TM, ugv/geo.py). 스폰 x,y 는 도로망 spawn 표를 그대로 쓰고 z 만 0.4.
+  - 도로: 원자료 도로망에서 만든 띠 메시(폭 = 차로 수로 추정, ugv/tools/build_road_mesh.py)를 시각 표시만 한다 (충돌 없음).
+  - 좌표 원점·투영은 UGV 지역 평면과 같다 (datum 중심 TM, ugv/geo.py). 스폰 자세: python -m ugv.tools.spawn_pose A
   검증 범위: 경로 추종·곡선 감속·명령 교체·정지. 경사·제동 거리·접지·지형 관측과의 높이 일치는 검증하지 않는다
   (Gazebo 차량 높이는 0, 실제 지형 높이와 다르다). 그건 지형을 반영한 연속 도로면(B안)에서 한다.
   시스템 플러그인은 PX4 server.config(GZ_SIM_SERVER_CONFIG_PATH)가 넣는다 (ugv/tools/px4-start.sh).
@@ -43,14 +43,14 @@
         </visual>
       </link>
     </model>
-    <!-- 도로 표시: 원본 메시 높이(10~684 m)를 1/10000 로 눌러 0.03~0.10 m 에 그린다. 충돌 없음 -->
+    <!-- 도로 표시: 지면 위 0.03 m 에 그린다. 충돌 없음 -->
     <model name="road_marks">
       <static>true</static>
       <link name="link">
         <pose>0 0 0.03 0 0 0</pose>
         <visual name="visual">
           <cast_shadows>false</cast_shadows>
-          <geometry><mesh><uri>model://kangwon_ugv2/roads.obj</uri><scale>1 1 0.0001</scale></mesh></geometry>
+          <geometry><mesh><uri>model://adair_roads/roads.obj</uri></mesh></geometry>
           <material><ambient>0.25 0.25 0.27 1</ambient><diffuse>0.33 0.33 0.35 1</diffuse>
                     <specular>0.05 0.05 0.05 1</specular></material>
         </visual>

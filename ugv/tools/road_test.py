@@ -31,7 +31,7 @@ from ugv.geo import FRAME
 from ugv.roads import RoadNetwork
 from ugv.tools.drive_test import LOG_DIR, analyze, load_track, start_tracker
 
-ROAD_HALF_WIDTH_M = 5.0          # 월드 도로 면 (road_network.json world.road_width_m = 10)
+ROAD_HALF_WIDTH_M = 5.0          # 참고 기준: 폭 10 m 도로 면
 # 주 판정: 도로별 추정 반폭 (drive_graph.est_half_width: 원자료 차로 수 × 3.25 m / 2 + 길어깨 0.5 m — 추정치)
 BODY_HALF_LEN_M, BODY_HALF_WID_M = 2.1, 0.9      # ugv/gazebo/models/adair_ugv 차체 상자 4.2 × 1.8 m
 CURVE_NEAR_M = 20.0              # 곡선 감속 지점 앞뒤 이 거리 안의 최대 횡가속을 본다

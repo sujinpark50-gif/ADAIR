@@ -49,7 +49,6 @@ START_KST = "2019-04-04T14:45:00+09:00"      # 신고 시각 (기사·백서). �
 CONFIG = ENV_DIR / "config" / "scenario_whatif_2019_legacy.yaml"
 WEATHER_CSV = ROOT / "data" / "weather" / "kma_asos_hourly_20190404_20190405.csv"
 STATIONS_JSON = ROOT / "data" / "weather" / "kma_asos_stations.json"
-ROADS_JSON = ROOT / "ugv" / "data" / "road_network.json"
 OUT = ROOT / "web" / "static" / "inje2019" / "scenario.json"
 
 # ── 근거가 있는 사실 (출처는 events 에 함께 싣는다) ─────────────────────────────
@@ -209,9 +208,10 @@ def haversine(lat1, lon1, lat2, lon2):
     return 2 * 6371000 * math.asin(math.sqrt(a))
 
 
-def graph_gpkg_bases():
-    from ugv import graph_gpkg
-    return graph_gpkg.BASES
+def station_a():
+    """거점 A (소방서 좌표, environment/config/fire_stations.json)"""
+    from ugv import config as ugv_config
+    return ugv_config.load_station("A")
 
 
 def neighbors8(i, n_cols, n_rows):
@@ -261,7 +261,7 @@ def main():
 
     # ── 지식 두 갈래 ───────────────────────────────────────────────────────────
     air_end, air_resume = sim_s(DAY_AIR_END), sim_s(DAY_AIR_RESUME)
-    base_a = graph_gpkg_bases()["A"]
+    base_a = station_a()
     transit_s = haversine(base_a["lat"], base_a["lon"], *NAMJEON_SPRING) / UAV_CRUISE_MS
     # 드론 변형: B = 출동 차량과 함께 전진 이착륙(이동 0), Bb = 원통 기지에서 왕복 (같은 2대·같은 배터리)
     ON_STATION = {"B": min(tick, UAV_ENDURANCE_S),
@@ -353,41 +353,25 @@ def main():
                          "truth_burning": len(truth_b), "A": res_ab["A"], "B": res_ab["B"], "Bb": res_ab["Bb"],
                          "drone": {"active": f"UAV-{1 + sortie % 2}" if tour else None, "tour": tour}})
 
-    # ── 차량: 실제 도로망(박유홍) Dijkstra ─────────────────────────────────────
-    from ugv import graph_gpkg
-    from ugv.road_graph import RoadGraph
-    rg = RoadGraph(graph_gpkg.NODES, graph_gpkg.ROADS)
-    target_node, snap = rg.nearest_node(*NAMJEON_SPRING)
+    # ── 차량: 원자료 도로망 + 진행 방향 유지 경로 (ugv/route_preview.py, UGV 서버와 같은 규칙) ─────────────
+    from ugv import route_preview
+    home = route_preview.station("A")
     vehicles = []
-    for vid, label, base, speed_note in (("A-fire1", "소방차", "A", "도로 등급별 속도"),
-                                         ("A-ugv1", "UGV", "A", "도로 등급별 속도")):
-        rr = rg.find_route(base, target_node.node_id)
-        if not rr.reachable:
+    for vid, label in (("A-ugv1", "UGV"),):
+        rr = route_preview.plan(home["lat"], home["lon"], *NAMJEON_SPRING, heading_deg=home["heading_deg"])
+        if not rr["reachable"]:
             continue
-        pts, t_acc, prev = [], [], None
-        base_info = graph_gpkg.BASES[base]
-        snap_s = base_info["snap_m"] / (50 / 3.6)          # 거점→경계 노드 (도로망 밖) 50 km/h 가정
-        for nid in rr.path:
-            nd = rg.node(nid)
-            gx, gy = to_grid(nd.lat, nd.lon)
-            if prev is None:
-                t_acc.append(snap_s)
-            else:
-                road = next(r for nb, r in rg.neighbors(prev) if nb == nid)
-                t_acc.append(t_acc[-1] + road.base_time_s)
-            pts.append([round(gx, 2), round(gy, 2)])
-            prev = nid
-        vehicles.append({"id": vid, "label": label, "path": pts, "t": [round(x, 1) for x in t_acc],
-                         "eta_s": round(t_acc[-1], 1), "speed_note": speed_note,
-                         "note": "출동 14:45 가정. 거점은 도로망 밖이라 경계 노드까지 50 km/h 가정"})
-    bx, by = to_grid(graph_gpkg.BASES["A"]["lat"], graph_gpkg.BASES["A"]["lon"])
+        lead_s = base_a and haversine(base_a["lat"], base_a["lon"], home["lat"], home["lon"]) / (30 / 3.6)
+        pts = [[round(v, 2) for v in to_grid(p["lat"], p["lon"])] for p in rr["path"]]
+        t_acc = [round(lead_s + v, 1) for v in rr["t"]]
+        vehicles.append({"id": vid, "label": label, "path": pts, "t": t_acc, "eta_s": t_acc[-1],
+                         "speed_note": "도로 제한속도 기준 (곡선 감속·가감속 미반영)",
+                         "note": "출동 14:45 가정. 소방서 → 출입 지점 30 km/h 가정, 진행 방향 유지 경로"})
+    bx, by = to_grid(base_a["lat"], base_a["lon"])
 
     roads = []
-    nodes = {nd["node_id"]: nd for nd in graph_gpkg.NODES}
-    for r in graph_gpkg.ROADS:
-        a, b = nodes[r["node_a"]], nodes[r["node_b"]]
-        roads.append([*map(lambda v: round(v, 2), to_grid(a["lat"], a["lon"])),
-                      *map(lambda v: round(v, 2), to_grid(b["lat"], b["lon"]))])
+    for la, lo, lb, lob in route_preview.segments():
+        roads.append([*map(lambda v: round(v, 2), to_grid(la, lo)), *map(lambda v: round(v, 2), to_grid(lb, lob))])
     sites = []
     for s in SITES:
         gx, gy = to_grid(s["lat"], s["lon"])
@@ -429,7 +413,7 @@ def main():
         "knownA_step_i16": b64(known_step["A"]), "knownB_step_i16": b64(known_step["B"]),
         "knownBb_step_i16": b64(known_step["Bb"]),
         "steps": steps, "tick_s": tick, "roads": roads, "sites": sites, "vehicles": vehicles,
-        "base_A": {"gx": round(bx, 2), "gy": round(by, 2), "name": graph_gpkg.BASES["A"]["name"]},
+        "base_A": {"gx": round(bx, 2), "gy": round(by, 2), "name": base_a.get("name")},
         "spring": dict(zip(("gx", "gy"), map(lambda v: round(v, 2), (sc, sr)))),
         "timeline": timeline, "events": [{"kst": e[0], "t": sim_s(e[0]), "text": e[1], "src": e[2]} for e in EVENTS],
         "resources": [{**r, "t": sim_s(r["kst"])} for r in RESOURCES],

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """3단계: 도로 경로·구간 감속·접근 지점(화재 100 m)·실행 키·취소/재계획·감시 — 모의 (sim 드라이버, 시간 주입).
 
-실제 도로망(ugv/data/road_network.json)과 실제 거점 좌표(environment/config/fire_stations.json A)를 쓴다.
+원자료 도로망(gpkg, ugv/road_source.py)과 실제 거점 좌표(environment/config/fire_stations.json A)를 쓴다.
 화재는 시험용으로 만든 칸이다 (환경 모듈 연결 시험은 따로).
 """
 

@@ -12,7 +12,7 @@ ADAIR 산불 대응 멀티에이전트 — 5개 파트를 하나로 묶어 실�
                     rasterio/데이터가 없으면 내장 stateful 산불 모델로 자동 전환.
   · UAV(김동현)   : uav/uav-agent FastAPI 서버(MockDrone)를 서브프로세스로 띄우고,
                     이원규님 실제 HTTP 커넥터가 evaluate/execute를 HTTP로 호출.
-  · UGV(박유홍)   : 실제 도로 그래프 + Dijkstra로 도달성·ETA·도로차단 재탐색.
+  · UGV           : 원자료 도로망 + 진행 방향 유지 경로로 도달성·ETA·도로차단 재탐색.
   · 통합/재평가(이원규) : main.process_task의 폐루프·재평가·Decision ID를 그대로 사용.
   · 총괄/Safety(박수진) : 계약 기반 Mock 후보선택·Safety 분기(설계 산출물).
 
@@ -84,8 +84,8 @@ def run(total_steps: int = 8):
             print(f"[step {step}] fire_cells={fire_n:3d}  wind={env.wind_speed:>4} m/s "
                   f"({env.spread_direction:>2})  →  task={task.task_id} {task.state}")
 
-        # 3) UGV 실제 경로탐색(박유홍) 시연 — 폐루프와 별개로 Dijkstra·도로차단 재탐색을 보여줌
-        banner("UGV 경로탐색 (박유홍 · 실제 Dijkstra + 도로차단 재탐색)")
+        # 3) UGV 경로탐색 시연 — 폐루프와 별개로 도로차단 재탐색을 보여줌
+        banner("UGV 경로탐색 (진행 방향 유지 경로 + 도로차단 재탐색)")
         for line in bridge_ugv.demo():
             print(line)
 

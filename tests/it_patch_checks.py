@@ -63,16 +63,17 @@ def run():
     check("hotspot=True + 위치 → env_updated=True (mock)",
           fc.update_environment(_env([]), [obs_fire]).env_updated)
 
-    # 5) UGV: 목표 근처 노드가 없으면 임의 노드로 대체하지 않고 거절
+    # 5) UGV: 목표 근처에 도로가 없으면 다른 지점으로 바꾸지 않고 거절, 도로 위 목표는 수락
     try:
         from integration import bridge_ugv
-        # 실제 도로망(ugv/graph_gpkg.py) 기준: 영역 밖 좌표는 거절, 도로 노드 위 좌표는 수락
-        from ugv.graph_gpkg import NODES
+        from ugv import route_preview
+        home = route_preview.station("A")
         far = bridge_ugv.send_ugv_command("T", Assignment("T", "A-ugv1", 37.50, 127.50))
-        near = bridge_ugv.send_ugv_command("T", Assignment("T", "A-ugv1", NODES[0]["lat"], NODES[0]["lon"]))
-        check("UGV 목표가 도로망 영역 밖 → REJECT TARGET_UNREACHABLE (임의 노드 대체 없음)",
+        near = bridge_ugv.send_ugv_command("T", Assignment("T", "A-ugv1", 38.0277, 128.1303))   # 남전약수터 옆 도로
+        check("UGV 목표가 도로망 영역 밖 → REJECT TARGET_UNREACHABLE (다른 지점 대체 없음)",
               far.response == "REJECT" and far.reason == "TARGET_UNREACHABLE")
-        check("UGV 목표가 도로 노드 근처 → ACCEPT", near.response == "ACCEPT")
+        check("UGV 목표가 도로 근처 → ACCEPT (거점 출입 지점에서 진행 방향 경로)",
+              home is not None and near.response == "ACCEPT")
     except Exception as e:  # noqa: BLE001
         skip("UGV bridge", f"로드 실패: {e}")
 

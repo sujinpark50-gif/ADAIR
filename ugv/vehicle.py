@@ -275,13 +275,22 @@ class Vehicle:
             prev = self.task_key if self.current_task() else None
             if prev:
                 self._finish(prev, "CANCELLED", error=f"SUPERSEDED_BY:{key}", physical_state="REPLANNED")
+            tel = self.driver.telemetry()
+            here_d = math.hypot(tel.x - plan.dest.x, tel.y - plan.dest.y) if tel is not None else math.inf
+            already = tel is not None and tel.speed_mps < 0.5 and here_d <= config.ARRIVE_M
             self.gen += 1
-            try:
-                seq = await self._drive(plan)
-            except DriverError as e:
-                await self._safe_stop()
-                self.task_key = None
-                raise HttpError(500, f"DRIVER_START_FAILED: {e}")
+            if already:
+                # 이미 목적지 도착 반경 안에 서 있다 → 주행하지 않고 바로 도착 처리
+                # (길이 0 경로로 출발시키면 차가 움직이지 않아 정지 고장(STALLED)이 된다, 2026-10-10 실서버 시험)
+                self.plan, self.speed = plan, plan_speeds(plan.route, 0.0)
+                seq = self.driver.progress().mission_seq
+            else:
+                try:
+                    seq = await self._drive(plan)
+                except DriverError as e:
+                    await self._safe_stop()
+                    self.task_key = None
+                    raise HttpError(500, f"DRIVER_START_FAILED: {e}")
             self.task_key = key
             self.target_ll = (body.get("target") or {}) or dict(zip(("lat", "lon"), plan.dest.ll()))
             tn = self._target_node(plan)
@@ -299,6 +308,9 @@ class Vehicle:
                     "superseded_task_id": prev, "mission_seq": seq}
             self.store.register(key, body, task, resp)
             self._event("TASK_STARTED", approach=plan.report(), eta_sec=resp["eta_sec"], superseded=prev)
+            if already:
+                self.state = "IDLE"
+                await self._arrived(tel, here_d)
             return resp
 
     async def _drive(self, plan: ApproachPlan, state="DRIVING") -> int:

@@ -1,20 +1,27 @@
 # -*- coding: utf-8 -*-
-"""지역 평면 = datum 중심 횡메르카토르 — 도로 월드 도로 면·스폰 좌표와 같은 투영인지."""
-import json
+"""지역 평면 = datum 중심 횡메르카토르 — PROJ 와 같은지, 스폰 자세 도구가 출입 지점을 같은 평면으로 내는지."""
+import math
 import random
 
 import pytest
 
-from ugv import config
+from ugv.drive_graph import access_point
 from ugv.geo import DATUM_LAT, DATUM_LON, FRAME
+from ugv.roads import RoadNetwork
 
 
-def test_matches_road_world_spawn():
-    d = json.loads(config.ROAD_NETWORK_JSON.read_text(encoding="utf-8"))
-    a = next(n for n in d["nodes"] if n["node_id"] == "A")
-    x, y = FRAME.to_xy(a["lat"], a["lon"])
-    sp = d["spawn"]["A-ugv1"]                        # 도로 월드 빌더가 같은 노드 위에 둔 스폰 (TM 로컬)
-    assert abs(x - sp["x"]) < 0.1 and abs(y - sp["y"]) < 0.1
+def test_spawn_pose_is_access_point_on_same_plane(capsys):
+    from ugv.tools import spawn_pose
+    import sys
+    argv, sys.argv = sys.argv, ["spawn_pose", "A"]
+    try:
+        assert spawn_pose.main() == 0
+    finally:
+        sys.argv = argv
+    x, y, z, yaw = map(float, capsys.readouterr().out.strip().split(","))
+    pos, heading, _ = access_point(RoadNetwork(), "A")
+    assert abs(x - pos.x) < 0.01 and abs(y - pos.y) < 0.01 and z == 0.4
+    assert abs((90.0 - math.degrees(yaw) - heading + 180) % 360 - 180) < 0.01   # ENU yaw ↔ 방위
 
 
 def test_matches_proj_and_roundtrips():

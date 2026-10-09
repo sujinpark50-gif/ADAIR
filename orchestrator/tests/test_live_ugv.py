@@ -80,7 +80,8 @@ def test_live_ugv_unreachable_target_holds(tmp_path):
     print("\n", out)
     assert out["status"] == "HOLD"
     assert out["excluded"]["A-ugv1"] == "LOCAL_REJECT:TARGET_UNREACHABLE"
-    assert out["excluded"]["A-fire1"] == "TYPE_NOT_ALLOWED"
+    # UGV 서버 기본 차량은 A-ugv1 하나다 (소방차를 함께 띄우면 그 차는 자원 종류가 맞지 않아 빠진다)
+    assert out["excluded"].get("A-fire1", "TYPE_NOT_ALLOWED") == "TYPE_NOT_ALLOWED"
 
 
 def test_live_ugv_not_sent_for_thermal_task(tmp_path):

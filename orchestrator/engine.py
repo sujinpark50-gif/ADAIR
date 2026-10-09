@@ -1364,8 +1364,9 @@ class Orchestrator:
             return {"attempt_id": aid, "substatus": "OBSERVED", "reason": "RUN_MISMATCH"}
         if sensor not in ("WEATHER", "THERMAL") and att["command"]["resource_type"] == "UAV":
             return None
-        ground = att["command"]["resource_type"] != "UAV"
-        if sensor not in ("WEATHER", "THERMAL") and ground:
+        ground = att["command"]["resource_type"] in config.GROUND_RESOURCE_TYPES
+        # 지상 자원의 관측: 기상·열화상은 아래 모의 센서로, 그 밖(도로 상황 등)은 자원 보고 그대로
+        if ground and sensor not in config.GROUND_SIMULATED_SENSORS:
             return self._ground_observation(att, task, data, detail, closed)
 
         # 1) 관측 확정 (복구면 원본 재사용)
@@ -1376,12 +1377,12 @@ class Orchestrator:
             if sensor == "WEATHER":
                 obs = observation.simulate_weather(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
                                                    position=pos, provider_raw=data.get("observation"))
-            elif task.plan_id:
+            elif task.plan_id or ground:
+                # 관측 계획 Task, 그리고 계획 밖 UGV 열화상도 같은 지상 시선 모델(config.UGV_VIEW)을 쓴다
                 obs = self._planned_observation(snap, task, aid, rid, pos, data, ground)
             else:
                 obs = observation.simulate(snapshot=snap, task=task, attempt_id=aid, resource_id=rid,
-                                           position=pos, uav_raw_observation=data.get("observation"),
-                                           profile_id=config.GROUND_SENSOR_PROFILE_ID if ground else None)
+                                           position=pos, uav_raw_observation=data.get("observation"))
             if closed:
                 obs["received_after_purpose"] = after_label
                 obs["used_for_completion"] = False

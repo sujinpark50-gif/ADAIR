@@ -7,7 +7,7 @@
     python -m ugv.tools.route_audit --seed 2 --pairs 1000
 
 수치
-  - 도로 수·길이·일방통행 수 (원자료 ONEWAY, ugv/tools/enrich_road_network.py)
+  - 도로 수·길이·일방통행 수 (원자료 gpkg 를 직접 읽음, ugv/road_source.py. 자동차전용 도로 제외)
   - 막다른 노드: 원자료 범위(= 환경 격자 경계) 5 m 안 → CLIP_BOUNDARY (지도를 자른 자리), 나머지 → OTHER
     (실제 막다른 길인지, 자료에서 끊긴 길인지는 이 자료만으로 구분할 수 없다 — 미확인)
   - 회전: 일방통행을 지키고 같은 도로 되짚기를 뺀 회전 수, 그중 기하 검사(차체·추정 도로 폭)로 막힌 수
@@ -48,39 +48,6 @@ def clip_class(net, nodes):
         d = min(x - ext["min_x"], ext["max_x"] - x, y - ext["min_y"], ext["max_y"] - y)
         out[n] = ("CLIP_BOUNDARY" if d <= 5.0 else "OTHER", round(d, 1))
     return out
-
-
-def scc(states, succ):
-    index, low, on, st, comps, i = {}, {}, set(), [], [], [0]
-    for root in states:
-        if root in index:
-            continue
-        work = [(root, iter(succ(root)))]
-        index[root] = low[root] = i[0]; i[0] += 1; st.append(root); on.add(root)
-        while work:
-            v, it = work[-1]
-            advanced = False
-            for w in it:
-                if w not in index:
-                    index[w] = low[w] = i[0]; i[0] += 1; st.append(w); on.add(w)
-                    work.append((w, iter(succ(w))))
-                    advanced = True
-                    break
-                elif w in on:
-                    low[v] = min(low[v], index[w])
-            if advanced:
-                continue
-            work.pop()
-            if work:
-                low[work[-1][0]] = min(low[work[-1][0]], low[v])
-            if low[v] == index[v]:
-                comp = []
-                while True:
-                    w = st.pop(); on.discard(w); comp.append(w)
-                    if w == v:
-                        break
-                comps.append(comp)
-    return sorted(comps, key=len, reverse=True)
 
 
 def km_by_direction(net, ok_state):
@@ -135,7 +102,8 @@ def main():
     for n, (x, y) in net.nodes.items():
         FRAME_LL[n] = FRAME.to_ll(x, y)
     res = {"conditions": {
-        "network": str(config.ROAD_NETWORK_JSON.relative_to(ROOT)).replace("\\", "/"),
+        "network": str(config.ROAD_GPKG.relative_to(ROOT)).replace("\\", "/"),
+        "excluded": net.excluded,
         "rules": "ugv/drive_graph.py: 같은 도로 즉시 되짚기 금지, 일방통행, 차체가 도로 안에 들어오는 회전만, 급커브 도로 제외",
         "vehicle": {"wheelbase_m": config.WHEELBASE_M, "steer_max_deg": config.STEER_MAX_DEG,
                     "body_m": [config.BODY_LENGTH_M, config.BODY_WIDTH_M], "r_min_rear_axle_m": round(R_MIN, 2)},
@@ -164,9 +132,8 @@ def main():
     res["sharp_bend_roads"] = [{"road_id": r, "min_radius_m": round(g.min_radius[r], 2),
                                 "length_m": round(net.roads[r].length, 1)} for r in sorted(g.sharp_roads)]
     # 방향 상태
-    states = [(rid, to) for rid, r in net.roads.items() for to in (r.a, r.b) if g.allowed(rid, g.other(rid, to))]
-    succ = lambda s: [t.to for t in g.turns.get(s, ())]
-    comps = scc(states, succ)
+    states = g.states()
+    comps = g.components()
     big = set(comps[0])
     res["strongly_connected"] = {"states_total": len(states), "largest_states": len(big),
                                  "largest_pct": round(100 * len(big) / len(states), 1),

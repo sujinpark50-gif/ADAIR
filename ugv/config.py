@@ -15,7 +15,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UGV_DIR = Path(__file__).resolve().parent
 STATIONS_JSON = Path(os.getenv("UGV_STATIONS_JSON", ROOT / "environment" / "config" / "fire_stations.json"))
-ROAD_NETWORK_JSON = Path(os.getenv("UGV_ROAD_NETWORK", UGV_DIR / "data" / "road_network.json"))
+# 도로망 원자료 (ugv/road_source.py 가 직접 읽는다. 변환본 파일 없음)
+ROAD_GPKG = Path(os.getenv("UGV_ROAD_GPKG", ROOT / "data" / "inje2019" / "roads" / "roads_clipped_2019.gpkg"))
+EXCLUDE_MOTORWAY = os.getenv("UGV_EXCLUDE_MOTORWAY", "1") == "1"   # 자동차전용 도로(AUTO_EXCLU=1)는 UGV 가 쓰지 않는다
+# 제한속도가 원자료에 없을 때 도로 등급(ROAD_RANK)별 값 (km/h). 실제 경로 속도는 MIN_ROAD_SPEED_KMH~MAX_SPEED 로 묶인다
+ROAD_RANK_SPEED_KMH = {101: 100, 102: 80, 103: 80, 104: 60, 105: 60, 106: 60, 107: 50, 108: 30}
 STATE_DIR = Path(os.getenv("UGV_STATE_DIR", UGV_DIR / ".state"))
 
 # ---------------------------------------------------------------------------- 차량
@@ -26,7 +30,7 @@ DEFAULT_VEHICLES = [
         "initial": "STATION",                   # 초기 위치: "STATION" 또는 {"lat":..,"lon":..}
         "driver": os.getenv("UGV_DRIVER", "sim"),
         "px4": {"address": "udpin://0.0.0.0:14541", "instance": 1,
-                # 기본 월드 = 실제 도로 선형 + 평탄 주행면 (A안, 2026-10-09). 지형 도로 월드는 kangwon_ugv2 (교차로 메시 결함)
+                # 기본 월드 = 실제 도로 선형 + 평탄 주행면 (A안, 2026-10-09). 지형을 반영한 도로 월드(B안)는 도로망·DEM 기준 확정 뒤
                 "gz_world": os.getenv("UGV_GZ_WORLD", "kangwon_flat"), "gz_model": "adair_ugv_1"},
     },
 ]

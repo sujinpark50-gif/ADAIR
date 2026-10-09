@@ -125,23 +125,6 @@ SENSOR_PROFILES = {
         "reference_payload": "H20T_CLASS_EXAMPLE",
         "basis": "IDEALIZED_DIAGONAL_FOV_GEOMETRY",
     },
-    # 지상(UGV) 열화상 — 순찰 차량 마스트의 열화상 카메라가 차 주변을 둘러본다고 가정 (2026-10-05).
-    # 차 위치 중심 정사각형(기본 450 m = 90 m 칸 5×5). 수평 시야라 지형 가림은 반영하지 않는다 (가정임을 결과에 남긴다).
-    # 바꾸기: ORCH_GROUND_THERMAL_VIEW_M
-    "ASSUMED_GROUND_VIEW_V1": {
-        "source": "SIMULATED",
-        "status": "TEST_ONLY",
-        "sensor_type": "THERMAL",
-        "platform": "GROUND",
-        "agl_m": None,
-        "scale_with_agl": False,
-        "view_direction": "HORIZONTAL_360",
-        "footprint_shape": "RECTANGLE",
-        "footprint_width_m": float(os.getenv("ORCH_GROUND_THERMAL_VIEW_M", "450")),
-        "footprint_height_m": float(os.getenv("ORCH_GROUND_THERMAL_VIEW_M", "450")),
-        "reference_payload": "VEHICLE_MAST_THERMAL_EXAMPLE",
-        "basis": "ASSUMED_GROUND_VIEW_SQUARE_AROUND_VEHICLE (지형 가림 미반영)",
-    },
     # 임시 가정 (사용자 결정 2026-09-30): 드론이 목표에 도착해 그 칸 위를 원으로 한 바퀴 돌았다고 보고
     # 관측 범위를 90m × 90m 로 둔다. 실제 드론은 아직 제자리 비행만 한다 (원 비행은 UAV-08 계약 대기) —
     # 이 범위는 실제로 본 범위가 아니라 가정이다. 높이에 따라 늘리거나 줄이지 않는다.
@@ -169,18 +152,19 @@ UGV_VIEW = {"sensor_profile_id": "ASSUMED_GROUND_LOS_V1", "source": "SIMULATED",
             "sensor_type": "THERMAL", "min_m": 600.0, "max_m": 2000.0,
             "mast_m": float(os.getenv("ORCH_UGV_MAST_M", "3.0")),
             "basis": "RADIUS_600M_ALWAYS_TO_2KM_TERRAIN_LINE_OF_SIGHT (카메라 높이 3 m 가정, 나무·건물 가림 미반영)"}
-GROUND_SENSOR_PROFILE_ID = os.getenv("ORCH_GROUND_SENSOR_PROFILE", "ASSUMED_GROUND_VIEW_V1")   # UGV 열화상
 
 # ---------------------------------------------------------------------------
 # 현장 환경 측정 (사용자 결정 2026-09-30: 2019 재현 필수 기능)
 # 드론·UGV·소방차에 기상 센서가 아직 없어 총괄 쪽 모의 센서로 측정한다 (TEST_ONLY).
 # 모의 센서는 도착 위치의 환경 값을 읽을 뿐이며, 환경이 주지 않은 항목은 만들지 않는다.
 # ---------------------------------------------------------------------------
-# UGV 지상 열화상 (모의, 2026-10-05): ORCH_UGV_THERMAL=1 일 때만 UGV 에 THERMAL 을 붙인다. 기본은 꺼짐 —
-# 켜면 UAV·UGV 를 함께 허용한 열화상 임무에서 직선거리가 가까운 UGV 가 먼저 평가된다.
+# 지상 자원 열화상 (모의): 켜면 UGV 가 열화상 임무 후보가 된다. 관측은 지상 시선 모델 config.UGV_VIEW
+# (observation.simulate_ground_los). 끄기: ORCH_UGV_THERMAL=0
 UGV_THERMAL_ENABLED = os.getenv("ORCH_UGV_THERMAL", "1") == "1"   # 사용자 결정 2026-10-07: 관측 계획 시연용으로 켬
-SIMULATED_CAPABILITIES = {"UAV": ("WEATHER",), "UGV": ("WEATHER",) + (("THERMAL",) if UGV_THERMAL_ENABLED else ()),
-                          "FIRE_ENGINE": ("WEATHER",)}
+_UGV_SIM_SENSORS = ("WEATHER", "THERMAL") if UGV_THERMAL_ENABLED else ("WEATHER",)
+SIMULATED_CAPABILITIES = dict(UAV=("WEATHER",), UGV=_UGV_SIM_SENSORS, FIRE_ENGINE=("WEATHER",))
+GROUND_RESOURCE_TYPES = ("UGV", "FIRE_ENGINE")          # 지상 자원 (관측을 지상 모델로 계산)
+GROUND_SIMULATED_SENSORS = ("WEATHER", "THERMAL")       # 지상 자원도 총괄 모의 센서로 재는 관측
 WEATHER_SENSOR_PROFILE = {
     "sensor_profile_id": "TEST_WEATHER_POINT_V1", "source": "SIMULATED", "status": "TEST_ONLY",
     "sensor_type": "WEATHER", "measures": ("wind_ms", "wind_dir_deg", "temperature_c", "humidity_pct"),
@@ -244,10 +228,10 @@ ENV_ACK_SUPPORTED_SENSORS = ("THERMAL", "WEATHER")
 # 신고 접수 시 최초 정찰 자동 생성 (사용자 결정 2026-09-30 D01)
 # ---------------------------------------------------------------------------
 AUTO_RECON_ON_REPORT = True
-# 신고 접수 시 자동 초기 정찰. ORCH_AUTO_RECON_GROUND=1 이면 UGV 도 후보 (기본은 드론만, 2026-10-05).
-# UGV 가 실제로 뽑히려면 ORCH_UGV_THERMAL=1 도 켜야 한다 (아니면 능력 부족으로 후보에서 빠진다)
-AUTO_RECON_REQUIREMENTS = {"resource_types": ["UAV", "UGV"] if os.getenv("ORCH_AUTO_RECON_GROUND", "0") == "1" else ["UAV"],
-                           "sensor": "THERMAL", "needs_env_ack": True}
+# 자동 초기 정찰에 지상 자원도 넣을지 (기본은 드론만). 넣으려면 ORCH_AUTO_RECON_GROUND=1.
+# 지상 자원은 열화상 능력(ORCH_UGV_THERMAL)이 있어야 실제 후보가 된다
+_AUTO_RECON_TYPES = ["UAV"] + (["UGV"] if os.getenv("ORCH_AUTO_RECON_GROUND", "0") == "1" else [])
+AUTO_RECON_REQUIREMENTS = dict(resource_types=_AUTO_RECON_TYPES, sensor="THERMAL", needs_env_ack=True)
 
 # ---------------------------------------------------------------------------
 # 확산 예측 활용 (사용자 결정 2026-09-30)

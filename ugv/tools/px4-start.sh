@@ -12,6 +12,7 @@
 #   GZ_SIM_RESOURCE_PATH 를 미리 주면 그 경로도 모델 검색에 쓴다 (시험용 모델 사본)
 #   INSTANCE   PX4 인스턴스 번호 (기본 1. 0 은 UAV 몫). MAVLink 는 14540+INSTANCE 로 보낸다
 #   POSE       스폰 위치 "x,y,z,yaw" (Gazebo 로컬 ENU, m·rad). 기본 "0,0,0.4,0"
+#              거점 출입 지점: python -m ugv.tools.spawn_pose A  (도로 월드 kangwon_flat 에서)
 #   HOST_IP    MAVLink 를 받을 컴퓨터 (UGV 서버). 기본: WSL 기본 게이트웨이 = Windows 호스트
 #   GUI        1 이면 Gazebo 창
 #   SPEED      PX4_SIM_SPEED_FACTOR (기본 1). 2단계 측정은 1 로 한다
@@ -21,8 +22,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
-BUILD="$PX4_DIR/build/px4_sitl_default"
+: "${PX4_DIR:=$HOME/PX4-Autopilot}"        # PX4 소스·빌드 위치
+BUILD=$PX4_DIR/build/px4_sitl_default
 WORLD="${WORLD:-adair_flat}"
 WORLD_FILE="${WORLD_FILE:-$REPO/ugv/gazebo/worlds/$WORLD.sdf}"
 INSTANCE="${INSTANCE:-1}"
@@ -56,7 +57,7 @@ if ! world_up; then
   for _ in $(seq 60); do world_up && break; sleep 1; done
   world_up || { echo "[ugv] Gazebo 월드가 뜨지 않음 ($STATE_DIR/gz-server.log)"; exit 1; }
 fi
-if [ "${GUI:-0}" = "1" ] && ! pgrep -f "gz sim -g" > /dev/null; then
+if [[ ${GUI:-0} == 1 ]] && ! pgrep -f "gz sim -g" >/dev/null; then       # 창은 하나만
   nohup gz sim -g > "$STATE_DIR/gz-gui.log" 2>&1 &
 fi
 

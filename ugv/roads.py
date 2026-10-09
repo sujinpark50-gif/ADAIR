@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""ugv/roads.py — 정적 도로망: 도로 위 위치, 최단 경로, 구간별 속도 계획.
+"""ugv/roads.py — 정적 도로망: 도로 위 위치, 도로 표본, 구간별 속도 계획.
 
-자료: ugv/data/road_network.json (221a497 에서 복구. roads_clipped_2019.gpkg → 노드 664, 도로 820, 236 km,
-도로 선형 포함). 노드 'A'·'B' 는 거점 근처 도로 지점이다. 교통 혼잡·동적 장애물은 다루지 않는다 (범위 밖).
+자료: 원자료 GeoPackage 를 바로 읽는다 (ugv/road_source.py, config.ROAD_GPKG). 경로 탐색은 진행 방향을 지키는
+ugv/drive_graph.py 가 한다. 교통 혼잡·동적 장애물은 다루지 않는다 (범위 밖).
 
 좌표: 지역 평면 (ugv/geo.py FRAME, m). 위치는 RoadPos(도로, 도로 시작 노드 a 에서 선형을 따라 잰 거리 s).
-경로 비용 = 시간 (도로 길이 / 도로 속도). 도로 속도 = min(max(등급 속도, MIN_ROAD_SPEED_KMH), 차량 최고속도).
+도로 속도 = min(max(제한속도, MIN_ROAD_SPEED_KMH), 차량 최고속도).
 """
 
 import bisect
-import json
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional, Tuple
@@ -38,7 +37,7 @@ class Road:
     speed_kmh: float
     xy: List[Tuple[float, float]]
     cum: List[float]
-    attrs: dict = field(default_factory=dict)      # 원자료 속성 (oneway, lanes ...) — ugv/tools/enrich_road_network.py
+    attrs: dict = field(default_factory=dict)      # 원자료 속성 (oneway, lanes ...) — ugv/road_source.py
 
     @property
     def length(self) -> float:
@@ -72,32 +71,26 @@ class SpeedPlan:
 
 
 class RoadNetwork:
-    def __init__(self, path=config.ROAD_NETWORK_JSON):
-        doc = json.loads(open(path, encoding="utf-8").read())
-        self.source = doc.get("source")
-        self.nodes: Dict[str, Tuple[float, float]] = {}
-        self.node_names: Dict[str, str] = {}
-        for n in doc["nodes"]:
-            self.nodes[n["node_id"]] = FRAME.to_xy(n["lat"], n["lon"])
-            self.node_names[n["node_id"]] = n.get("name")
+    def __init__(self, path=None):
+        from .road_source import load
+        doc = load(path)
+        self.source = doc["source"]
+        self.excluded = doc["excluded"]
+        self.clip_extent = doc["clip_extent"]
+        self.nodes: Dict[str, Tuple[float, float]] = {n: FRAME.to_xy(*ll) for n, ll in doc["nodes"].items()}
         self.roads: Dict[str, Road] = {}
         self.adj: Dict[str, List[Tuple[str, str]]] = {}
         for r in doc["roads"]:
-            xy = [FRAME.to_xy(p[0], p[1]) for p in r["geometry"]]
+            xy = [FRAME.to_xy(la, lo) for la, lo in r["geometry"]]
             cum = [0.0]
             for p, q in zip(xy, xy[1:]):
                 cum.append(cum[-1] + math.dist(p, q))
-            road = Road(r["road_id"], r["node_a"], r["node_b"], r.get("name") or "", float(r.get("speed_kmh") or 0), xy, cum,
-                        r.get("attrs") or {})
-            if road.length <= 0:
+            road = Road(r["road_id"], r["node_a"], r["node_b"], r["name"], float(r["speed_kmh"]), xy, cum, r["attrs"])
+            if road.length <= 0 or road.a == road.b:
                 continue
             self.roads[road.road_id] = road
             self.adj.setdefault(road.a, []).append((road.road_id, road.b))
             self.adj.setdefault(road.b, []).append((road.road_id, road.a))
-        self.bases = doc.get("bases", {})
-        self.spawn = doc.get("spawn", {})
-        self.world = doc.get("world", {})
-        self.clip_extent = doc.get("clip_extent_epsg5186")
         self._graph = None
         self._seg_index: Dict[Tuple[int, int], List[Tuple[str, int]]] = {}
         for rid, road in self.roads.items():

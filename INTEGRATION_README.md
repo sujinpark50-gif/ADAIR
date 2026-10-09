@@ -24,7 +24,7 @@ python run_integrated.py            # 기본 8스텝 (python run_integrated.py 1
 |---|---|---|
 | 환경·산불 모델 | 김은주 | `environment/`의 **실제 CA 산불 확산 모델**을 매 스텝 진행.<br>`rasterio`+지형 데이터가 없으면 **내장 stateful 산불 모델로 자동 전환**(그래도 불이 실제로 번짐). |
 | UAV | 김동현 | `uav/uav-agent` **FastAPI 서버(MockDrone)를 서브프로세스로 기동**(포트 8000·8001).<br>이원규님 실제 HTTP 커넥터가 `/evaluate`·`/execute`를 **진짜 HTTP로 호출**. |
-| UGV | 박유홍 | **실제 도로망(roads_clipped.gpkg, 노드 534) + Dijkstra**로 도달성·ETA·도로차단 재탐색.<br>통합 실행은 in-process(`bridge_ugv`), UGV 서버(`ugv/server.py`, :8100)는 `UGV_CONNECTION_MODE="real"`로 전환 가능. |
+| UGV | — | **원자료 도로망(roads_clipped_2019.gpkg 직접 읽기) + 진행 방향 유지 경로**로 도달성·ETA·도로차단 재탐색.<br>통합 실행은 in-process(`bridge_ugv`), UGV 서버(`ugv/server.py`, :8100)는 `UGV_CONNECTION_MODE="real"`로 전환 가능. |
 | 통합·재평가 | 이원규 | `main.process_task`의 폐루프·재평가·Decision ID를 그대로 사용. |
 | 총괄·Safety | 박수진 | 폐루프는 계약 기반 Mock 후보선택(**UAV만 후보**)·Safety 분기.<br>Orchestrator v0.1.2(`orchestrator_v012/`, UAV→UGV 전환 포함)는 병합됐으나 폐루프 연결은 합의 대기. |
 
@@ -43,7 +43,7 @@ python run_integrated.py            # 기본 8스텝 (python run_integrated.py 1
 원본은 5개의 '섬'이라 그냥 묶으면 함께 돌지 않습니다. 다음만 **추가**했습니다:
 
 - `integration/bridge_fire.py` — 환경 브리지(김은주 실모델 시도 → 실패 시 내장 산불 fallback)
-- `integration/bridge_ugv.py` — UGV 브리지(박유홍 RoadGraph를 팀 스키마로 연결)
+- `integration/bridge_ugv.py` — UGV 브리지(ugv/route_preview.py 경로를 팀 스키마로 연결)
 - `integration/uav_launcher.py` — UAV FastAPI 서버 기동·정리
 - `run_integrated.py` — 전체를 묶는 실행 엔트리
 - `connectors/fire_connector.py`, `connectors/ugv_connector.py` — `"integrated"` 모드 분기만 **추가**
@@ -108,17 +108,17 @@ c = gb.fire_cell_grid_to_gz(env_state.fire_cells[0])   # {x,y,...} → +lat,lon,
 
 브라우저에서 강원 지형·산불(CA)·드론·지상자원(UGV/소방차)을 실시간으로 보고, 버튼 하나로
 감지→출동→진화→재확산이 도는 완전 자동 폐루프. FastAPI 게이트웨이(:8080)가 gz_bridge(좌표)·
-fire_connector(환경 CA)·ugv/graph_gpkg(실제 도로망)를 감싸고, uav-agent(:8000, real)로 실제 PX4 제어.
+fire_connector(환경 CA)·ugv/route_preview(도로 경로)를 감싸고, uav-agent(:8000, real)로 실제 PX4 제어.
 
 실행 (repo 루트에서, uav-agent(:8000) 기동 후 — mock 이면 PX4 불필요):
     python -m pip install -r requirements-integrated.txt
     python -m uvicorn web.app:app --host 127.0.0.1 --port 8080
     # 브라우저 http://localhost:8080 → "자동 시작"
 
-현재 한계(표현 주의): UAV는 uav-agent HTTP로 실제 호출합니다. UGV 목록·경로는 박유홍님 **실제 도로망
+현재 한계(표현 주의): UAV는 uav-agent HTTP로 실제 호출합니다. UGV 목록·경로는 **원자료 도로망
 (integrated 브리지)** 기준이지만, **화면의 UGV 이동은 그 경로를 따라 브라우저에서 보간한 표시**이고
 UGV 서버(ugv/server.py) 실주행과는 연결되어 있지 않습니다. 자동 폐루프의 후보는 아직 UAV만입니다.
 
 파일: web/app.py(게이트웨이+UI+자동 폐루프), web/static/auto.js(자동 프론트),
-     gz_bridge.py(좌표), ugv/graph_gpkg.py(실제 도로망), connectors/fire_connector.py(강원 CA real),
+     gz_bridge.py(좌표), ugv/route_preview.py(도로 경로 미리보기), connectors/fire_connector.py(강원 CA real),
      uav/gazebo/kangwon.sdf(강원 월드, datum 동일).

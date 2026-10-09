@@ -103,17 +103,11 @@ def simulate(*, snapshot, task, attempt_id: str, resource_id: str, position: dic
     ground = goal.ground_amsl_m
     empty = {"footprint": None, "covered_cells": [], "partial_cells": [], "cell_coverage": [],
              "detections": [], "target_covered": False}
-    if profile.get("platform") == "GROUND":
-        # 지상 열화상: 높이로 범위를 계산하지 않는다 (차 위치 중심 고정 범위). 위경도만 있으면 된다
-        if None in (lat, lon):
-            return {**base, "result": "FAILED", "failure_reason": "POSITION_UNKNOWN", **empty}
-        agl = None
-    else:
-        if None in (lat, lon, alt) or ground is None:
-            return {**base, "result": "FAILED", "failure_reason": "POSITION_OR_GROUND_UNKNOWN", **empty}
-        agl = alt - ground
-        if agl <= 0:
-            return {**base, "result": "FAILED", "failure_reason": "NON_POSITIVE_AGL", **empty}
+    if None in (lat, lon, alt) or ground is None:
+        return {**base, "result": "FAILED", "failure_reason": "POSITION_OR_GROUND_UNKNOWN", **empty}
+    agl = alt - ground
+    if agl <= 0:
+        return {**base, "result": "FAILED", "failure_reason": "NON_POSITIVE_AGL", **empty}
     fp = footprint_for_agl(profile, agl)
     # covered_cells  칸 전체가 프레임 안에 들어온 칸 (그 칸에 대해 '불 없음'을 말할 수 있다)
     # partial_cells  일부만 겹친 칸 (본 부분의 사실만 남긴다. 칸 전체 관측으로 세지 않는다)

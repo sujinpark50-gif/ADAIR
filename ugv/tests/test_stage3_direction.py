@@ -2,7 +2,7 @@
 """3단계: 진행 방향 유지 경로 (2026-10-09 사용자 결정) — 모의.
 
 즉시 U턴·후진·3점 회전 없음, 일방통행, 차체가 들어오는 회전만, 첫 교차로 감속 거리, 방향별 복귀 가능성,
-도로를 따르는 정지, 경로가 없으면 감속 정지 후 보고. 실제 도로망(ugv/data/road_network.json)으로 본다.
+도로를 따르는 정지, 경로가 없으면 감속 정지 후 보고. 원자료 도로망(ugv/road_source.py, gpkg 직접 읽기)으로 본다.
 """
 
 import asyncio
@@ -72,8 +72,12 @@ def plan_from(dp, p, v0=0.0):
 
 # ---------------------------------------------------------------------- 데이터·그래프
 def test_oneway_attributes_loaded_and_turn_table():
+    import sqlite3
     ow = [r for r in NET.roads.values() if r.attrs.get("oneway") != "BOTH"]
-    assert len(ow) == 109                                   # 원자료 ONEWAY=1 (enrich_road_network.py)
+    db = sqlite3.connect(config.ROAD_GPKG)
+    want = db.execute("select count(*) from roads_clipped_2019 where ONEWAY=1 and AUTO_EXCLU!='1'").fetchone()[0]
+    assert len(ow) == want > 100                            # 원자료 ONEWAY=1 (자동차전용 도로 제외)
+    assert NET.excluded["motorway"] > 0                 # 자동차전용 도로(AUTO_EXCLU=1)는 뺐다
     for (rin, n), ts in G.turns.items():
         for t in ts:
             assert t.to[0] != rin                           # 같은 도로 되짚기 없음
@@ -98,7 +102,7 @@ def test_random_routes_keep_direction_rules():
 
 def test_oneway_road_is_entered_only_in_its_direction():
     hits = 0
-    for r in sorted((r for r in NET.roads.values() if r.attrs.get("oneway") == "A_TO_B"), key=lambda r: r.road_id)[:15]:
+    for r in sorted((r for r in NET.roads.values() if r.attrs.get("oneway") == "A_TO_B"), key=lambda r: r.road_id):
         p = NET.at(r.road_id, r.length / 2)
         route, _ = plan_from(START_A, p)
         if route is None:
@@ -107,7 +111,9 @@ def test_oneway_road_is_entered_only_in_its_direction():
         assert route.arrive_toward == r.b
         legs_ok(route)
         hits += 1
-    assert hits >= 5
+        if hits >= 8:
+            break
+    assert hits >= 8
 
 
 # ---------------------------------------------------------------------- 반대·뒤쪽 목표
@@ -247,8 +253,11 @@ def test_station_access_point_is_separate_from_station_coordinates(tmp_path):
     v, _, _ = make(tmp_path)
     st = v.state_view()["station"]
     assert st["road_point"] != {k: st["access_point"][k] for k in ("lat", "lon")}
-    assert st["access_point"]["road_id"] == "682501660"                    # 스폰 도로 (거점 노드에서 나가는 도로)
-    assert NET.roads["682503090"].length < 200 and len(NET.adj[NET.roads["682503090"].b]) == 1   # 가장 가까운 도로 = 막다른 길
+    acc = NET.roads[st["access_point"]["road_id"]]
+    assert (acc.road_id, acc.a) in G.core and (acc.road_id, acc.b) in G.core      # 출입 지점은 서로 오갈 수 있는 도로
+    near = NET.snap_ll(st["lat"], st["lon"])                                   # 소방서 좌표에서 가장 가까운 도로
+    nr = NET.roads[near.road_id]
+    assert near.road_id != acc.road_id and min(len(NET.adj[nr.a]), len(NET.adj[nr.b])) == 1   # 그 도로는 막다른 길
 
 
 def test_return_to_station_after_arrival(tmp_path):
