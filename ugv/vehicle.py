@@ -81,8 +81,9 @@ def _dist_to_polyline(x, y, pts, lo=0, hi=None):
 
 
 class Vehicle:
-    def __init__(self, cfg: dict, net: RoadNetwork, fire_source, clock, store: ExecStore):
+    def __init__(self, cfg: dict, net: RoadNetwork, fire_source, clock, store: ExecStore, wall=time.monotonic):
         self.cfg, self.net, self.fire_source, self.clock, self.store = cfg, net, fire_source, clock, store
+        self.wall = wall                        # 통신 단절 판단용 벽시계 (단조). 시험은 가짜 시계를 넣는다
         self.resource_id = cfg["resource_id"]
         self.resource_type = cfg.get("resource_type", "UGV")
         # 차량 특성 (차체·회전반경·속도·가감속). 경로 탐색·회전 가능성·차체 검사·속도 계획을 이 값으로 한다
@@ -132,6 +133,8 @@ class Vehicle:
         self._task: Optional[asyncio.Task] = None
         self.last_clearance_m = None
         self.last_stop: dict = {}
+        self._last_contact: Optional[float] = None   # 총괄 마지막 연락 (벽시계)
+        self.comm = {"phase": "OK"}                  # OK / STOPPING / STOPPED / RETURNING / RETURNED / FAILED
         self.danger: Optional[dict] = None
 
     # ------------------------------------------------------------------ 수명
@@ -492,6 +495,7 @@ class Vehicle:
             self._event("STOPPED", position={"lat": tel.lat, "lon": tel.lon})
         if moving:
             await self._supervise_drive(now, tel)
+        await self._comm_watch(tel)
         if now - self._last_safety >= config.SAFETY_CHECK_PERIOD_S:
             self._last_safety = now
             await self._safety(now, tel)
@@ -552,6 +556,72 @@ class Vehicle:
                 self._fail("VEHICLE_FAULT", "주행 중 시동 꺼짐 (disarm)")
             return
 
+    # ------------------------------------------------------------------ 총괄 통신 단절 (벽시계)
+    def note_contact(self):
+        """총괄 연락을 받았다 (서버가 명령·조회·heartbeat 마다 부른다). 단절 상태를 끝낸다 — 복귀 주행 중이면 그대로 둔다."""
+        self._last_contact = self.wall()
+        if self.comm["phase"] != "OK":
+            self._event("COMM_RESTORED", previous=dict(self.comm))
+            self.comm = {"phase": "OK"}
+
+    def comm_lost_s(self) -> Optional[float]:
+        return None if self._last_contact is None else self.wall() - self._last_contact
+
+    async def _comm_watch(self, tel):
+        lost = self.comm_lost_s()
+        if lost is None:
+            return
+        ph = self.comm["phase"]
+        if ph == "OK" and lost > config.COMM_LOSS_STOP_S:
+            async with self.lock:
+                self.comm = {"phase": "STOPPING", "lost_s_at_stop": round(lost, 1)}
+                if self.current_task():
+                    self.gen += 1
+                    self._finish(self.task_key, "CANCELLED", error=f"COMM_LOSS: 총괄 연락 {lost:.0f} s 없음",
+                                 physical_state="STOPPING")
+                if self.state in ("DRIVING", "EVADING") or tel.speed_mps >= 0.2:
+                    self.gen += 1
+                    await self._safe_stop()
+                self._event("COMM_LOSS_STOP", lost_s=round(lost, 1), threshold_s=config.COMM_LOSS_STOP_S)
+            return
+        if ph == "STOPPING" and tel.speed_mps < 0.2 and self.state not in ("DRIVING", "EVADING", "STOPPING"):
+            self.comm = {**self.comm, "phase": "STOPPED", "stopped_wall": self.wall()}
+            self._event("COMM_LOSS_STOPPED", lost_s=round(lost, 1))
+            return
+        if ph == "STOPPED" and self.wall() - self.comm["stopped_wall"] > config.COMM_LOSS_RETURN_S:
+            if self.state in ("FAULT", "DANGER"):
+                return                                   # 운영자 해제 전에는 자동으로 움직이지 않는다
+            async with self.lock:
+                await self._comm_return(lost)
+
+    async def _comm_return(self, lost):
+        here, v0, err = self.here_state()
+        acc = self.access
+        tel = self.driver.telemetry()
+        if tel is not None and math.hypot(tel.x - acc.x, tel.y - acc.y) <= config.ARRIVE_M:
+            self.comm = {**self.comm, "phase": "RETURNED"}
+            self._event("COMM_LOSS_AT_STATION", lost_s=round(lost, 1))
+            return
+        plan = None if here is None else plan_approach(
+            self.net, self.fire_source.area(), here, *acc.ll(), v0=v0, access=acc, fixed_dest=acc, graph=self.graph)
+        if plan is None or plan.status != "OK":
+            why = err or f"{plan.status}: {plan.reason}"
+            self.fault = f"COMM_LOSS_NO_RETURN_ROUTE: 총괄 연락 {lost:.0f} s 없음, 소속 거점 {self.station['base_id']} 복귀 경로 없음 ({why})"
+            self.state = "FAULT"
+            self.comm = {**self.comm, "phase": "FAILED", "reason": why}
+            self._event("COMM_LOSS_RETURN_FAILED", reason=why, operator_action_required=True)
+            return
+        try:
+            self.gen += 1
+            self.task_key = None
+            await self._drive(plan)
+        except DriverError as e:
+            self._fail("COMM_LOSS_RETURN_START_FAILED", str(e))
+            self.comm = {**self.comm, "phase": "FAILED", "reason": str(e)}
+            return
+        self.comm = {**self.comm, "phase": "RETURNING"}
+        self._event("COMM_LOSS_RETURN", lost_s=round(lost, 1), approach=plan.report())
+
     async def _arrived(self, tel, to_dest):
         evading = self.state == "EVADING"
         self.state = "IDLE"
@@ -559,6 +629,8 @@ class Vehicle:
                "position": {"lat": tel.lat, "lon": tel.lon}, "fuel_pct": None,
                "note": "도로 지점 도착 기록. 화재 관측이 아니다 (화재 관측은 4단계 관측 보고)"}
         t = self.current_task()
+        if self.comm["phase"] == "RETURNING":
+            self.comm = {**self.comm, "phase": "RETURNED"}
         self._event("ARRIVED" if not evading else "EVADED", to_dest_m=round(to_dest, 1),
                     position={"lat": tel.lat, "lon": tel.lon})
         if t is None:
@@ -662,9 +734,13 @@ class Vehicle:
             "updated_at": (time.time() - tel.age_s()) if tel else 0.0, "fault": self.fault,
             "sim_time_s": round(self.clock.now(), 2), "mission_state": self.state,
             "speed_mps": round(tel.speed_mps, 2) if tel else None, "heading_deg": round(tel.heading_deg, 1) if tel else None,
-            "station": self.station,
+            "station": self.station, "profile": self.profile.summary(),
+            "comm": {**{k: v for k, v in self.comm.items() if k != "stopped_wall"},
+                     "orchestrator_silence_s": None if self.comm_lost_s() is None else round(self.comm_lost_s(), 1),
+                     "stop_after_s": config.COMM_LOSS_STOP_S, "return_after_stop_s": config.COMM_LOSS_RETURN_S,
+                     "basis": "벽시계(단조). 총괄 연락을 한 번 받은 뒤부터 센다"},
             "operator_intervention": {
-                "required": self.state in ("FAULT", "DANGER"), "reason": self.fault,
+                "required": self.state in ("FAULT", "DANGER") or self.comm["phase"] == "FAILED", "reason": self.fault,
                 "meaning": DANGER_MEANING if self.state == "DANGER" else None,
                 "danger": self.danger if self.state == "DANGER" else None,
                 "release": "POST /ugv/{id}/stop — 차량 정지(0.2 m/s 미만)·텔레메트리 확인 뒤에만 해제. 원격 운전 기능 없음"},

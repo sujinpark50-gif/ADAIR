@@ -19,13 +19,19 @@
 | GET  | /ugv/{id}/route | 지금 계획 경로 선형·구간 속도 |
 | GET  | /ugv/{id}/events | 최근 사건 (도착·재계획·이탈·고장) |
 | GET  | /ugv/{id}/observation | 현재 위치 도로 상태 (화재 관측 아님, 커넥터 호환) |
+| POST | /ugv/{id}/heartbeat | 총괄 연락 (통신 단절 판단) |
+
+총괄 통신 단절 (vehicle._comm_watch, 벽시계): /ugv 아래 요청은 총괄 연락으로 센다 (차량 경로면 그 차량, /ugv 목록이면
+전 차량). 감시·시험 도구는 헤더 `X-ADAIR-Monitor: 1` 을 붙여 연락으로 세지 않게 한다.
+차량은 서로 독립이다: 차량별 드라이버(PX4 인스턴스·포트)·임무 상태·사건 기록. 임무 저장 파일은 하나지만 기록마다
+resource_id 로 나뉘고 한 차량의 재시작 정리는 그 차량 기록만 건드린다.
 """
 
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from interfaces.exec_store import ExecStore
@@ -34,7 +40,7 @@ from . import config
 from .clock import SimClock
 from .fire import build_source
 from .roads import RoadNetwork
-from .vehicle import HttpError, Vehicle
+from .vehicle import HttpError, PlacementError, Vehicle
 
 
 class Fleet:
@@ -43,8 +49,13 @@ class Fleet:
         self.fire_source = fire_source or build_source()
         self.clock = clock or SimClock()
         self.store = store or ExecStore(config.STATE_DIR / "ugv_tasks.json")
-        self.vehicles = {c["resource_id"]: Vehicle(c, self.net, self.fire_source, self.clock, self.store)
-                         for c in (vehicles_cfg or config.load_vehicles())}
+        self.vehicles = {}
+        self.unplaced = {}                       # 배치 불가 차량: 사유 (소속 거점 출입 지점·대기 위치 없음)
+        for c in (vehicles_cfg or config.load_vehicles()):
+            try:
+                self.vehicles[c["resource_id"]] = Vehicle(c, self.net, self.fire_source, self.clock, self.store)
+            except PlacementError as e:
+                self.unplaced[c["resource_id"]] = str(e)
 
     async def start(self):
         for v in self.vehicles.values():
@@ -78,6 +89,24 @@ def create_app(fleet: Optional[Fleet] = None, *, autostart: bool = True) -> Fast
     def F() -> Fleet:
         return holder["fleet"]
 
+    @app.middleware("http")
+    async def contact(request: Request, call_next):
+        parts = request.url.path.strip("/").split("/")
+        f = holder["fleet"]
+        if f is not None and parts and parts[0] == "ugv" and request.headers.get("x-adair-monitor") != "1":
+            if len(parts) >= 2 and parts[1] in f.vehicles:
+                f.vehicles[parts[1]].note_contact()
+            elif len(parts) == 1:
+                for v in f.vehicles.values():
+                    if request.query_params.get("base") in (None, v.station["base_id"]):
+                        v.note_contact()
+        return await call_next(request)
+
+    @app.post("/ugv/{rid}/heartbeat")
+    def heartbeat(rid: str):
+        v = F().get(rid)
+        return {"resource_id": rid, "comm": v.state_view()["comm"]}
+
     async def call(coro):
         try:
             return await coro
@@ -89,6 +118,9 @@ def create_app(fleet: Optional[Fleet] = None, *, autostart: bool = True) -> Fast
         f = F()
         src = f.fire_source
         return {"status": "ok", "drivers": {r: v.driver.kind for r, v in f.vehicles.items()},
+                "vehicles": {r: {"resource_type": v.resource_type, "profile": v.profile.name, "base": v.station["base_id"],
+                                 "access_point": v.station["access_point"]} for r, v in f.vehicles.items()},
+                "unplaced": f.unplaced,
                 "road_network": {"source": f.net.source, "roads": len(f.net.roads), "nodes": len(f.net.nodes)},
                 "fire_source": src.status() if hasattr(src, "status") else src.area().summary(),
                 "clock": {"sim_time_s": round(f.clock.now(), 2), "time_scale": f.clock.scale},
