@@ -1,284 +1,214 @@
-# ugv/drivers/px4.py — PX4(SITL/실기체) MAVSDK 드라이버
-# 흐름은 tools/try_move.py 에서 검증한 것과 같다: 업로드 -> arm -> 2초 대기 -> 미션 시작.
-# 텔레메트리는 백그라운드 태스크가 구독해 snapshot 을 갱신하고, 조회 메서드는 snapshot 만 읽는다.
+# -*- coding: utf-8 -*-
+"""ugv/drivers/px4.py — PX4 SITL(adair_ugv, Gazebo) 드라이버. mavsdk 4.x (네이티브 바인딩, UAV 와 같은 라이브러리).
+
+주행 = PX4 Mission 모드. 미션 지점마다 구간 속도(speed_m_s)를 싣는다. 경로 추종(pure pursuit)·꺾임 감속은 PX4 가 한다.
+- 속도 의미 변환 (mavsdk_plan): 공통 Item 속도는 '그 지점까지 가는 구간' 속도인데, MAVSDK/PX4 는 지점의 speed_m_s 를
+  '그 지점을 지난 뒤' 쓴다 (2026-10-09 평탄 도로 월드 실측: 구간 k-1→k 실제 속도가 지점 k-1 속도와 평균 0.06 m/s 차,
+  지점 k 속도와 2.9 m/s 차). 그대로 실으면 감속이 한 구간(최대 40 m) 늦어 곡선에 빠르게 들어간다
+  (계획 8.7 m/s 곡선을 11.3 m/s, 횡가속 4.75 m/s²) → 한 칸 당겨 싣고, 첫 구간 속도를 정하려고 앞쪽에 선행 지점을 하나 넣는다.
+- follow(): 미션을 통째로 교체 → (시동) → 시작. 업로드 직후 PX4 가 검증을 끝내기 전에는 시작을 거부하므로 재시도한다.
+- stop(): 진행 방향 앞 제동거리 지점 하나짜리 미션으로 교체 (base.Driver.stop). HOLD 는 명령 시점 위치로 U턴한다.
+- 텔레메트리는 구독을 계속 열어 두고 마지막 값을 보관한다. 위치가 끊기면 Telemetry.age_s() 가 커진다 (감시는 vehicle.py).
+검증 (2026-10-09, 평지 월드): 직선 60.5 km/h, 정지 57 m, 90°·45°·135° 꺾임 17.9/36.1/17.7 km/h. ugv/tools/drive_test.py
+"""
 
 import asyncio
-import logging
-import time
-from dataclasses import dataclass
+import math
+from typing import List, Optional
 
-from mavsdk_grpc import System
-from mavsdk_grpc.mission import MissionItem, MissionPlan
+from ..geo import FRAME
+from .base import Driver, DriverError, Item, Progress, Telemetry
 
-from .. import config
-from .base import MotionDriver
-
-log = logging.getLogger(__name__)
-
-TELEMETRY_RATE_HZ = 1.0
-ARM_SETTLE_S = 2.0   # arm 직후 곧바로 start_mission 하면 DENIED
-ACCEPT_RADIUS_M = 4.0                   # 웨이포인트 도착 반경. 10 m 면 통과형 웨이포인트에서 코너를 크게 질러 도로 밖으로 나간다 (2026-10-03). 2 m 는 지나쳐 버린다
-# 웨이포인트 간격(2 × 도착 반경)은 ugv/route_plan.py 가 맞춰서 넘긴다. 여기서 다시 솎으면
-# 진행률 번호가 경로 계획과 어긋나므로 드라이버는 받은 그대로 올린다.
+START_RETRIES = 20
+LEAD_BASE_M = 5.0           # 선행 지점 = 지금 위치에서 경로를 따라 LEAD_BASE_M + 속도 × LEAD_TIME_S 앞
+LEAD_TIME_S = 2.0           #   (업로드·시작에 걸리는 동안 지나쳐 뒤에 남지 않게. 뒤에 남으면 rover 가 되돌아간다)
+ACCEPT_M = 3.0              # 미션 지점 도착 반경
+START_RETRY_S = 0.5
+ARM_RETRIES = 15
+ARM_RETRY_S = 1.0
 
 
-@dataclass
-class Snapshot:
-    lat: float = float("nan")
-    lon: float = float("nan")
-    battery_pct: float = float("nan")   # MAVSDK remaining_percent 원값 그대로
-    flight_mode: str = "UNKNOWN"
-    armed: bool = False
-    rel_alt_m: float = 0.0              # 홈 기준 상대고도. 지형 월드에서는 도로를 따라 수백 m 바뀐다
-    updated_at: float = 0.0             # 마지막 위치 수신 시각 (monotonic)
-    descent_mps: float = 0.0            # 최근 하강 속도 (시뮬레이션 초당 m, 양수 = 내려감). 추락 판정용
-    px4_time_s: float | None = None     # PX4 부팅 후 시각 (IMU 타임스탬프). SITL lockstep 이라 = Gazebo 시뮬레이션 시간
-    speed_mps: float = float("nan")     # 지면 속도 (북·동 성분)
-    heading_deg: float = float("nan")
+def mavsdk_plan(items: List[Item], here, v_now: float):
+    """공통 Item[(x, y, 그 지점까지 구간 속도)] → MAVSDK 미션 [(x, y, 그 지점을 지난 뒤 속도, 통과 여부)].
+
+    지점 k 에 지점 k+1 의 구간 속도를 싣는다 (마지막 지점은 정지점이라 지난 뒤 속도가 없다 — 자기 값).
+    첫 구간(지금 위치 → 첫 지점)의 속도는 실을 곳이 없으므로, 경로를 따라 조금 앞에 선행 지점을 넣고 거기에
+    첫 지점의 구간 속도를 싣는다. 첫 지점이 선행 거리보다 가까우면 넣지 않는다 (짧은 첫 구간은 이전 속도 그대로)."""
+    if not items:
+        return []
+    out = []
+    lead = LEAD_BASE_M + max(v_now, 0.0) * LEAD_TIME_S
+    d0 = math.dist(here, items[0][:2])
+    if d0 > lead + ACCEPT_M:
+        t = lead / d0
+        out.append((here[0] + (items[0][0] - here[0]) * t, here[1] + (items[0][1] - here[1]) * t, items[0][2], True))
+    for k, (x, y, v) in enumerate(items):
+        last = k == len(items) - 1
+        out.append((x, y, v if last else items[k + 1][2], not last))
+    return out
 
 
-class PX4Driver(MotionDriver):
-    def __init__(
-        self,
-        address: str = "udpin://0.0.0.0:14540",
-        speed_mps: float = 3.0,
-        alt_m: float = 2.0,
-        time_scale: float = 1.0,
-        grpc_port: int = 50051,
-    ):
-        self.address = address
-        self.grpc_port = grpc_port
-        self.time_scale = time_scale    # 하강 속도를 시뮬레이션 초 기준으로 바꿀 때 쓴다
-        self.speed_mps = speed_mps
-        self.alt_m = alt_m
-        self.snapshot = Snapshot()
-        # 차량마다 자기 mavsdk_server(gRPC 포트)를 띄운다. 기본값(50051)을 같이 쓰면 두 번째 차의 서버가 포트를 못 잡고
-        # 첫 번째 차의 서버에 붙어, 소방차 명령이 UGV 로 갔다 (2026-10-03 WSL: 소방차는 arm 기록 없음, UGV 는 미션 두 번 시작 후
-        # 소방차의 OFF_ROUTE 처리(disarm)로 꺼짐). 포트는 ugv/fleet.py 가 PX4 인스턴스 번호로 정한다.
-        self._drone = System(port=grpc_port)
-        self._tasks: list[asyncio.Task] = []
-        self._progress_task: asyncio.Task | None = None
-        self._progress = (0, 0)
+def _mission_item(lat, lon, speed, through):
+    from mavsdk.plugins.mission.mission import MissionItem
+    return MissionItem(latitude_deg=lat, longitude_deg=lon, relative_altitude_m=0.0, speed_m_s=speed,
+                       is_fly_through=through, gimbal_pitch_deg=float("nan"), gimbal_yaw_deg=float("nan"),
+                       camera_action=MissionItem.CameraAction.NONE, loiter_time_s=0.0,
+                       camera_photo_interval_s=0.0, acceptance_radius_m=3.0, yaw_deg=float("nan"),
+                       camera_photo_distance_m=0.0, vehicle_action=MissionItem.VehicleAction.NONE)
 
-    # --- 연결 / 텔레메트리 ---------------------------------------------
 
-    async def connect(self) -> None:
-        log.info("PX4 연결 대기: %s (PX4 SITL 이 떠 있어야 한다, mavsdk gRPC %d)", self.address, self.grpc_port)
-        await self._drone.connect(system_address=self.address)
-        async for state in self._drone.core.connection_state():
-            if state.is_connected:
+class Px4Driver(Driver):
+    kind = "px4"
+
+    def __init__(self, address: str, clock, connect_timeout_s: float = 30.0):
+        self.address, self.clock, self.connect_timeout_s = address, clock, connect_timeout_s
+        self._sdk = self._tel = self._act = self._mis = None
+        self._pos = self._vel = None
+        self._heading = 0.0
+        self._armed = False
+        self._mode = "UNKNOWN"
+        self._pos_mono = 0.0
+        self._prog = Progress()
+        self._expected_total = 0
+        self._seen_running = False
+        self._tasks: List[asyncio.Task] = []
+        self._cmd = asyncio.Lock()
+        self.connected = False
+        self.last_error: Optional[str] = None
+
+    async def start(self):
+        from mavsdk.asyncio import ComponentType, Configuration, Mavsdk
+        from mavsdk.asyncio.plugins.action import ActionAsync
+        from mavsdk.asyncio.plugins.mission import MissionAsync
+        from mavsdk.asyncio.plugins.telemetry import TelemetryAsync
+        sdk = Mavsdk(Configuration.create_with_component_type(ComponentType.GROUND_STATION))
+        await sdk.add_any_connection(self.address)
+        system = await sdk.first_autopilot(timeout_s=self.connect_timeout_s)
+        if system is None:
+            sdk.destroy()
+            raise DriverError(f"PX4_NOT_FOUND: {self.address} (ugv/tools/px4-start.sh, 방화벽 확인)")
+        self._sdk, self._tel = sdk, TelemetryAsync(system)
+        self._act, self._mis = ActionAsync(system), MissionAsync(system)
+        await self._mis.set_return_to_launch_after_mission(False)
+        for name, stream in (("position", self._tel.subscribe_position), ("velocity", self._tel.subscribe_velocity_ned),
+                             ("heading", self._tel.subscribe_heading), ("armed", self._tel.subscribe_armed),
+                             ("mode", self._tel.subscribe_flight_mode),
+                             ("progress", self._mis.subscribe_mission_progress)):
+            self._tasks.append(asyncio.create_task(self._pump(name, stream)))
+        for _ in range(100):
+            if self._pos is not None:
                 break
-        log.info("연결됨: %s", self.address)
+            await asyncio.sleep(0.1)
+        self.connected = self._pos is not None
+        if not self.connected:
+            raise DriverError("PX4_NO_POSITION")
 
-        # GCS 없이 arm 하기 위한 파라미터.
-        # 확인 사항 (v1.18-beta):
-        #   SYS_HAS_MAG / FD_FAIL_* 는 건드리지 않는다 — yaw_align 이 깨져 arm 이 거부된다
-        #   RD_* 는 기본값이 적절하므로 설정하지 않는다
-        #   (RD_TRANS_DRV_TRN 기본값 3.1416 은 rad 이며, 문서의 deg 표기는 v1.16 기준)
-        for name, val in (
-            ("NAV_RCL_ACT", 0),
-            ("NAV_DLL_ACT", 0),
-            ("COM_RCL_EXCEPT", 4),
-            ("SDLOG_MODE", -1),
-        ):
+    async def _pump(self, name, stream):
+        import time
+        while True:
             try:
-                await self._drone.param.set_param_int(name, val)
-            except Exception as e:
-                log.warning("param %s 설정 실패: %s", name, e)
+                async for v in stream():
+                    if name == "position":
+                        self._pos, self._pos_mono = v, time.monotonic()
+                    elif name == "velocity":
+                        self._vel = v
+                    elif name == "heading":
+                        self._heading = v.heading_deg
+                    elif name == "armed":
+                        self._armed = bool(v)
+                    elif name == "mode":
+                        from mavsdk.plugins.telemetry.telemetry import FlightMode
+                        try:
+                            self._mode = FlightMode(int(v)).name
+                        except (ValueError, TypeError):
+                            self._mode = getattr(v, "name", str(v))
+                    elif name == "progress":
+                        # 새 미션을 보낸 뒤 '진행 중'(current < total)을 한 번 본 다음에만 '끝남'을 받아들인다
+                        # (지난 미션의 끝남 보고가 늦게 와도 새 미션 완료로 오해하지 않게)
+                        if v.total != self._expected_total or v.total == 0:
+                            continue
+                        if v.current < v.total:
+                            self._seen_running = True
+                        fin = self._seen_running and v.current >= v.total
+                        self._prog = Progress(v.current, v.total, fin, self._prog.mission_seq)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — 구독이 끊기면 다시 연다
+                self.last_error = f"{name}: {type(e).__name__}: {e}"
+                await asyncio.sleep(1.0)
 
-        for name in ("set_rate_position", "set_rate_battery", "set_rate_imu", "set_rate_velocity_ned"):
-            try:
-                await getattr(self._drone.telemetry, name)(TELEMETRY_RATE_HZ)
-            except Exception as e:
-                log.warning("%s 실패: %s", name, e)
-
-        self._tasks = [
-            asyncio.create_task(self._watch_position()),
-            asyncio.create_task(self._watch_battery()),
-            asyncio.create_task(self._watch_flight_mode()),
-            asyncio.create_task(self._watch_armed()),
-            asyncio.create_task(self._watch_imu_time()),
-            asyncio.create_task(self._watch_velocity()),
-            asyncio.create_task(self._watch_heading()),
-        ]
-
-    async def _watch_position(self) -> None:
-        try:
-            async for p in self._drone.telemetry.position():
-                now, s = time.monotonic(), self.snapshot
-                if s.updated_at and now > s.updated_at:
-                    wall = now - s.updated_at
-                    s.descent_mps = (s.rel_alt_m - p.relative_altitude_m) / (wall * self.time_scale)
-                s.lat = p.latitude_deg
-                s.lon = p.longitude_deg
-                s.rel_alt_m = p.relative_altitude_m
-                s.updated_at = now
-        except Exception:
-            log.exception("position 구독 종료")
-
-    async def _watch_battery(self) -> None:
-        try:
-            async for b in self._drone.telemetry.battery():
-                self.snapshot.battery_pct = b.remaining_percent
-        except Exception:
-            log.exception("battery 구독 종료")
-
-    async def _watch_flight_mode(self) -> None:
-        try:
-            async for m in self._drone.telemetry.flight_mode():
-                self.snapshot.flight_mode = str(m)
-        except Exception:
-            log.exception("flight_mode 구독 종료")
-
-    async def _watch_imu_time(self) -> None:
-        """IMU 타임스탬프 = PX4 시각. lockstep SITL 에서는 Gazebo 시뮬레이션 시간과 같아 실제 배속을 잴 수 있다."""
-        try:
-            async for imu in self._drone.telemetry.imu():
-                if imu.timestamp_us:
-                    self.snapshot.px4_time_s = imu.timestamp_us / 1e6
-        except Exception:
-            log.exception("imu 구독 종료")
-
-    async def _watch_velocity(self) -> None:
-        try:
-            async for v in self._drone.telemetry.velocity_ned():
-                self.snapshot.speed_mps = (v.north_m_s ** 2 + v.east_m_s ** 2) ** 0.5
-        except Exception:
-            log.exception("velocity 구독 종료")
-
-    async def _watch_heading(self) -> None:
-        try:
-            async for h in self._drone.telemetry.heading():
-                self.snapshot.heading_deg = h.heading_deg
-        except Exception:
-            log.exception("heading 구독 종료")
-
-    def telemetry(self) -> dict:
-        s = self.snapshot
-        return {"px4_time_s": s.px4_time_s, "speed_mps": s.speed_mps, "heading_deg": s.heading_deg}
-
-    async def _watch_armed(self) -> None:
-        try:
-            async for a in self._drone.telemetry.armed():
-                self.snapshot.armed = a
-        except Exception:
-            log.exception("armed 구독 종료")
-
-    async def close(self) -> None:
-        """백그라운드 태스크 정리."""
-        tasks = self._tasks + ([self._progress_task] if self._progress_task else [])
-        for t in tasks:
+    async def close(self):
+        for t in self._tasks:
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks = []
-        self._progress_task = None
+        if self._sdk is not None:
+            self._sdk.destroy()
+            self._sdk = None
 
-    # --- MotionDriver ---------------------------------------------------
+    def telemetry(self) -> Optional[Telemetry]:
+        if self._pos is None:
+            return None
+        import time
+        x, y = FRAME.to_xy(self._pos.latitude_deg, self._pos.longitude_deg)
+        v = math.hypot(self._vel.north_m_s, self._vel.east_m_s) if self._vel is not None else 0.0
+        return Telemetry(x, y, self._pos.latitude_deg, self._pos.longitude_deg, v, self._heading, self._armed,
+                         self._mode, self._pos_mono, self._pos.absolute_altitude_m)
 
-    def position(self) -> tuple[float, float]:
-        return self.snapshot.lat, self.snapshot.lon
+    def progress(self) -> Progress:
+        return self._prog
 
-    def battery(self) -> float:
-        return self.snapshot.battery_pct
-
-    def status(self) -> str:
-        return self.snapshot.flight_mode
-
-    def progress(self) -> tuple[int, int]:
-        return self._progress
-
-    def fault(self) -> str | None:
-        """미션 수행 중(웨이포인트가 남아 있을 때)만 판정한다. 확정 지연은 server 가 한다."""
-        s, (cur, total) = self.snapshot, self._progress
-        if s.updated_at and time.monotonic() - s.updated_at > config.STALE_AFTER_S:
-            return f"TELEMETRY_LOST: 위치 수신 {time.monotonic() - s.updated_at:.0f}초 없음"
-        if s.descent_mps > config.FALL_RATE_MPS:
-            return f"VEHICLE_FAULT: 초당 {s.descent_mps:.1f} m 하강 (추락, 상대고도 {s.rel_alt_m:.0f} m)"
-        if total and cur < total:
-            if not s.armed:
-                return "VEHICLE_FAULT: 미션 중 disarm"
-            if "MISSION" not in s.flight_mode:
-                return f"VEHICLE_FAULT: 미션 중 모드 이탈 ({s.flight_mode})"
-        return None
-
-    async def goto(self, waypoints: list[tuple[float, float]],
-                   speeds: list[float] | None = None) -> bool:
-        """주행 중 다시 부르면 새 미션으로 바꾼다 (경로 재탐색). 미션은 처음 항목부터 시작한다."""
-        if not waypoints:
-            return False
-
-        if self._progress_task:
-            self._progress_task.cancel()
-            self._progress_task = None
-        self._progress = (0, len(waypoints))
-
-        # MAVSDK 는 항목 i 의 속도를 항목 i 에 도착한 뒤(DO_CHANGE_SPEED)부터 적용한다.
-        # speeds[i] 는 'i 로 가는 구간' 속도이므로 항목 i 에는 speeds[i+1](다음 구간)을 싣고,
-        # 첫 구간 속도는 기본 순항속도(self.speed_mps)를 그 구간 속도로 바꿔 쓴다.
-        speeds = list(speeds) if speeds else [self.speed_mps] * len(waypoints)
-        nxt = speeds[1:] + speeds[-1:]
-        self._first_speed = speeds[0]
-        # 중간 웨이포인트는 통과형(is_fly_through=True): 멈추지 않고 지나가며 다음 점으로 꺾는다.
-        # 멈춤형이면 점마다 정지 → 제자리 회전을 하는데, 경사진 지형에서 회전을 못 끝내 멈춘 채로
-        # 남는 일이 있었다 (2026-10-02 WSL 시험, 61° 꺾임·경사 7.5° 지점에서 STALLED). 마지막 점만 멈춤형.
-        last = len(waypoints) - 1
-        plan = MissionPlan([self._waypoint(lat, lon, v, fly_through=(i < last))
-                            for i, ((lat, lon), v) in enumerate(zip(waypoints, nxt))])
-        try:
-            await self._drone.mission.upload_mission(plan)
-            log.info("미션 업로드 성공 (%d 개)", len(waypoints))
-            # PX4 는 이전 미션의 진행 번호를 dataman 에 남겨 새 미션도 그 번호부터 시작할 수 있다
-            # (FIRE4, 2026-10-05: FIRE3 가 멈춘 26 번부터 시작 → 도로를 벗어나 26 번 점으로 직진). 0 번으로 되돌린다.
-            await self._drone.mission.set_current_mission_item(0)
-            try:    # 첫 구간 속도. 실패해도 미션은 기본 순항속도로 간다
-                await self._drone.action.set_current_speed(self._first_speed)
-            except Exception as e:
-                log.warning("set_current_speed 실패: %s", e)
-            await self._drone.action.arm()
-            log.info("arm 성공")
-            await asyncio.sleep(ARM_SETTLE_S)
-            await self._drone.mission.start_mission()
-            log.info("미션 시작")
-        except Exception as e:
-            log.error("goto 실패: %s", e)
-            return False
-
-        self._progress_task = asyncio.create_task(self._watch_progress())
-        return True
-
-    async def stop(self) -> None:
-        """미션을 멈추고 HOLD 로 세운 뒤 disarm 한다. 하나가 실패해도 나머지는 시도한다."""
-        if self._progress_task:
-            self._progress_task.cancel()
-            self._progress_task = None
-        for name, call in (("pause_mission", self._drone.mission.pause_mission),
-                           ("hold", self._drone.action.hold),
-                           ("disarm", self._drone.action.disarm)):
+    async def _ensure_armed(self):
+        for k in range(ARM_RETRIES):
+            if self._armed:
+                return
             try:
-                await call()
-                log.info("stop: %s 성공", name)
-            except Exception as e:
-                log.warning("stop: %s 실패: %s", name, e)
+                await self._act.arm()
+                return
+            except Exception as e:  # noqa: BLE001 — EKF 안정 전에는 거절
+                self.last_error = f"arm: {e}"
+                await asyncio.sleep(ARM_RETRY_S)
+        raise DriverError(f"ARM_FAILED: {self.last_error}")
 
-    def _waypoint(self, lat: float, lon: float, speed_mps: float | None = None,
-                  fly_through: bool = False) -> MissionItem:
-        nan = float("nan")
-        return MissionItem(
-            lat, lon, self.alt_m,
-            speed_mps or self.speed_mps,
-            fly_through,           # is_fly_through — True 면 이 점에서 멈추지 않는다
-            nan, nan,
-            MissionItem.CameraAction.NONE,
-            nan, nan,
-            ACCEPT_RADIUS_M, nan, nan,
-            MissionItem.VehicleAction.NONE,
-        )
+    async def follow(self, items: List[Item]) -> int:
+        if not items:
+            raise DriverError("EMPTY_MISSION")
+        from mavsdk.plugins.mission.mission import MissionPlan
+        tel = self.telemetry()
+        here = (tel.x, tel.y) if tel is not None else items[0][:2]
+        plan = []
+        for x, y, v, through in mavsdk_plan(items, here, tel.speed_mps if tel is not None else 0.0):
+            lat, lon = FRAME.to_ll(x, y)
+            plan.append(_mission_item(lat, lon, float(v), through=through))
+        async with self._cmd:
+            seq = self._prog.mission_seq + 1
+            self._expected_total = len(plan)
+            self._seen_running = False
+            self._prog = Progress(0, len(plan), False, seq)
+            try:
+                await self._mis.upload_mission(MissionPlan(plan))
+                await self._ensure_armed()
+                for k in range(START_RETRIES):
+                    try:
+                        await self._mis.start_mission()
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        if k == START_RETRIES - 1:
+                            raise
+                        await asyncio.sleep(START_RETRY_S)
+            except DriverError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"follow: {type(e).__name__}: {e}"
+                raise DriverError(f"MISSION_START_FAILED: {e}") from e
+            return seq
 
-    async def _watch_progress(self) -> None:
-        try:
-            async for prog in self._drone.mission.mission_progress():
-                self._progress = (prog.current, prog.total)
-                if prog.current == prog.total:
-                    break
-        except Exception:
-            log.exception("mission_progress 구독 종료")
+    async def halt_in_place(self) -> int:
+        async with self._cmd:
+            seq = self._prog.mission_seq + 1
+            self._expected_total = 0
+            try:
+                await self._act.hold()
+            except Exception as e:  # noqa: BLE001
+                raise DriverError(f"HOLD_FAILED: {e}") from e
+            self._prog = Progress(0, 0, True, seq)
+            return seq

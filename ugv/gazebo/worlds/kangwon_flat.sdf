@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  kangwon_flat — 실제 도로 선형 + 평탄한 주행면 (도로 주행 검증 A안, 2026-10-09 사용자 결정)
+  - 충돌: 윗면 z=0 인 평탄한 상자 하나뿐. 도로별 충돌 메시를 겹치지 않으므로 교차로 턱이 없다.
+  - 도로: kangwon_ugv2 도로 면 메시(폭 10 m)를 높이 방향으로 납작하게 눌러 시각 표시만 한다 (충돌 없음).
+  - 좌표 원점·투영은 kangwon_ugv2 와 같다 (datum 중심 TM, ugv/geo.py). 스폰 x,y 는 도로망 spawn 표를 그대로 쓰고 z 만 0.4.
+  검증 범위: 경로 추종·곡선 감속·명령 교체·정지. 경사·제동 거리·접지·지형 관측과의 높이 일치는 검증하지 않는다
+  (Gazebo 차량 높이는 0, 실제 지형 높이와 다르다). 그건 지형을 반영한 연속 도로면(B안)에서 한다.
+  시스템 플러그인은 PX4 server.config(GZ_SIM_SERVER_CONFIG_PATH)가 넣는다 (ugv/tools/px4-start.sh).
+-->
+<sdf version="1.9">
+  <world name="kangwon_flat">
+    <physics type="ode">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>500</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+    <scene>
+      <grid>false</grid>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.62 0.78 0.92 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <!-- 지면: 도로망 범위(x -0.5~27.3 km, y -10.5~10.9 km) + 여유. plane 은 dartsim 에서 2 km 상자가 되므로 상자를 쓴다 -->
+    <model name="ground">
+      <static>true</static>
+      <link name="link">
+        <pose>13400 200 -0.5 0 0 0</pose>
+        <collision name="collision">
+          <geometry><box><size>32000 25000 1</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <cast_shadows>false</cast_shadows>
+          <geometry><box><size>32000 25000 1</size></box></geometry>
+          <material><diffuse>0.36 0.45 0.30 1</diffuse><specular>0 0 0 0</specular></material>
+        </visual>
+      </link>
+    </model>
+    <!-- 도로 표시: 원본 메시 높이(10~684 m)를 1/10000 로 눌러 0.03~0.10 m 에 그린다. 충돌 없음 -->
+    <model name="road_marks">
+      <static>true</static>
+      <link name="link">
+        <pose>0 0 0.03 0 0 0</pose>
+        <visual name="visual">
+          <cast_shadows>false</cast_shadows>
+          <geometry><mesh><uri>model://kangwon_ugv2/roads.obj</uri><scale>1 1 0.0001</scale></mesh></geometry>
+          <material><ambient>0.25 0.25 0.27 1</ambient><diffuse>0.33 0.33 0.35 1</diffuse>
+                    <specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <light name="sun" type="directional">
+      <pose>0 0 500 0 0 0</pose>
+      <cast_shadows>false</cast_shadows>
+      <intensity>1</intensity>
+      <direction>0.001 0.625 -0.78</direction>
+      <diffuse>0.904 0.904 0.904 1</diffuse>
+      <specular>0.271 0.271 0.271 1</specular>
+    </light>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>38.0112</latitude_deg>
+      <longitude_deg>128.122643</longitude_deg>
+      <elevation>172.1</elevation>
+    </spherical_coordinates>
+  </world>
+</sdf>

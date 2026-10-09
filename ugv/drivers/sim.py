@@ -1,96 +1,114 @@
-# ugv/drivers/sim.py — PX4 없이 동작하는 시뮬레이션 드라이버 (테스트·시연용)
-# 웨이포인트 사이를 직선 이동한다. 위치는 tick(벽시계) 마다 속도 × time_scale × tick_s 만큼 갱신.
-#   속도: goto 의 speeds[i](구간별, 시뮬레이션 m/s) 가 있으면 그것, 없으면 speed_mps
-#   time_scale: 시뮬레이션 초 / 벽시계 초 (config.TIME_SCALE). PX4_SIM_SPEED_FACTOR 와 같은 의미
+# -*- coding: utf-8 -*-
+"""ugv/drivers/sim.py — PX4 없이 도는 운동학 드라이버 (시험, 트윈 배속 실행).
+
+미션 지점을 이은 선을 그대로 따라간다 (경로 추종 오차 없음). 속도는 지점별 구간 속도, 가감속 한계는
+2단계 Gazebo 실측(가속 PX4 RO_ACCEL_LIM 2.5, 도착 감속 실측 약 2.1 m/s²)에 맞췄다.
+시간은 clock(시뮬레이션 초)을 따른다. 실행 중에는 run() 이 주기적으로 step() 을 부르고, 시험은 step(dt) 를 직접 부른다.
+"""
 
 import asyncio
+import math
+from typing import List, Optional
 
-from ..geo import distance_m, to_latlon, to_ned
-from .base import MotionDriver
+from ..geo import FRAME, bearing_deg
+from .base import Driver, DriverError, Item, Progress, Telemetry
 
-BATTERY_DRAIN_PCT_PER_KM = 1.0
+ACCEL = 2.5
+DECEL = 2.1
+TICK_WALL_S = 0.05
 
 
-class SimDriver(MotionDriver):
-    def __init__(
-        self,
-        start: tuple[float, float],
-        speed_mps: float = 3.0,
-        tick_s: float = 0.1,
-        time_scale: float = 1.0,
-    ):
-        self._pos = start
-        self.speed_mps = speed_mps
-        self.time_scale = time_scale
-        self.tick_s = tick_s
-        self._battery = 100.0
-        self._status = "IDLE"
-        self._progress = (0, 0)
-        self._task: asyncio.Task | None = None
-        self._speed = 0.0
+class SimDriver(Driver):
+    kind = "sim"
 
-    async def connect(self) -> None:
-        pass
+    def __init__(self, start_xy, clock, heading_deg: float = 0.0):
+        self.clock = clock
+        self.x, self.y = start_xy
+        self.v = 0.0
+        self.heading = heading_deg            # 방위 (북=0, 시계). 정차 중에도 진행 방향 제약에 쓴다
+        self.path: List[Item] = []
+        self.k = 0
+        self._prog = Progress()
+        self._last_sim = clock.now()
+        self._task: Optional[asyncio.Task] = None
+        self.fail_next_follow: Optional[str] = None   # 시험용: 다음 follow 를 거부
+        self.frozen = False                            # 시험용: 차가 움직이지 않음 (정지 고장)
 
-    def position(self) -> tuple[float, float]:
-        return self._pos
+    async def start(self):
+        if self._task is None:
+            self._last_sim = self.clock.now()
+            self._task = asyncio.create_task(self._run())
 
-    def battery(self) -> float:
-        return self._battery
-
-    def status(self) -> str:
-        return self._status
-
-    def progress(self) -> tuple[int, int]:
-        return self._progress
-
-    def telemetry(self) -> dict:
-        return {"speed_mps": self._speed if self._status == "MISSION" else 0.0}
-
-    async def goto(self, waypoints: list[tuple[float, float]],
-                   speeds: list[float] | None = None) -> bool:
-        if not waypoints:
-            return False
-        if self._task:
-            self._task.cancel()
-        self._progress = (0, len(waypoints))
-        self._status = "MISSION"
-        speeds = list(speeds) if speeds else [self.speed_mps] * len(waypoints)
-        self._task = asyncio.create_task(self._run(list(waypoints), speeds))
-        return True
-
-    async def stop(self) -> None:
+    async def close(self):
         if self._task:
             self._task.cancel()
             self._task = None
-        self._status = "STOPPED"
 
-    async def _run(self, waypoints: list[tuple[float, float]], speeds: list[float]) -> None:
-        """tick 마다 '구간 속도 × time_scale × tick_s' 만큼 이동한다. 한 tick 에 웨이포인트를
-        여러 개 지날 수 있다 — 고배속에서 웨이포인트마다 tick 을 하나씩 쓰면 시계보다 늦어진다."""
-        i, n = 0, len(waypoints)
-        while i < n:
-            budget = self.tick_s * self.time_scale          # 이번 tick 의 시뮬레이션 초
-            self._speed = speeds[i]
-            while i < n and budget > 0:
-                target, v = waypoints[i], speeds[i]
-                remaining = distance_m(self._pos, target)
-                if remaining <= v * budget:                 # 이번 tick 안에 도착 — 남은 시간은 다음 구간으로
-                    budget -= remaining / v if v > 0 else budget
-                    self._advance(remaining, target)
-                    i += 1
-                    self._progress = (i, n)
-                else:                                       # 목표 방향으로 v * budget 전진
-                    step_m = v * budget
-                    north, east = to_ned(target[0], target[1], *self._pos)
-                    ratio = step_m / remaining
-                    self._advance(step_m, to_latlon(north * ratio, east * ratio, *self._pos))
-                    budget = 0
-            if i < n:
-                await asyncio.sleep(self.tick_s)
-        self._status = "ARRIVED"
+    async def _run(self):
+        while True:
+            await asyncio.sleep(TICK_WALL_S)
+            now = self.clock.now()
+            self.step(now - self._last_sim)
+            self._last_sim = now
 
-    def _advance(self, moved_m: float, new_pos: tuple[float, float]) -> None:
-        self._pos = new_pos
-        drain = moved_m / 1000.0 * BATTERY_DRAIN_PCT_PER_KM
-        self._battery = max(0.0, self._battery - drain)
+    def telemetry(self) -> Telemetry:
+        lat, lon = FRAME.to_ll(self.x, self.y)
+        return Telemetry(self.x, self.y, lat, lon, self.v, self.heading, armed=bool(self.path),
+                         mode="MISSION" if self.path and not self._prog.finished else "HOLD")
+
+    def progress(self) -> Progress:
+        return self._prog
+
+    async def follow(self, items: List[Item]) -> int:
+        if self.fail_next_follow:
+            msg, self.fail_next_follow = self.fail_next_follow, None
+            raise DriverError(msg)
+        if not items:
+            raise DriverError("EMPTY_MISSION")
+        self.path, self.k = list(items), 0
+        self._prog = Progress(0, len(items), False, self._prog.mission_seq + 1)
+        return self._prog.mission_seq
+
+    async def halt_in_place(self) -> int:
+        self.path, self.k, self.v = [], 0, 0.0
+        self._prog = Progress(0, 0, True, self._prog.mission_seq + 1)
+        return self._prog.mission_seq
+
+    def _remaining(self) -> float:
+        if not self.path:
+            return 0.0
+        d = math.hypot(self.path[self.k][0] - self.x, self.path[self.k][1] - self.y)
+        for (ax, ay, _), (bx, by, _) in zip(self.path[self.k:], self.path[self.k + 1:]):
+            d += math.hypot(bx - ax, by - ay)
+        return d
+
+    def step(self, dt: float) -> None:
+        if dt <= 0:
+            return
+        if not self.path or self._prog.finished or self.frozen:
+            self.v = max(0.0, self.v - DECEL * dt) if not self.frozen else 0.0
+            return
+        tx, ty, seg_v = self.path[self.k]
+        v_target = min(seg_v, math.sqrt(2 * DECEL * self._remaining()))
+        self.v = min(self.v + ACCEL * dt, v_target) if self.v < v_target else max(self.v - DECEL * dt, v_target)
+        move = self.v * dt
+        while move > 0 and self.path:
+            tx, ty, _ = self.path[self.k]
+            d = math.hypot(tx - self.x, ty - self.y)
+            if d > 1e-9:
+                self.heading = bearing_deg(tx - self.x, ty - self.y)
+            if move < d:
+                self.x += (tx - self.x) * move / d
+                self.y += (ty - self.y) * move / d
+                move = 0
+            else:
+                self.x, self.y = tx, ty
+                move -= d
+                if self.k + 1 < len(self.path):
+                    self.k += 1
+                else:
+                    self.v = 0.0
+                    self._prog = Progress(len(self.path), len(self.path), True, self._prog.mission_seq)
+                    break
+        if not self._prog.finished:
+            self._prog = Progress(self.k, len(self.path), False, self._prog.mission_seq)

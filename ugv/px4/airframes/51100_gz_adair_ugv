@@ -1,0 +1,70 @@
+#!/bin/sh
+# @name ADAIR UGV (simulation only, rover_ackermann based)
+# @type Rover
+# @class Rover
+#
+# ADAIR 시뮬레이션 전용 UGV. 51000_gz_rover_ackermann 을 바탕으로 차량 크기(ugv/gazebo/models/adair_ugv)에 맞췄다.
+# 목표: 직선 약 60 km/h, 곡선·도착 감속, 안정 정지. 특정 실차 성능을 재현하지 않는다.
+# 설치: ugv/tools/px4-start.sh 가 PX4 빌드 폴더(build/px4_sitl_default/etc/init.d-posix/airframes)에 복사한다.
+
+. ${R}etc/init.d/rc.rover_ackermann_defaults
+
+PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
+PX4_GZ_WORLD=${PX4_GZ_WORLD:=adair_flat}
+PX4_SIM_MODEL=${PX4_SIM_MODEL:=adair_ugv}
+
+param set-default SIM_GZ_EN 1
+
+# 웨이포인트 도착 반경 (m)
+param set-default NAV_ACC_RAD 3
+# 첫 웨이포인트 거리 검사 끔: 차량이 홈에서 수 km 떨어진 곳에서 새 경로를 받는다 (기본값이면 미션 시작 거부, 2026-10-09 실측)
+param set-default MIS_DIST_1WP 0
+
+# Ackermann: 축간거리·조향 (모델과 같은 값)
+param set-default RA_WHEEL_BASE 2.7
+param set-default RA_MAX_STR_ANG 0.5236
+param set-default RA_STR_RATE_LIM 120
+# 모서리 질러가기 끔 (-1): 꺾이는 곳은 UGV 계획이 차체 검사를 통과한 원호로 미리 그려 준다 (ugv/drive_graph.py _smooth).
+# 켜 두면(GAIN 2, MAX 15) PX4 가 꺾인 점 앞 최대 15 m 에서 안쪽으로 질러가 1차로 교차로에서 차체가 도로 밖으로 나갔다 (2026-10-10)
+param set-default RA_ACC_RAD_GAIN 1
+param set-default RA_ACC_RAD_MAX -1
+
+# 방향 제어
+param set-default RO_YAW_P 3
+param set-default RO_YAW_RATE_P 0.25
+param set-default RO_YAW_RATE_I 0.01
+param set-default RO_YAW_RATE_LIM 60
+param set-default RO_YAW_ACCEL_LIM 120
+param set-default RO_YAW_DECEL_LIM 120
+param set-default RO_YAW_RATE_CORR 1
+param set-default RO_YAW_EXPO 0.85
+param set-default RO_YAW_SUPEXPO 0.3
+
+# 속도 제어
+#   RO_MAX_THR_SPEED: 최대 스로틀일 때 속도 = 바퀴 최대 60 rad/s × 반지름 0.35 m = 21 m/s
+#   RO_SPEED_LIM   : 차량 속도 상한 16.7 m/s (60 km/h). 미션 항목 속도가 이보다 크면 이 값으로 잘린다
+#   RO_SPEED_RED   : 진행 방향 오차·꺾임 각에 따른 감속 (웨이포인트 도착 속도에도 쓰인다)
+param set-default RO_MAX_THR_SPEED 21
+param set-default RO_SPEED_LIM 16.7
+param set-default RO_SPEED_P 0.1
+param set-default RO_SPEED_I 0.01
+param set-default RO_ACCEL_LIM 2.5
+param set-default RO_DECEL_LIM 4
+param set-default RO_JERK_LIM 5
+param set-default RO_SPEED_RED 2.0
+
+# 경로 추종 (pure pursuit): 앞보기 거리 = 속도 × 0.6 s, 2 ~ 15 m (1 s·25 m 일 때 45° 꺾임에서 바깥으로 6.5 m 밀림, 2026-10-09)
+param set-default PP_LOOKAHD_GAIN 0.6
+param set-default PP_LOOKAHD_MIN 2
+param set-default PP_LOOKAHD_MAX 15
+
+# Gazebo 출력: 바퀴 (값 - 100 = rad/s → ±60 rad/s), 조향 서보 ±30°
+param set-default SIM_GZ_WH_FUNC1 101
+param set-default SIM_GZ_WH_MIN1 40
+param set-default SIM_GZ_WH_MAX1 160
+param set-default SIM_GZ_WH_DIS1 100
+param set-default SIM_GZ_SV_MAXA1 30
+param set-default SIM_GZ_SV_MINA1 -30
+param set-default CA_SV_CS_COUNT 1
+param set-default SIM_GZ_SV_FUNC1 201
+param set-default SIM_GZ_SV_REV 1

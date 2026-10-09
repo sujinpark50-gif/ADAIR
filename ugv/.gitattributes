@@ -1,0 +1,2 @@
+*.sh text eol=lf
+px4/airframes/* text eol=lf
