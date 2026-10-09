@@ -8,8 +8,8 @@
   - 도착: 마지막 미션 지점까지 거리
   - 곡선 감속: 계획 속도가 움푹 낮아지는 미션 지점(곡선 감속 지점)을 지날 때 실제 속도 vs 계획 구간 속도,
     그리고 실측 횡가속(속도 × 회전율)이 계획 횡가속 config.LAT_ACCEL_MPS2 를 얼마나 넘는지
-  - 도로 이탈: 차체 네 모서리(4.2 × 1.8 m)가 근처 도로 띠(중심선 ± 추정 반폭, 차로 수 기준)의 합집합 밖으로
-    나갔는지. 차량 중심만 보지 않는다. 참고로 월드 도로 면 폭 10 m(반폭 5 m) 기준도 같이 센다
+  - 도로 이탈: 차체 둘레(4.2 × 1.8 m, 0.45 m 간격 표본)가 근처 도로 띠(중심선 ± 추정 반폭, 차로 수 기준)의
+    합집합 밖으로 나갔는지. 차량 중심만 보지 않는다. 참고로 월드 도로 면 폭 10 m(반폭 5 m) 기준도 같이 센다
 
     python -m ugv.tools.road_test --target 38.0275 128.13328
     python -m ugv.tools.road_test --target 38.0275 128.13328 --second 38.045 128.19 --second-after 60
@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 
 from ugv import config
+from ugv.drive_graph import BODY_SAMPLES
 from ugv.geo import FRAME
 from ugv.roads import RoadNetwork
 from ugv.tools.drive_test import LOG_DIR, analyze, load_track, start_tracker
@@ -34,6 +35,9 @@ from ugv.tools.drive_test import LOG_DIR, analyze, load_track, start_tracker
 ROAD_HALF_WIDTH_M = 5.0          # 참고 기준: 폭 10 m 도로 면
 # 주 판정: 도로별 추정 반폭 (drive_graph.est_half_width: 원자료 차로 수 × 3.25 m / 2 + 길어깨 0.5 m — 추정치)
 BODY_HALF_LEN_M, BODY_HALF_WID_M = 2.1, 0.9      # ugv/gazebo/models/adair_ugv 차체 상자 4.2 × 1.8 m
+# 차체 둘레 표본 (차체 중심 기준). 네 모서리만 보면 교차로처럼 오목한 도로 영역에서 변이 밖으로 나가는 것을 놓친다
+REAR_TO_CENTER = -config.REAR_AXLE_FROM_CENTER_M      # 뒤축 기준 → 차체 중심 기준
+BODY_OUTLINE = tuple((x + REAR_TO_CENTER, y) for x, y in BODY_SAMPLES)
 CURVE_NEAR_M = 20.0              # 곡선 감속 지점 앞뒤 이 거리 안의 최대 횡가속을 본다
 CURVE_TOL_MPS = 1.0              # 꼭짓점 통과 속도가 계획보다 이만큼 넘게 빠르면 곡선 감속 실패
 
@@ -86,8 +90,7 @@ def footprint_dev(net, r):
     c, s = math.cos(r["yaw"]), math.sin(r["yaw"])
     worst, excess = 0.0, -math.inf
     g = net.graph
-    for fx, fy in ((BODY_HALF_LEN_M, BODY_HALF_WID_M), (BODY_HALF_LEN_M, -BODY_HALF_WID_M),
-                   (-BODY_HALF_LEN_M, BODY_HALF_WID_M), (-BODY_HALF_LEN_M, -BODY_HALF_WID_M)):
+    for fx, fy in BODY_OUTLINE:
         x, y = r["x"] + fx * c - fy * s, r["y"] + fx * s + fy * c
         p = net.snap(x, y)
         worst = max(worst, p.dist if p is not None else math.inf)
@@ -112,9 +115,7 @@ def _body_on_path(net, p, yaw):
     g = net.graph
     cx, cy = p[0] + 1.35 * math.cos(yaw), p[1] + 1.35 * math.sin(yaw)
     c, s = math.cos(yaw), math.sin(yaw)
-    return max(g.outside_m(cx + fx * c - fy * s, cy + fx * s + fy * c)
-               for fx, fy in ((BODY_HALF_LEN_M, BODY_HALF_WID_M), (BODY_HALF_LEN_M, -BODY_HALF_WID_M),
-                              (-BODY_HALF_LEN_M, BODY_HALF_WID_M), (-BODY_HALF_LEN_M, -BODY_HALF_WID_M)))
+    return max(g.outside_m(cx + fx * c - fy * s, cy + fx * s + fy * c) for fx, fy in BODY_OUTLINE)
 
 
 def plan_body_check(net, poly, step=1.0):
@@ -216,7 +217,7 @@ def evaluate_log(log: dict, rows) -> dict:
         "body_outside_est_road(samples)": sum(1 for k in range(len(idx)) if excess[k] > 0),
         "body_outside_est_road_max_m": round(max(excess), 2) if idx else None,
         f"body_outside_world_surface(>{ROAD_HALF_WIDTH_M:g}m)": sum(1 for k in range(len(idx)) if body[k] > ROAD_HALF_WIDTH_M),
-        "basis": "차체 네 모서리 vs 근처 도로 띠 합집합 (중심선 ± 추정 반폭: 차로 수 × 3.25 m / 2 + 0.5 m)",
+        "basis": "차체 둘레 표본 vs 근처 도로 띠 합집합 (중심선 ± 추정 반폭: 차로 수 × 3.25 m / 2 + 0.5 m)",
         "worst": None if worst_k is None else {"sim_t": t[idx[worst_k]], "x": round(rows[idx[worst_k]]["x"], 1),
                                                "y": round(rows[idx[worst_k]]["y"], 1), "body_m": round(body[worst_k], 2),
                                                "excess_m": round(excess[worst_k], 2), "speed_mps": round(spd[idx[worst_k]], 2)},
@@ -320,6 +321,8 @@ def main():
     ap.add_argument("--target", nargs=2, type=float)
     ap.add_argument("--second", nargs=2, type=float)
     ap.add_argument("--second-after", type=float, default=60.0, help="첫 출발 뒤 몇 초(벽시계)에 새 목표")
+    ap.add_argument("--second-near-junction", type=float,
+                    help="--second-after 가 지난 뒤, 앞 교차로까지 이 거리(m) 안이고 8 m/s 넘게 달릴 때 새 목표 (교차로 직전 재계획)")
     ap.add_argument("--abort-after", type=float, help="첫 출발 뒤 몇 초(벽시계)에 임무 중단")
     ap.add_argument("--track-s", type=float, default=900.0)
     ap.add_argument("--world", default=config.DEFAULT_VEHICLES[0]["px4"]["gz_world"])
@@ -361,6 +364,27 @@ def main():
                             "sim_t_cmd": sim_t})
         return key
 
+    net_rt = RoadNetwork() if a.second_near_junction else None
+
+    def junction_ready():
+        """교차로 직전 재계획: 앞 교차로까지 거리 (차량 위치·진행 방위로 도로 위 방향을 잡는다)."""
+        if net_rt is None:
+            return True
+        st = c.get(f"/ugv/{a.rid}/state").json()
+        if (st.get("speed_mps") or 0) < 8.0 or st["position"]["lat"] is None:
+            return False
+        g = net_rt.graph
+        dp = g.dirpos(net_rt.snap_ll(st["position"]["lat"], st["position"]["lon"]), st["heading_deg"])
+        if dp is None:
+            return False
+        ahead = g.ahead_m(dp)
+        if ahead <= a.second_near_junction:
+            log["second_trigger"] = {"ahead_to_junction_m": round(ahead, 1), "speed_mps": st["speed_mps"],
+                                     "road": dp.road_id, "toward_node": dp.toward}
+            print(f"  교차로 {ahead:.1f} m 앞, {st['speed_mps']:.1f} m/s → 새 목표", flush=True)
+            return True
+        return False
+
     k1 = run(f"RT1-{stamp}", *a.target)
     t0 = time.time()
     active, second_sent, aborted, t_abort = k1, False, False, None
@@ -369,7 +393,7 @@ def main():
         pr = t.get("progress") or {}
         print(f"  {time.time() - t0:6.1f}s {active[:6]} {t['status']:<11} {pr.get('phase')} 남은 {pr.get('remaining_m')} m "
               f"속도 {pr.get('speed_mps')} m/s 경로편차 {pr.get('off_route_m')} m", flush=True)
-        if a.second and not second_sent and time.time() - t0 >= a.second_after:
+        if a.second and not second_sent and time.time() - t0 >= a.second_after and junction_ready():
             active, second_sent = run(f"RT2-{stamp}", *a.second), True
             continue
         if a.abort_after is not None and not aborted and time.time() - t0 >= a.abort_after:
@@ -388,7 +412,9 @@ def main():
         elif t["status"] in ("COMPLETED", "FAILED", "CANCELLED") and (second_sent or not a.second):
             log["final"] = t
             break
-        time.sleep(3)          # uvicorn 연결 유지 5 s 와 겹치지 않게
+        waiting_junction = (a.second_near_junction and a.second and not second_sent
+                            and time.time() - t0 >= a.second_after)
+        time.sleep(0.3 if waiting_junction else 3)   # 교차로 직전을 잡을 때만 촘촘히 (평소 3 s: uvicorn 연결 유지와 겹치지 않게)
     time.sleep(5)
     log["state"] = c.get(f"/ugv/{a.rid}/state").json()
     log["events"] = c.get(f"/ugv/{a.rid}/events").json()

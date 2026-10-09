@@ -169,6 +169,20 @@ class RoadNetwork:
                         out[rid] = d
         return out
 
+    def on_road(self, rid: str, x: float, y: float) -> RoadPos:
+        """(x, y) 를 도로 rid 위로 내린 지점."""
+        road = self.roads[rid]
+        best = None
+        for i, ((ax, ay), (bx, by)) in enumerate(zip(road.xy, road.xy[1:])):
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+            px, py = ax + t * dx, ay + t * dy
+            d = math.hypot(x - px, y - py)
+            if best is None or d < best.dist:
+                best = RoadPos(rid, road.cum[i] + t * math.sqrt(L2), px, py, d)
+        return best
+
     def snap_ll(self, lat: float, lon: float, max_m: float = math.inf) -> Optional[RoadPos]:
         return self.snap(*FRAME.to_xy(lat, lon), max_m=max_m)
 

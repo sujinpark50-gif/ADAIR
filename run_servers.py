@@ -56,6 +56,17 @@ def twin_env(opts: dict) -> dict:
     return env
 
 
+def ugv_fleet_file(run: Path) -> str:
+    """--extra-fleet: 인제 A-ugv1 + 원통 C-ugv1·2. 원통은 도로망 밖이라 가장 가까운 오갈 수 있는 도로가 출입 지점
+    (ugv/drive_graph.access_point)."""
+    run.mkdir(parents=True, exist_ok=True)
+    fleet = [{"resource_id": rid, "resource_type": "UGV", "station_base_id": base, "initial": "STATION",
+              "driver": "sim"} for rid, base in (("A-ugv1", "A"), ("C-ugv1", "C"), ("C-ugv2", "C"))]
+    p = run / "ugv_fleet.json"
+    p.write_text(json.dumps(fleet, ensure_ascii=False, indent=1), encoding="utf-8")
+    return str(p)
+
+
 def twin_uav_home(opts: dict) -> str:
     """mock 드론을 발화점 700 m 밖 차량 집결지에서 띄운다 (run_twin.sh 의 forward 이륙과 같음)."""
     if not opts.get("twin") or opts.get("uav_url"):
@@ -121,7 +132,9 @@ def server_defs(opts: dict) -> dict:
         "ugv":  {"cwd": ROOT, "port": 8100, "health": "/health",
                  "cmd": uv + ["ugv.server:app", "--host", "127.0.0.1", "--port", "8100"],
                  "env": {"UGV_DRIVER": "sim", **({"UGV_STATE_DIR": str(run / "ugv")} if tw else {}),
-                         **({"UGV_EXTRA": "C-ugv1:C:495165,C-ugv2:C:495165"} if extra else {}),
+                         # 트윈: 환경 서버의 불 정보로 화재 안전거리를 지킨다 (없으면 불을 모른 채 달린다)
+                         **({"UGV_ENV_URL": "http://127.0.0.1:8300"} if tw else {}),
+                         **({"UGV_VEHICLES_JSON": ugv_fleet_file(run)} if extra else {}),
                          # 트윈: 차량 배속 = 트윈 시계 배속 (밖에서 UGV_TIME_SCALE 을 주면 그 값을 쓴다)
                          **({"UGV_TIME_SCALE": os.environ.get("UGV_TIME_SCALE", speed)} if tw else {})},
                  "desc": "UGV 서버 (sim)"},

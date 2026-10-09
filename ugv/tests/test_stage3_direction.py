@@ -200,7 +200,10 @@ def test_dead_end_is_not_chosen_when_no_return_path():
     r, tip, root = _dead_end_road()
     tip_ll = FRAME.to_ll(*NET.nodes[tip])
     without = plan_approach(NET, NOFIRE, START_A, *tip_ll)                  # 복귀 검사 없음 → 막다른 끝으로 간다
-    assert without.status == "OK" and without.dest.road_id == r.road_id
+    # 복귀 검사가 없으면 막다른 끝으로 간다 — 단 그 도로가 최종 경로 검사(회전반경·차체)에서 걸러졌으면 다른 곳
+    assert without.status == "OK"
+    rejected = [x["removed"] for x in without.report().get("route_check_rejected") or []]
+    assert without.dest.road_id == r.road_id or ["ROAD", r.road_id] in rejected or any(x[0] == "TURN" for x in rejected)
     with_ret = plan_approach(NET, NOFIRE, START_A, *tip_ll, access=ACC[0])
     if with_ret.status == "OK":
         d = with_ret.dest
@@ -409,7 +412,7 @@ def test_route_corners_are_smoothed_into_drivable_arcs():
     rnd.seed(3)
     tight, outside, worst = measure(True)
     assert raw_tight > 30 and tight <= raw_tight / 5           # 다듬기 전 급꺾임 대부분이 사라진다
-    assert worst < 0.5                   # 남는 초과는 교차로 몇 곳의 수십 cm (근사 기하)
+    assert worst < 0.5                   # 다듬기만으로는 교차로 몇 곳에 수십 cm 가 남는다 → 아래 최종 검사로 거른다
 
 
 def test_mission_items_follow_arcs():
@@ -420,3 +423,98 @@ def test_mission_items_follow_arcs():
     assert len(sp.items) < 2000                                            # PX4 미션 한도(SITL 10000) 안
     for x, y, _ in sp.items:
         assert G.outside_m(x, y) < -0.5                                    # 미션 지점은 도로 띠 안쪽
+
+
+# ---------------------------------------------------------------------- 경계 조건 (2026-10-10 검토)
+def test_planned_routes_pass_final_drivability_check():
+    """접근 계획이 내놓는 경로는 다듬은 최종 선형으로 다시 검사해 통과한 것뿐이다 (위반 0, 출발 구간 제외)."""
+    rnd = random.Random(11)
+    samples = [p for p in NET.samples() if not NET.roads[p.road_id].attrs.get("motorway")]
+    ok = rejected = 0
+    for _ in range(15):
+        p = rnd.choice(samples)
+        plan = plan_approach(NET, NOFIRE, START_A, *FRAME.to_ll(p.x, p.y), access=ACC[0])
+        if plan.status == "OK":
+            chk = G.check_route(plan.route)                     # 독립 재검사
+            assert chk["ok"] and chk["radius_violations"] == 0 and not chk["issues"]
+            assert plan.report()["route_check"]["ok"] is True
+            ok += 1
+        elif plan.reason.startswith("NO_DRIVABLE_ROUTE"):
+            rejected += 1
+    assert ok >= 8
+
+
+def test_latency_projection_crosses_junction_along_plan():
+    """교차로 5 m 앞에서 16.7 m/s → 지연 1 s 동안 16.7 m. 교차로 너머 다음 도로 위로 잡는다 (예전: 4.9 m 에서 잘림)."""
+    dst = NET.snap_ll(*TARGET)
+    route, _ = plan_from(START_A, dst)
+    (r1, f1, t1), (r2, f2, t2) = route.legs[1], route.legs[2]
+    node = NET.nodes[t1]
+    r = NET.roads[r1]
+    dp = DirPos(NET.at(r1, r.length - 5.0 if t1 == r.b else 5.0), t1)       # 교차로 5 m 앞
+    k = min(range(len(route.pts)), key=lambda i: math.dist(route.pts[i], (dp.pos.x, dp.pos.y)))
+    prefer = [(dp.pos.x, dp.pos.y)] + route.pts[k + 1:]
+    q = G.project(dp, 16.7, prefer)
+    assert q.road_id == r2 and q.toward == t2                                 # 다음 도로
+    assert math.dist((q.pos.x, q.pos.y), node) > 5.0                          # 교차로를 지나 있다
+    old = G.advance(dp, 16.7)
+    assert old.road_id == r1 and G.ahead_m(old) < 0.2                         # 예전 방식은 교차로 앞에서 멈춘다
+
+
+def test_first_turn_braking_counts_to_arc_start_not_node():
+    """첫 교차로 감속 거리는 회전 원호 시작점(노드 앞 tangent_m)까지로 잰다."""
+    found = 0
+    for (rin, n), ts in sorted(G.turns.items()):
+        r = NET.roads[rin]
+        if not G.oneway_ok(rin, G.other(rin, n)) or r.length < 150:
+            continue
+        for t in ts:
+            if t.tangent_m < 8.0 or t.v_turn > 12.0:
+                continue
+            v0 = 16.0
+            need = G.brake_need(v0, t.v_turn)
+            d0 = need + t.tangent_m / 2                          # 노드까지는 충분, 원호 시작까지는 부족
+            if d0 >= r.length - 1:
+                continue
+            dp = DirPos(NET.at(rin, r.length - d0 if n == r.b else d0), n)
+            tree = G.search(dp, v0)
+            assert t.to not in tree["dist"] or tree["prev"][t.to] is not None    # 첫 교차로에서 바로 돌지 않는다
+            tree0 = G.search(dp, 0.0)
+            assert t.to in tree0["dist"] and tree0["prev"][t.to] is None         # 멈춰 있으면 돈다
+            found += 1
+            break
+        if found >= 3:
+            break
+    assert found >= 3
+
+
+def test_replan_just_before_junction_starts_beyond_it(tmp_path):
+    """교차로 직전(10 m 안)에서 뒤쪽 목표로 재계획: 새 경로는 교차로 너머에서 시작하고, 되돌아가지 않고, 끝까지 간다."""
+    async def go():
+        v, clock, _ = make(tmp_path)
+        await v.execute(body("T1"))
+        legs = v.plan.route.legs
+        nodes = [NET.nodes[l[2]] for l in legs[1:-1]]
+
+        def near_junction():
+            tel = v.driver.telemetry()
+            return tel.speed_mps > 10 and any(3.0 < math.dist((tel.x, tel.y), nd) < 10.0 for nd in nodes)
+        assert await run_for(v, clock, 900, dt=0.1, until=near_junction)
+        tel = v.driver.telemetry()
+        junction = min(nodes, key=lambda nd: math.dist((tel.x, tel.y), nd))
+        old_road = next(l[0] for l in legs if NET.nodes[l[2]] == junction)      # 교차로로 들어가는 지금 도로
+        back = FRAME.to_ll(*v.speed.pts[max(0, v._near_i - 40)])
+        r2 = await v.execute(body("T2", lat=back[0], lon=back[1]))
+        assert r2["superseded_task_id"] == "T1"
+        route = v.plan.route
+        legs_ok(route)
+        start = route.pts[0]
+        # 출발점은 지금 위치에서 지연 거리만큼 앞 (교차로 너머일 수 있다), 진행 방향 앞쪽
+        hx, hy = math.sin(math.radians(tel.heading_deg)), math.cos(math.radians(tel.heading_deg))
+        assert (start[0] - tel.x) * hx + (start[1] - tel.y) * hy > 0
+        if math.dist((tel.x, tel.y), junction) < tel.speed_mps * config.CMD_LATENCY_S - 1.0:
+            assert route.legs[0][0] != old_road                               # 지연 동안 교차로를 넘는다 → 다음 도로에서 시작
+        assert r2["approach"]["route_check"]["ok"] is True
+        done = await run_for(v, clock, 3600, until=lambda: v.store.tasks["T2"]["status"] in ("COMPLETED", "FAILED"))
+        assert done and v.store.tasks["T2"]["status"] == "COMPLETED"
+    asyncio.run(go())

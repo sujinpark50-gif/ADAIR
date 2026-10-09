@@ -24,8 +24,10 @@ param set-default MIS_DIST_1WP 0
 param set-default RA_WHEEL_BASE 2.7
 param set-default RA_MAX_STR_ANG 0.5236
 param set-default RA_STR_RATE_LIM 120
-# 모서리 질러가기 끔 (-1): 꺾이는 곳은 UGV 계획이 차체 검사를 통과한 원호로 미리 그려 준다 (ugv/drive_graph.py _smooth).
-# 켜 두면(GAIN 2, MAX 15) PX4 가 꺾인 점 앞 최대 15 m 에서 안쪽으로 질러가 1차로 교차로에서 차체가 도로 밖으로 나갔다 (2026-10-10)
+# RA_ACC_RAD_MAX -1: 꺾임각에 따라 도착 허용반경을 넓히는 기능(모서리 질러가기)을 끈다. 기본 도착 허용반경 NAV_ACC_RAD(3 m)는
+# 그대로 남는다 — 지점을 정확히 지나도록 강제하는 설정은 아니다. 꺾이는 곳은 UGV 계획이 원호로 촘촘히 그려 주고
+# (ugv/drive_graph.py _smooth, check_route) PX4 는 그 점들을 따라간다. 켜 두면(GAIN 2, MAX 15) 45° 꺾임에서 약 4.5 m,
+# 90° 에서 약 11 m 앞부터 안쪽으로 질러간다 (2026-10-10)
 param set-default RA_ACC_RAD_GAIN 1
 param set-default RA_ACC_RAD_MAX -1
 

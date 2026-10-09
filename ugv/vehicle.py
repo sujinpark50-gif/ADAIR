@@ -180,7 +180,12 @@ class Vehicle:
         if dp is None:
             return None, tel.speed_mps, f"WRONG_WAY_ON_ONEWAY: 일방통행 도로 {pos.road_id} 를 거꾸로 향함"
         v = max(tel.speed_mps, 0.0)
-        return self.net.graph.advance(dp, v * config.CMD_LATENCY_S), v, None
+        # 지연 동안 갈 거리: 주행 중이면 지금 계획 경로를 따라, 아니면 진행 방향 도로를 따라 교차로 너머까지 예측한다
+        prefer = None
+        if hd is not None:
+            _, i = _dist_to_polyline(tel.x, tel.y, self.speed.pts)
+            prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
+        return self.net.graph.project(dp, v * config.CMD_LATENCY_S, prefer), v, None
 
     def current_task(self) -> Optional[dict]:
         t = self.store.tasks.get(self.task_key) if self.task_key else None

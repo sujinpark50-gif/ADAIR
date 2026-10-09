@@ -19,6 +19,7 @@
 도로 폭은 원자료 차로 수 × LANE_WIDTH_EST_M + 길어깨로 추정한 값이다 (원자료 WIDTH 는 1~4 코드라 쓰지 않는다).
 """
 
+import bisect
 import heapq
 import math
 from dataclasses import dataclass
@@ -35,6 +36,26 @@ _FRONT = config.REAR_AXLE_FROM_CENTER_M + config.BODY_LENGTH_M / 2      # 뒤축
 _REAR = config.BODY_LENGTH_M / 2 - config.REAR_AXLE_FROM_CENTER_M        # 뒤축에서 뒤 범퍼
 _HW = config.BODY_WIDTH_M / 2
 CORNERS = ((_FRONT, _HW), (_FRONT, -_HW), (-_REAR, _HW), (-_REAR, -_HW))
+
+
+def _body_outline(step: float = 0.45):
+    """차체 둘레(뒤축 기준)를 step 간격으로 + 중심. 교차로처럼 오목한 도로 영역에서 모서리 사이 변이 밖으로 나가는 것도 본다."""
+    pts = []
+    xs = [-_REAR + (_FRONT + _REAR) * i / max(1, round((_FRONT + _REAR) / step)) for i in range(round((_FRONT + _REAR) / step) + 1)]
+    ys = [-_HW + 2 * _HW * i / max(1, round(2 * _HW / step)) for i in range(round(2 * _HW / step) + 1)]
+    for x in xs:
+        pts += [(x, _HW), (x, -_HW)]
+    for y in ys[1:-1]:
+        pts += [(_FRONT, y), (-_REAR, y)]
+    pts.append(((_FRONT - _REAR) / 2, 0.0))
+    return tuple(pts)
+
+
+BODY_SAMPLES = _body_outline()
+BODY_HALF_DIAG = math.hypot((_FRONT + _REAR) / 2, _HW)
+BODY_REACH = max(math.hypot(x, y) for x, y in BODY_SAMPLES)   # 뒤축에서 차체 끝까지 가장 먼 거리
+CHECK_STEP_M = 1.0               # 최종 경로 검사 간격
+CHECK_TOL_M = 0.02               # 수치 오차 허용
 R_STEPS = (1.0, 1.15, 1.3, 1.5, 1.8, 2.2, 3.0, 4.0, 6.0, 9.0, 14.0, 20.0, 30.0)
 STRAIGHT_DEG = 5.0
 STRIP_LEN_M = 60.0
@@ -303,11 +324,51 @@ class DriveGraph:
         return r.length - dp.pos.s if dp.toward == r.b else dp.pos.s
 
     def advance(self, dp: DirPos, d: float) -> DirPos:
-        """진행 방향으로 d m (출발 도로 안에서만. 노드 직전에서 멈춘다)."""
+        """진행 방향으로 d m (출발 도로 안에서만. 노드 직전에서 멈춘다). 교차로를 넘는 예측은 project()."""
         r = self.net.roads[dp.road_id]
         d = max(0.0, min(d, self.ahead_m(dp) - 0.1))
         s = dp.pos.s + d if dp.toward == r.b else dp.pos.s - d
         return DirPos(self.net.at(dp.road_id, s), dp.toward)
+
+    def project(self, dp: DirPos, d: float, prefer: Optional[List[Tuple[float, float]]] = None) -> DirPos:
+        """명령 교체 지연 동안 갈 거리 d 만큼 앞의 위치·방향. 교차로를 넘으면 다음 도로 위로 잡는다
+        (예전에는 교차로 0.1 m 앞에서 잘라 이미 다음 도로에 들어간 차를 이전 도로에서 계획했다, 2026-10-10 검토).
+        prefer(지금 위치부터의 계획 경로 점)가 있으면 그 경로를 따라, 없으면 진행 방향 도로를 따라(가장 덜 꺾이는 회전) 간다."""
+        if d <= 0.5:
+            return dp
+        if d < self.ahead_m(dp) - 0.1:
+            return self.advance(dp, d)
+        pts, got = self.stop_path(dp, d, prefer)
+        if len(pts) < 2:
+            return self.advance(dp, d)
+        (ax, ay), (bx, by) = pts[-2], pts[-1]
+        hd = bearing_deg(bx - ax, by - ay) if math.hypot(bx - ax, by - ay) > 1e-6 else None
+        q = self.snap_aligned(bx, by, hd) if hd is not None else None
+        if q is None:
+            return self.advance(dp, d)
+        return q
+
+    def snap_aligned(self, x: float, y: float, heading_deg: float, max_m: float = 8.0) -> Optional[DirPos]:
+        """(x, y) 근처 도로 중 진행 방위와 방향이 맞는 도로 위 지점 (교차로 한가운데서 가로지르는 도로를 고르지 않게)."""
+        hx, hy = math.sin(math.radians(heading_deg)), math.cos(math.radians(heading_deg))
+        best = None
+        for rid, dist in self.net.near(x, y, max_m).items():
+            r = self.net.roads[rid]
+            pos = self.net.on_road(rid, x, y)
+            p0 = self.net.at(rid, max(0.0, pos.s - 2.0))[2:4]
+            p1 = self.net.at(rid, min(r.length, pos.s + 2.0))[2:4]
+            tx, ty = p1[0] - p0[0], p1[1] - p0[1]
+            n = math.hypot(tx, ty) or 1.0
+            align = (tx * hx + ty * hy) / n
+            if abs(align) < 0.7:
+                continue
+            toward = r.b if align > 0 else r.a
+            if not self.oneway_ok(rid, self.other(rid, toward)):
+                continue
+            key = dist - 2.0 * abs(align)
+            if best is None or key < best[0]:
+                best = (key, DirPos(pos, toward))
+        return best[1] if best else None
 
     def outside_m(self, x: float, y: float) -> float:
         """점이 추정 도로 띠(근처 모든 도로: 중심선 ± 추정 반폭)의 합집합 밖으로 나간 거리. 안이면 0 이하."""
@@ -324,9 +385,11 @@ class DriveGraph:
         return (v0 * v0 - v1 * v1) / (2 * config.DECEL_MPS2) + config.TURN_MARGIN_M
 
     # ------------------------------------------------------------------ 탐색
-    def search(self, start: DirPos, v0: float = 0.0, road_ok: Callable[[str], bool] = lambda r: True):
+    def search(self, start: DirPos, v0: float = 0.0, road_ok: Callable[[str], bool] = lambda r: True,
+               turn_ok: Callable[[State, State], bool] = lambda a, b: True):
         """출발 방향을 유지하는 최소 시간 탐색. 상태 (도로, 향하는 노드) 의 값 = 그 도로에 들어선 시각.
-        출발 도로의 남은 구간은 road_ok 와 관계없이 지난다 (차량이 거기 있다)."""
+        출발 도로의 남은 구간은 road_ok 와 관계없이 지난다 (차량이 거기 있다).
+        turn_ok(지금 상태, 다음 상태): 최종 경로 검사에서 실패한 회전을 빼고 다시 찾을 때 쓴다."""
         net = self.net
         r0 = net.roads[start.road_id]
         d0 = self.ahead_m(start)
@@ -337,7 +400,10 @@ class DriveGraph:
         for t in self.turns.get((start.road_id, start.toward), ()):
             if not road_ok(t.to[0]):
                 continue
-            if d0 < self.brake_need(v0, t.v_turn):        # 첫 교차로: 회전 속도까지 감속할 거리가 없다
+            # 첫 교차로: 회전 원호가 시작하는 곳(노드 앞 tangent_m)까지 회전 속도로 줄일 거리가 있어야 한다
+            if d0 - t.tangent_m < self.brake_need(v0, t.v_turn):
+                continue
+            if not turn_ok((start.road_id, start.toward), t.to):
                 continue
             if t0 < dist.get(t.to, math.inf):
                 dist[t.to], prev[t.to] = t0, None
@@ -351,7 +417,7 @@ class DriveGraph:
             r = net.roads[s[0]]
             Tn = T + r.length / net.road_speed(r)
             for t in self.turns.get(s, ()):
-                if not road_ok(t.to[0]):
+                if not road_ok(t.to[0]) or not turn_ok(s, t.to):
                     continue
                 if Tn < dist.get(t.to, math.inf):
                     dist[t.to], prev[t.to] = Tn, s
@@ -537,6 +603,73 @@ class DriveGraph:
             fv.append(vlim[-1])
         return fp, fv
 
+    # ------------------------------------------------------------------ 최종 경로 검사
+    def check_route(self, route: Route) -> dict:
+        """다듬은 최종 경로를 차가 따라갈 때(뒤축이 경로 위) 주행 가능한지: 최소 회전반경과 차체 면적(둘레 표본)이
+        추정 도로 띠 합집합 안인지. 출발 구간(차가 이미 있는 도로)은 따로 표시한다.
+        {"ok", "min_radius_m", "radius_violations", "body_violations", "worst_excess_m", "issues": [...]}"""
+        pts = route.pts
+        cum = [0.0]
+        for a, b in zip(pts, pts[1:]):
+            cum.append(cum[-1] + math.dist(a, b))
+        L = cum[-1]
+        legs = route.legs
+        first_node = self.net.nodes.get(legs[0][2]) if legs else None
+        start_leg_len = math.dist(pts[0], first_node) if first_node else 0.0
+
+        def at(sv):
+            i = max(0, min(len(cum) - 2, bisect.bisect_left(cum, sv) - 1))
+            seg = cum[i + 1] - cum[i]
+            t = 0.0 if seg <= 0 else (sv - cum[i]) / seg
+            a, b = pts[i], pts[i + 1]
+            return a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+
+        issues, min_r, worst = [], math.inf, -math.inf
+        n_rad = n_body = 0
+        sv = 0.0
+        while sv <= L and L > 0:
+            q = at(sv)
+            a, c = at(max(0.0, sv - 3.0)), at(min(L, sv + 3.0))
+            yaw = math.atan2(c[1] - a[1], c[0] - a[0]) if math.dist(a, c) > 1e-6 else 0.0
+            in_start = sv <= start_leg_len
+            if 3.0 <= sv <= L - 3.0:
+                R = _radius3(a, q, c)
+                min_r = min(min_r, R)
+                if R < R_MIN * 0.98:
+                    n_rad += 1
+                    issues.append({"kind": "RADIUS", "s_m": round(sv, 1), "x": round(q[0], 1), "y": round(q[1], 1),
+                                   "value": round(R, 2), "start_leg": in_start})
+            ch, sh = math.cos(yaw), math.sin(yaw)
+            near = self.net.near(q[0], q[1], 15.0)
+            margin = max((self.half_w[r] - d for r, d in near.items()), default=-math.inf)   # 가장 안쪽 도로 띠의 남은 여유
+            if margin < BODY_REACH:                          # 차체가 어느 방향으로 돌아도 그 띠 안이 아니면 둘레 표본을 본다
+                ex = max(self.outside_m(q[0] + fx * ch - fy * sh, q[1] + fx * sh + fy * ch) for fx, fy in BODY_SAMPLES)
+                worst = max(worst, ex)
+                if ex > CHECK_TOL_M:
+                    n_body += 1
+                    issues.append({"kind": "BODY", "s_m": round(sv, 1), "x": round(q[0], 1), "y": round(q[1], 1),
+                                   "value": round(ex, 2), "start_leg": in_start})
+            sv += CHECK_STEP_M
+        bad = [i for i in issues if not i["start_leg"]]
+        return {"ok": not bad, "min_radius_m": None if math.isinf(min_r) else round(min_r, 2),
+                "radius_violations": n_rad, "body_violations": n_body,
+                "worst_excess_m": None if math.isinf(worst) else round(worst, 3),
+                "start_leg_issues": len(issues) - len(bad), "issues": bad[:20],
+                "basis": "뒤축이 최종 경로 위, 차체 둘레 표본 vs 추정 도로 띠 합집합, 최소 회전반경 (근사)"}
+
+    def blame(self, route: Route, issue: dict):
+        """검사 실패 지점을 막을 단위: 가까운 교차로 회전 (지금 상태, 다음 상태) 또는 도로 id."""
+        q = (issue["x"], issue["y"])
+        best = None
+        for (r1, f1, t1), (r2, f2, t2) in zip(route.legs, route.legs[1:]):
+            d = math.dist(q, self.net.nodes[t1])
+            if d <= TURN_TANGENT_MAX_M + 5 and (best is None or d < best[0]):
+                best = (d, ("TURN", (r1, t1), (r2, t2)))
+        if best:
+            return best[1]
+        p = self.net.snap(*q)
+        return ("ROAD", p.road_id)
+
     # ------------------------------------------------------------------ 복귀 가능성
     def return_set(self, access: RoadPos, road_ok: Callable[[str], bool] = lambda r: True):
         """출입 지점 access 까지 갈 수 있는 상태 집합 (정차 상태에서 출발 — 첫 교차로 감속 조건 없음)."""
@@ -627,6 +760,8 @@ def access_point(net: RoadNetwork, base_id: str, search_m: float = 1000.0):
         if (p.road_id, r.a) in g.core and (p.road_id, r.b) in g.core:
             best = (d, p)
     if best is None:
+        if search_m < 50_000:                      # 도로망 밖 거점 (원통119 등): 더 멀리
+            return access_point(net, base_id, 50_000)
         return None
     d, p = best
     r = net.roads[p.road_id]
