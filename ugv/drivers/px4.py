@@ -60,8 +60,9 @@ def _mission_item(lat, lon, speed, through):
 class Px4Driver(Driver):
     kind = "px4"
 
-    def __init__(self, address: str, clock, connect_timeout_s: float = 30.0):
+    def __init__(self, address: str, clock, connect_timeout_s: float = 30.0, decel_mps2=None):
         self.address, self.clock, self.connect_timeout_s = address, clock, connect_timeout_s
+        self.decel_mps2 = decel_mps2
         self._sdk = self._tel = self._act = self._mis = None
         self._pos = self._vel = None
         self._heading = 0.0

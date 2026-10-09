@@ -306,8 +306,11 @@ def test_abort_on_curve_stops_along_road(tmp_path):
         await v.abort("T1")
         stop_ev = [e for e in v.events if e["event"] == "STOP_PATH"][-1]
         assert stop_ev["basis"] == "PLANNED_ROUTE"
-        for x, y, _ in v.driver.path:
-            assert NET.snap(x, y).dist < 1.0                               # 정지 경로는 도로 중심선 위
+        planned = v.speed.pts
+        for x, y, _ in v.driver.path:                                      # 정지 경로는 남은 계획 경로(다듬은 선형) 위
+            assert min(math.dist((x, y), q) for q in planned) < 3.0
+            assert G.outside_m(x, y) < -0.5                                # 도로 띠 안쪽
+        assert stop_ev["drivable"] is True and not stop_ev["short"]       # 정지 경로 회전반경·차체 검사 통과, 길이 충분
         await run_for(v, clock, 40)
         tel2 = v.driver.telemetry()
         assert tel2.speed_mps == 0 and v.state == "IDLE"
@@ -477,10 +480,11 @@ def test_first_turn_braking_counts_to_arc_start_not_node():
             if d0 >= r.length - 1:
                 continue
             dp = DirPos(NET.at(rin, r.length - d0 if n == r.b else d0), n)
+            first = (t.to, (rin, n))                             # 출발 도로에서 바로 도는 꼬리표
             tree = G.search(dp, v0)
-            assert t.to not in tree["dist"] or tree["prev"][t.to] is not None    # 첫 교차로에서 바로 돌지 않는다
+            assert first not in tree["prev"]                     # 첫 교차로에서 바로 돌지 않는다
             tree0 = G.search(dp, 0.0)
-            assert t.to in tree0["dist"] and tree0["prev"][t.to] is None         # 멈춰 있으면 돈다
+            assert first in tree0["prev"] and tree0["prev"][first] is None       # 멈춰 있으면 돈다
             found += 1
             break
         if found >= 3:

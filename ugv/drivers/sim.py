@@ -21,8 +21,9 @@ TICK_WALL_S = 0.05
 class SimDriver(Driver):
     kind = "sim"
 
-    def __init__(self, start_xy, clock, heading_deg: float = 0.0):
+    def __init__(self, start_xy, clock, heading_deg: float = 0.0, accel: float = ACCEL, decel: float = DECEL):
         self.clock = clock
+        self.accel, self.decel = accel, decel     # 차량 특성별 (UGV 기본 2.5 / 2.1 — 2단계 실측)
         self.x, self.y = start_xy
         self.v = 0.0
         self.heading = heading_deg            # 방위 (북=0, 시계). 정차 중에도 진행 방향 제약에 쓴다
@@ -86,11 +87,11 @@ class SimDriver(Driver):
         if dt <= 0:
             return
         if not self.path or self._prog.finished or self.frozen:
-            self.v = max(0.0, self.v - DECEL * dt) if not self.frozen else 0.0
+            self.v = max(0.0, self.v - self.decel * dt) if not self.frozen else 0.0
             return
         tx, ty, seg_v = self.path[self.k]
-        v_target = min(seg_v, math.sqrt(2 * DECEL * self._remaining()))
-        self.v = min(self.v + ACCEL * dt, v_target) if self.v < v_target else max(self.v - DECEL * dt, v_target)
+        v_target = min(seg_v, math.sqrt(2 * self.decel * self._remaining()))
+        self.v = min(self.v + self.accel * dt, v_target) if self.v < v_target else max(self.v - self.decel * dt, v_target)
         move = self.v * dt
         while move > 0 and self.path:
             tx, ty, _ = self.path[self.k]

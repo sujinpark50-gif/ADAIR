@@ -121,43 +121,84 @@ def _direction_report(start: DirPos, v0: float, route: Optional[Route], ret_ok, 
             "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"}
 
 
-ROUTE_CHECK_TRIES = 6
+ROUTE_CHECK_TRIES = 12
+
+
+def verify_route(net: RoadNetwork, route: Route, graph=None) -> dict:
+    """실행 전 최종 검증 — 정상 접근·화재 이탈·재계획이 모두 이것을 통과해야 주행한다 (vehicle._drive 가 다시 확인).
+    1) 다듬은 경로: 최소 회전반경(조향 한계) + 차체 둘레의 도로 띠 포함 (drive_graph.check_route, 출발 도로 포함)
+    2) PX4 에 보낼 미션 지점을 이은 선: 차체 도로 포함 (지점 생략·직선 연결로 원호가 다시 모서리를 가로지르지 않게).
+       미션 지점은 속도 계획과 같은 함수(plan_speeds)로 만든다. 지점 위치는 출발 속도와 관계없다
+    {"ok", "route": 검사 결과, "mission": 검사 결과, "issue": 첫 실패}"""
+    from .roads import plan_speeds
+    g = graph or net.graph
+    chk = g.check_route(route)
+    out = {"ok": chk["ok"], "route": chk, "mission": None, "issue": chk["issues"][0] if chk["issues"] else None}
+    if not chk["ok"]:
+        return out
+    sp = plan_speeds(route, profile=g.p)
+    line = [route.pts[0]] + [(x, y) for x, y, _ in sp.items]
+    mchk = g.check_route(line, check_radius=False, label="MISSION_ITEMS")
+    mchk["items"] = len(sp.items)
+    mchk["max_chord_dev_m"] = sp.max_chord_dev_m
+    out["mission"] = mchk
+    if not mchk["ok"]:
+        out["ok"], out["issue"] = False, {**mchk["issues"][0], "stage": "MISSION_ITEMS"}
+    return out
+
+
+def _check_report(v: dict) -> dict:
+    """응답·기록용 검사 요약 (issues 목록 제외)."""
+    rep = {k: x for k, x in v["route"].items() if k != "issues"}
+    rep["ok"] = v["ok"]
+    if v.get("mission"):
+        rep["mission_items"] = {k: x for k, x in v["mission"].items() if k not in ("issues", "basis", "sampling")}
+    return rep
+
+
+def _ban(g, route, issue, start: DirPos, banned_turns, banned_roads, tried) -> bool:
+    """검사 실패 지점의 원인 단위(교차로 회전 또는 도로)를 빼고 다시 찾게 한다. 더 뺄 것이 없으면 False.
+    출발 도로는 뺄 수 없다 (차가 거기 있다) → 그 도로 앞쪽이 주행 불가면 경로가 없다."""
+    unit = g.blame(route, issue)
+    tried.append({"issue": issue, "removed": [unit[0], *[list(x) if isinstance(x, tuple) else x for x in unit[1:]]]})
+    if unit[0] == "TURN":
+        if (unit[1], unit[2]) in banned_turns:
+            return False
+        banned_turns.add((unit[1], unit[2]))
+        return True
+    if unit[1] in banned_roads or unit[1] == start.road_id:
+        return False
+    banned_roads.add(unit[1])
+    return True
 
 
 def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: float, target_lon: float, *,
                   v0: float = 0.0, access: Optional[RoadPos] = None,
                   standoff: float = config.FIRE_STANDOFF_M, search_m: float = config.APPROACH_SEARCH_M,
-                  snap_limit: float = config.TARGET_SNAP_M, fixed_dest: Optional[RoadPos] = None) -> ApproachPlan:
+                  snap_limit: float = config.TARGET_SNAP_M, fixed_dest: Optional[RoadPos] = None,
+                  graph=None) -> ApproachPlan:
     """start: 진행 방향을 포함한 출발 위치 (명령 교체 지연만큼 앞으로 옮긴 것). access: 소속 거점 출입 지점 (복귀 검사).
-    고른 경로는 다듬은 최종 선형으로 다시 검사한다 (drive_graph.check_route: 최소 회전반경·차체 면적의 도로 포함).
-    통과하지 못하면 원인 회전(또는 도로)을 빼고 다시 고른다. ROUTE_CHECK_TRIES 번 안에 못 찾으면 NO_DRIVABLE_ROUTE."""
-    g = net.graph
+    고른 경로는 verify_route 로 다시 검사한다 (최소 회전반경·차체 둘레의 도로 포함, 출발 도로 포함, PX4 미션 선).
+    통과하지 못하면 원인 회전(또는 도로)을 빼고 다시 고른다. 뺀 회전·도로는 복귀 가능성 판단에도 쓰지 않는다.
+    ROUTE_CHECK_TRIES 번 안에 못 찾으면 NO_DRIVABLE_ROUTE. graph: 차량 특성별 그래프 (기본 UGV)."""
+    g = graph or net.graph
     banned_turns, banned_roads, tried = set(), set(), []
     for _ in range(ROUTE_CHECK_TRIES):
         plan = _plan_once(net, fire, start, target_lat, target_lon, v0=v0, access=access, standoff=standoff,
                           search_m=search_m, snap_limit=snap_limit, fixed_dest=fixed_dest,
-                          banned_turns=banned_turns, banned_roads=banned_roads)
+                          banned_turns=banned_turns, banned_roads=banned_roads, g=g)
         if plan.status != "OK":
             if tried:
                 plan.detail["route_check_rejected"] = tried
             return plan
-        chk = g.check_route(plan.route)
-        plan.detail["route_check"] = {k: v for k, v in chk.items() if k != "issues"}
-        if chk["ok"]:
+        v = verify_route(net, plan.route, g)
+        plan.detail["route_check"] = _check_report(v)
+        if v["ok"]:
             if tried:
                 plan.detail["route_check_rejected"] = tried
             return plan
-        issue = chk["issues"][0]
-        unit = g.blame(plan.route, issue)
-        tried.append({"issue": issue, "removed": [unit[0], *[list(x) if isinstance(x, tuple) else x for x in unit[1:]]]})
-        if unit[0] == "TURN":
-            if (unit[1], unit[2]) in banned_turns:
-                break
-            banned_turns.add((unit[1], unit[2]))
-        else:
-            if unit[1] in banned_roads or unit[1] == start.road_id:
-                break
-            banned_roads.add(unit[1])
+        if not _ban(g, plan.route, v["issue"], start, banned_turns, banned_roads, tried):
+            break
     tx, ty = FRAME.to_xy(target_lat, target_lon)
     return ApproachPlan("TARGET_UNREACHABLE", "NO_DRIVABLE_ROUTE (다듬은 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함)",
                         target_xy=(tx, ty), detail={"route_check_rejected": tried,
@@ -165,8 +206,7 @@ def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: f
 
 
 def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: float, target_lon: float, *,
-               v0, access, standoff, search_m, snap_limit, fixed_dest, banned_turns, banned_roads) -> ApproachPlan:
-    g = net.graph
+               v0, access, standoff, search_m, snap_limit, fixed_dest, banned_turns, banned_roads, g) -> ApproachPlan:
     tx, ty = FRAME.to_xy(target_lat, target_lon)
     near = net.snap(tx, ty, max_m=snap_limit)
     if near is None:
@@ -176,8 +216,10 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
 
     def road_ok(r):
         return safety.road_ok(r) and r not in banned_roads
-    tree = g.search(start, v0, road_ok, lambda a, b: (a, b) not in banned_turns)
-    rs = g.return_set(access, safety.road_ok) if access is not None else None
+    def turn_ok(a, b):
+        return (a, b) not in banned_turns
+    tree = g.search(start, v0, road_ok, turn_ok)
+    rs = g.return_set(access, road_ok, turn_ok) if access is not None else None
 
     near_clear = safety.clearance(near.x, near.y)
     cands = [fixed_dest] if fixed_dest is not None else (
@@ -241,42 +283,80 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
                                 "direction": _direction_report(start, v0, route, True if rs is not None else None, access)})
 
 
+EVADE_CHECK_MAX = 40            # 이탈 후보를 최종 검사할 최대 수 (빠른 순서로)
+
+
 def plan_evasion(net: RoadNetwork, fire: FireArea, here: DirPos, *, v0: float = 0.0, access: Optional[RoadPos] = None,
-                 standoff: float = config.FIRE_STANDOFF_M, search_m: float = config.EVADE_SEARCH_M) -> ApproachPlan:
+                 standoff: float = config.FIRE_STANDOFF_M, search_m: float = config.EVADE_SEARCH_M,
+                 graph=None) -> ApproachPlan:
     """현재 위치가 안전거리를 위반할 때: 진행 방향을 유지하며 불 칸 안을 지나지 않는 경로로 갈 수 있는 가장 빠른 안전 지점.
     출입 지점으로 돌아올 경로가 있는 지점을 먼저 고르고, 없으면 복귀 경로 없는 지점이라도 고른다 (화재 이탈이 먼저 —
-    결과에 return_path_at_plan_time=false 로 남긴다). 그것도 없으면 NO_SAFE_EVASION_ROUTE (→ DANGER)."""
-    g = net.graph
+    결과에 return_path_at_plan_time=false 로 남긴다).
+    이탈 경로도 정상 접근과 같은 최종 검증(verify_route: 회전반경·차체 도로 포함·PX4 미션 선)을 통과해야 한다.
+    안전거리 안이라는 이유로 주행 불가능한 경로를 허용하지 않는다 (2026-10-10 검토). 첫 후보가 실패하면 다음으로 빠른 후보,
+    그래도 없으면 실패 원인 회전·도로를 빼고 다시 찾는다. 끝내 없으면 NO_SAFE_EVASION_ROUTE (→ 도로 따라 감속 정지·DANGER)."""
+    g = graph or net.graph
     burning_free = SafetyIndex(net, fire, standoff=0.5)        # 칸 안(경계 0.5 m 이내)만 막는다
-    tree = g.search(here, v0, burning_free.road_ok)
-    rs = g.return_set(access, SafetyIndex(net, fire, standoff).road_ok) if access is not None else None
-    best = None
-    for p in net.samples():
-        if math.hypot(p.x - here.pos.x, p.y - here.pos.y) > search_m:
-            continue
-        c = fire.distance(p.x, p.y)
-        if c < standoff:
-            continue
-        for a in g.arrivals(tree, p):
-            ret = g.can_return(rs, p.road_id, p.s, a.toward) if rs is not None else None
-            key = (0 if ret in (True, None) else 1, a.time_s)
-            if best is not None and key >= best[0]:
+    safe_idx = SafetyIndex(net, fire, standoff)
+    banned_turns, banned_roads, tried = set(), set(), []
+    stats = {"candidates_in_range": 0, "rejected_reenter_fire": 0, "rejected_route_check": 0, "searches": 0}
+    here_c = fire.distance(here.pos.x, here.pos.y)
+    for _ in range(ROUTE_CHECK_TRIES):
+        stats["searches"] += 1
+
+        def turn_ok(a, b):
+            return (a, b) not in banned_turns
+        tree = g.search(here, v0, lambda r: burning_free.road_ok(r) and r not in banned_roads, turn_ok)
+        rs = g.return_set(access, lambda r: safe_idx.road_ok(r) and r not in banned_roads, turn_ok) \
+            if access is not None else None
+        cands = []
+        for p in net.samples():
+            if p.road_id in banned_roads or math.hypot(p.x - here.pos.x, p.y - here.pos.y) > search_m:
                 continue
+            c = fire.distance(p.x, p.y)
+            if c < standoff:
+                continue
+            for a in g.arrivals(tree, p):
+                ret = g.can_return(rs, p.road_id, p.s, a.toward) if rs is not None else None
+                cands.append(((0 if ret in (True, None) else 1, a.time_s), p, a, c, ret))
+        stats["candidates_in_range"] = max(stats["candidates_in_range"], len(cands))
+        cands.sort(key=lambda o: o[0])
+        first_fail = None
+        checked = 0
+        seen_routes = {}
+        for key, p, a, c, ret in cands:
+            if checked >= EVADE_CHECK_MAX:
+                break
             r = g.build_route(tree, p, a)
+            sig = (tuple(r.road_ids), a.toward)
             # 이미 불 칸 안이면 빠져나가는 첫 구간은 허용한다. 한 번 나온 뒤 다시 불 칸에 들어가는 경로는 버린다
             inside = [fire.distance(x, y, max_m=1.0) < 0.5 for x, y in r.pts]
             k = next((i for i, v in enumerate(inside) if not v), len(inside))
             if any(inside[k:]):
+                stats["rejected_reenter_fire"] += 1
                 continue
-            best = (key, p, r, c, ret)
-    if best is None:
-        return ApproachPlan("NO_SAFE_APPROACH", "NO_SAFE_EVASION_ROUTE",
-                            detail={"here_clearance_m": _r(fire.distance(here.pos.x, here.pos.y)),
-                                    "direction": _direction_report(here, v0, None, None, access)})
-    _, p, r, c, ret = best
-    # 이탈은 화재에서 벗어나는 것이 먼저라 검사에 실패해도 거절하지 않는다 — 결과를 남겨 운영자가 보게 한다
-    chk = g.check_route(r)
-    return ApproachPlan("OK", None, "EVADE", p, r, None, None, None, c, fire.clearance_along(r.pts), 0,
-                        detail={"here_clearance_m": _r(fire.distance(here.pos.x, here.pos.y)),
-                                "direction": _direction_report(here, v0, r, ret, access),
-                                "route_check": {k: v for k, v in chk.items() if k != "issues"}})
+            if sig in seen_routes and r.length > seen_routes[sig] + 10.0:
+                continue                      # 같은 도로열로 실패 지점을 지나는 후보는 같은 곳에서 실패한다 → 건너뜀
+            checked += 1
+            v = verify_route(net, r, g)
+            if v["ok"]:
+                return ApproachPlan("OK", None, "EVADE", p, r, None, None, None, c, fire.clearance_along(r.pts), checked,
+                                    detail={"here_clearance_m": _r(here_c),
+                                            "direction": _direction_report(here, v0, r, ret, access),
+                                            "route_check": _check_report(v), "evasion_search": stats,
+                                            **({"route_check_rejected": tried} if tried else {})})
+            stats["rejected_route_check"] += 1
+            seen_routes[sig] = min(seen_routes.get(sig, math.inf), v["issue"]["s_m"])
+            if first_fail is None:
+                first_fail = (r, v["issue"])
+        if first_fail is None or not _ban(g, first_fail[0], first_fail[1], here, banned_turns, banned_roads, tried):
+            break
+    reason = "NO_SAFE_EVASION_ROUTE"
+    if stats["rejected_route_check"]:
+        reason += " (후보 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함)"
+    elif not stats["candidates_in_range"]:
+        reason += " (진행 방향을 지키며 불 칸을 지나지 않고 갈 수 있는 안전 지점 없음)"
+    return ApproachPlan("NO_SAFE_APPROACH", reason,
+                        detail={"here_clearance_m": _r(here_c), "evasion_search": stats,
+                                "route_check_rejected": tried,
+                                "direction": _direction_report(here, v0, None, None, access)})

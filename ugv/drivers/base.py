@@ -65,7 +65,7 @@ class Driver:
         v = max(t.speed_mps, 0.0)
         if v < 0.3:
             return await self.halt_in_place()
-        d = v * v / (2 * config.DECEL_MPS2) + config.STOP_MARGIN_M
+        d = v * v / (2 * (getattr(self, "decel_mps2", None) or config.DECEL_MPS2)) + config.STOP_MARGIN_M
         hd = math.radians(t.heading_deg)
         return await self.follow([(t.x + d * math.sin(hd), t.y + d * math.cos(hd), max(v, 1.0))])
 

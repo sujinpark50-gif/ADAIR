@@ -1,0 +1,41 @@
+{
+ "defect1": [
+  {
+   "start_s_m": 5.0,
+   "status": "TARGET_UNREACHABLE",
+   "reason": "NO_DRIVABLE_ROUTE (다듬은 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함)",
+   "reported_check_ok": null,
+   "min_radius_m": null,
+   "radius_violations_recorded": null,
+   "independent_full_check_radius_violations": null,
+   "approved_with_violation": false
+  },
+  {
+   "start_s_m": 36.0,
+   "status": "TARGET_UNREACHABLE",
+   "reason": "NO_DRIVABLE_ROUTE (다듬은 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함)",
+   "reported_check_ok": null,
+   "min_radius_m": null,
+   "radius_violations_recorded": null,
+   "independent_full_check_radius_violations": null,
+   "approved_with_violation": false
+  },
+  {
+   "start_s_m": 72.0,
+   "status": "OK",
+   "reason": null,
+   "reported_check_ok": true,
+   "min_radius_m": 4.91,
+   "radius_violations_recorded": 0,
+   "independent_full_check_radius_violations": 0,
+   "approved_with_violation": false
+  }
+ ],
+ "defect2": {
+  "injected": "check_route 항상 실패",
+  "status": "NO_SAFE_APPROACH",
+  "reason": "NO_SAFE_EVASION_ROUTE (후보 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함)",
+  "would_execute": false,
+  "reported_check_ok": null
+ }
+}

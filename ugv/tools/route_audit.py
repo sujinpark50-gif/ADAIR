@@ -145,7 +145,8 @@ def main():
         "access_point": {"road_id": acc[0].road_id, "s_m": round(acc[0].s, 1), "heading_deg": round(acc[1], 1)},
         "start_state_in_largest_component": (start.road_id, start.toward) in big,
         "meaning": "그 방향으로 서 있는 차가 출입 지점 A 까지 갈 수 있는 도로 길이 (화재 없음)",
-        **km_by_direction(net, lambda s: any(t.to in rs["states"] for t in g.turns.get(s, ())) or s in rs["states"])}
+        **km_by_direction(net, lambda s: any((t.to, s) in rs["labels"] for t in g.turns.get(s, ()))
+                         or s[0] == acc[0].road_id)}
     # 무작위 쌍
     rnd = random.Random(a.seed)
     samples = net.samples()

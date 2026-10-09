@@ -206,17 +206,27 @@ def test_fire_spreading_onto_route_triggers_replan(tmp_path):
         v, clock, src = make(tmp_path)
         await v.execute(body("T1"))
         await run_for(v, clock, 20)
-        # 남은 경로 중간, 도로 옆 칸에 불이 난다 (도로 자체는 타지 않지만 도로가 경계 100 m 안에 든다)
-        k = len(v.speed.pts) * 2 // 3
-        cells = fire_block(*FRAME.to_ll(*beside_route(v.speed.pts, k)), n=0)
-        assert cells, "시험 칸이 도로에 걸렸다"
+        # 남은 경로 중간, 도로 옆 칸에 불이 난다 (도로 자체는 타지 않지만 도로가 경계 100 m 안에 든다).
+        # 2026-10-10: 회전·차체 검사가 촘촘해지며 2/3 지점 불의 27 km 우회로는 차체 2 cm 초과로 주행 불가 판정 →
+        # 우회로가 실제로 있는(오프라인 계획으로 확인한) 지점을 고른다. 우회로가 없는 경우는 아래 실패 시험이 본다
+        from ugv.approach import plan_approach
+        from ugv.fire import FireArea
+        cells = None
+        for frac in (2 / 3, 1 / 2, 3 / 4, 5 / 6, 0.4):
+            k = int(len(v.speed.pts) * frac)
+            c = fire_block(*FRAME.to_ll(*beside_route(v.speed.pts, k)), n=0)
+            st, v0, _ = v.here_state()
+            if c and plan_approach(NET, FireArea(c, source="T"), st, *TARGET, v0=v0, access=v.access).status == "OK":
+                cells = c
+                break
+        assert cells, "우회로가 있는 화재 위치 없음"
         src.set(cells, "TEST")
         await run_for(v, clock, 3)
         t = v.store.tasks["T1"]
         assert t["replans"] and t["replans"][-1]["result"] == "OK"
         fire = src.area()
         assert fire.clearance_along(v.speed.pts[5:]) >= config.FIRE_STANDOFF_M
-        # 불이 한 줄뿐인 도로를 막으면 크게 돌아간다 (이 경우 약 27 km). 가는 내내 안전거리를 지키는지 본다
+        # 불이 한 줄뿐인 도로를 막으면 크게 돌아갈 수 있다. 가는 내내 안전거리를 지키는지 본다
         worst = [math.inf]
 
         def check():

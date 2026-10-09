@@ -40,10 +40,20 @@ from .approach import ApproachPlan, node_id_of, parse_node_id, plan_approach, pl
 from .drive_graph import DirPos, access_point
 from .drivers import DriverError, build_driver
 from .geo import FRAME, bearing_deg
+from .profiles import get as get_profile
 from .roads import RoadNetwork, RoadPos, Route, plan_speeds
 
 ACTIVE = ("STARTED", "IN_PROGRESS")
 DANGER_MEANING = "자동 이탈 불가 상태 (안전 확보 완료 아님). 도로를 따라 제동·정지, 자동 재출발 없음, 운영자 개입 필요"
+
+
+class PlacementError(Exception):
+    """소속 거점에 차량을 둘 도로 출입 지점·대기 위치가 없다."""
+
+
+def config_station_m():
+    from .drive_graph import STATION_SEARCH_M
+    return STATION_SEARCH_M
 
 
 class HttpError(Exception):
@@ -75,13 +85,22 @@ class Vehicle:
         self.cfg, self.net, self.fire_source, self.clock, self.store = cfg, net, fire_source, clock, store
         self.resource_id = cfg["resource_id"]
         self.resource_type = cfg.get("resource_type", "UGV")
+        # 차량 특성 (차체·회전반경·속도·가감속). 경로 탐색·회전 가능성·차체 검사·속도 계획을 이 값으로 한다
+        self.profile = get_profile(cfg.get("profile") or ("adair_firetruck" if self.resource_type == "FIRE_TRUCK"
+                                                          else "adair_ugv"))
+        self.graph = net.graph_for(self.profile)
+        self.cmd_latency_s = float(cfg.get("cmd_latency_s", config.CMD_LATENCY_S))
         st = config.load_station(cfg["station_base_id"])
         sx, sy = FRAME.to_xy(st["lat"], st["lon"])
         nearest = net.snap(sx, sy)
         # 소방서 좌표와 차량 출입 지점을 구분한다. 좌표에서 가장 가까운 도로가 막다른 길일 수 있다 (drive_graph.access_point)
-        acc = access_point(net, st["base_id"])
+        acc = access_point(net, st["base_id"], graph=self.graph, slot=int(cfg.get("station_slot", 0)),
+                           slot_lengths=cfg.get("slot_lengths"))
         if acc is None:
-            acc = (nearest, 0.0, "소방서 좌표에서 가장 가까운 도로 (거점 노드 없음 — 출입 지점 미검증)")
+            # 임의의 먼 도로에 두지 않는다 — 배치 불가로 보고 (Fleet 가 이 차량을 빼고 사유를 남긴다)
+            raise PlacementError(f"{self.resource_id}: 소방서 {st['base_id']} 좌표 {config_station_m():g} m 안에 출입 지점 없음 "
+                                 f"(양방향·서로 오갈 수 있는 도로·차량 {self.profile.name} 급커브 아님 조건) 또는 대기 위치 "
+                                 f"{cfg.get('station_slot', 0)} 를 겹치지 않게 둘 도로 길이 없음")
         self.access: RoadPos = acc[0]
         self.access_heading = acc[1] if acc[1] is not None else 0.0
         self.station = {"base_id": st["base_id"], "name": st.get("name"), "lat": st["lat"], "lon": st["lon"],
@@ -94,7 +113,7 @@ class Vehicle:
         init = cfg.get("initial", "STATION")
         start = self.access if init == "STATION" else net.snap_ll(init["lat"], init["lon"])
         heading = self.access_heading if init == "STATION" else float(init.get("heading_deg", 0.0))
-        self.driver = build_driver(cfg, (start.x, start.y), clock, heading)
+        self.driver = build_driver(cfg, (start.x, start.y), clock, heading, self.profile)
         self.lock = asyncio.Lock()
         self.state = "IDLE"
         self.fault: Optional[str] = None
@@ -112,6 +131,8 @@ class Vehicle:
         self._drive_started_sim = None
         self._task: Optional[asyncio.Task] = None
         self.last_clearance_m = None
+        self.last_stop: dict = {}
+        self.danger: Optional[dict] = None
 
     # ------------------------------------------------------------------ 수명
     async def start(self):
@@ -176,7 +197,7 @@ class Vehicle:
             return None, 0.0, "COMMUNICATION_FAILURE: 차량 위치 없음"
         pos = self.net.snap(tel.x, tel.y)
         hd = self._plan_heading(tel)
-        dp = self.net.graph.dirpos(pos, hd if hd is not None else tel.heading_deg)
+        dp = self.graph.dirpos(pos, hd if hd is not None else tel.heading_deg)
         if dp is None:
             return None, tel.speed_mps, f"WRONG_WAY_ON_ONEWAY: 일방통행 도로 {pos.road_id} 를 거꾸로 향함"
         v = max(tel.speed_mps, 0.0)
@@ -185,7 +206,7 @@ class Vehicle:
         if hd is not None:
             _, i = _dist_to_polyline(tel.x, tel.y, self.speed.pts)
             prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
-        return self.net.graph.project(dp, v * config.CMD_LATENCY_S, prefer), v, None
+        return self.graph.project(dp, v * self.cmd_latency_s, prefer), v, None
 
     def current_task(self) -> Optional[dict]:
         t = self.store.tasks.get(self.task_key) if self.task_key else None
@@ -212,7 +233,7 @@ class Vehicle:
                 raise HttpError(422, "target(lat, lon) 또는 target_node 필요")
             tgt = dict(zip(("lat", "lon"), fixed.ll()))
         return plan_approach(self.net, fire, start, float(tgt["lat"]), float(tgt["lon"]), v0=v0, access=self.access,
-                             fixed_dest=fixed)
+                             fixed_dest=fixed, graph=self.graph)
 
     def _target_node(self, plan: ApproachPlan) -> Optional[dict]:
         if plan.dest is None:
@@ -236,7 +257,7 @@ class Vehicle:
             return {**base, "verdict": "REJECT", "eta_sec": None, "reason": "TARGET_UNREACHABLE",
                     "detail": f"{plan.status}: {plan.reason}", "target_node": None, "path": None,
                     "approach": plan.report()}
-        sp = plan_speeds(plan.route, v0)
+        sp = plan_speeds(plan.route, v0, profile=self.profile)
         out = {**base, "verdict": "ACCEPT", "eta_sec": int(round(sp.eta_s)), "reason": None, "detail": None,
                "target_node": self._target_node(plan), "path": plan.route.road_ids, "approach": plan.report()}
         if self.current_task():
@@ -290,7 +311,7 @@ class Vehicle:
             if already:
                 # 이미 목적지 도착 반경 안에 서 있다 → 주행하지 않고 바로 도착 처리
                 # (길이 0 경로로 출발시키면 차가 움직이지 않아 정지 고장(STALLED)이 된다, 2026-10-10 실서버 시험)
-                self.plan, self.speed = plan, plan_speeds(plan.route, 0.0)
+                self.plan, self.speed = plan, plan_speeds(plan.route, 0.0, profile=self.profile)
                 seq = self.driver.progress().mission_seq
             else:
                 try:
@@ -322,8 +343,13 @@ class Vehicle:
             return resp
 
     async def _drive(self, plan: ApproachPlan, state="DRIVING") -> int:
+        # 실행 경계의 최종 확인: 최종 검증(approach.verify_route)을 통과한 경로만 드라이버로 보낸다.
+        # 검사 결과를 보고에만 싣고 실행은 하는 우회를 막는다 (2026-10-10 검토 — 예전 화재 이탈이 그랬다)
+        chk = (plan.detail or {}).get("route_check") or {}
+        if chk.get("ok") is not True:
+            raise DriverError(f"UNVERIFIED_ROUTE: 최종 경로 검사 통과 기록 없음 ({plan.mode}, route_check={chk.get('ok')})")
         t = self.driver.telemetry()
-        self.speed = plan_speeds(plan.route, t.speed_mps if t else 0.0)
+        self.speed = plan_speeds(plan.route, t.speed_mps if t else 0.0, profile=self.profile)
         self.plan = plan
         self.seq = await self.driver.follow(self.speed.items)
         self.state = state
@@ -332,38 +358,59 @@ class Vehicle:
         self._drive_started_sim = self.clock.now()
         return self.seq
 
-    async def _safe_stop(self):
+    async def _safe_stop(self) -> dict:
         """도로를 따라 감속 정지. 남은 계획 경로가 있으면 그것을, 없으면 진행 방향 도로를 따라 제동거리만큼 간다.
-        즉시 멈춘다고 가정하지 않는다. 도로 위치·방향을 모르면 드라이버 기본 정지(진행 방향 직선)로 물러선다."""
+        즉시 멈춘다고 가정하지 않는다. 도로 위치·방향을 모르면 드라이버 기본 정지(진행 방향 직선)로 물러선다.
+        정지 경로가 제동거리보다 짧거나(short) 회전반경·차체 도로 포함 검사를 통과하지 못하면(drivable=false) 그 사실을
+        돌려주고 기록한다 — 정지 명령은 그래도 보낸다 (다른 선택지가 없다). 정지가 안전 확보를 뜻하지 않는다."""
+        info = {}
         try:
             tel = self.driver.telemetry()
-            items, info = None, {}
+            items = None
             if tel is not None and tel.speed_mps >= 0.3:
                 v = tel.speed_mps
-                need = v * v / (2 * config.DECEL_MPS2) + config.STOP_MARGIN_M
-                g = self.net.graph
+                need = self.profile.stop_distance(v)
+                g = self.graph
                 prefer = None
                 if self.speed is not None and self._plan_heading(tel) is not None:
                     _, i = _dist_to_polyline(tel.x, tel.y, self.speed.pts)
                     prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
                 pos = self.net.snap(tel.x, tel.y)
                 dp = g.dirpos(pos, tel.heading_deg) if prefer is None else None
+                info = {"basis": "NO_ROAD_DIRECTION", "needed_m": round(need, 1), "speed_mps": round(v, 2)}
                 if prefer is not None or dp is not None:
                     pts, got = g.stop_path(dp, need, prefer)
                     if len(pts) >= 2 and got > 1.0:
-                        route = Route(pts, [config.MAX_SPEED_MPS] * len(pts), [], pos, pos, 0.0)
-                        items = plan_speeds(route, v).items
+                        route = Route(pts, [self.profile.max_speed_mps] * len(pts), [], pos, pos, 0.0)
+                        items = plan_speeds(route, v, profile=self.profile).items
+                        chk = g.check_route(pts, label="STOP_PATH")
                         info = {"basis": "PLANNED_ROUTE" if prefer else "ROAD_AHEAD", "length_m": round(got, 1),
-                                "needed_m": round(need, 1), "short": got < need - 0.5, "speed_mps": round(v, 2)}
+                                "needed_m": round(need, 1), "short": got < need - 0.5, "speed_mps": round(v, 2),
+                                "drivable": chk["ok"], "steering_violations": chk["steering_violations"],
+                                "body_violations": chk["body_violations"], "worst_excess_m": chk["worst_excess_m"]}
             if items:
                 self.seq = await self.driver.follow(items)
             else:
                 self.seq = await self.driver.stop()
-                info = info or {"basis": "DRIVER_DEFAULT"}
+                info = {**info, "basis": info.get("basis", "STANDSTILL") if tel is not None and tel.speed_mps < 0.3
+                        else "DRIVER_DEFAULT (진행 방향 직선 — 도로를 따르지 않을 수 있음)"}
+                if tel is not None and tel.speed_mps >= 0.3:
+                    info["drivable"] = None
             self.state = "STOPPING"
+            problems = []
+            if info.get("short"):
+                problems.append(f"정지 경로 {info['length_m']} m < 필요 {info['needed_m']} m")
+            if info.get("drivable") is False:
+                problems.append("정지 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함")
+            if info.get("drivable") is None and "DRIVER_DEFAULT" in str(info.get("basis")):
+                problems.append("도로 방향을 몰라 직선 정지")
+            info["problems"] = problems
             self._event("STOP_PATH", **info)
         except DriverError as e:
+            info = {"basis": "FAILED", "problems": [f"정지 명령 실패: {e}"]}
             self._event("STOP_FAILED", detail=str(e))
+        self.last_stop = info
+        return info
 
     def _finish(self, key, status, *, error=None, physical_state=None, mission_result=None):
         t = self.store.tasks.get(key)
@@ -412,6 +459,7 @@ class Vehicle:
             else:
                 released = self.fault
                 self.fault = None
+                self.danger = None
                 if self.state in ("FAULT", "DANGER"):
                     self.state = "IDLE"
                 await self._safe_stop()                # 멈춰 있으면 드라이버가 제자리 정지로 처리한다
@@ -528,7 +576,7 @@ class Vehicle:
         here, v0, err = self.here_state()
         plan = None if here is None else plan_approach(
             self.net, self.fire_source.area(), here, float(self.target_ll["lat"]), float(self.target_ll["lon"]),
-            v0=v0, access=self.access)
+            v0=v0, access=self.access, graph=self.graph)
         rec = {"sim_time_s": round(self.clock.now(), 2), "why": why, "result": plan.status if plan else "NO_START_STATE",
                "approach": plan.report() if plan else {"reason": err}}
         t.setdefault("replans", []).append(rec)
@@ -561,23 +609,16 @@ class Vehicle:
         async with self.lock:
             if here_c < config.FIRE_STANDOFF_M:
                 here, v0, err = self.here_state()
-                ev = plan_evasion(self.net, fire, here, v0=v0, access=self.access) if here is not None else None
+                ev = plan_evasion(self.net, fire, here, v0=v0, access=self.access, graph=self.graph) if here is not None else None
                 if ev is None or ev.status != "OK":
                     # 자동 이탈 불가 — 안전 확보가 아니다. 도로를 따라 제동하고 운영자 개입을 요청한다 (자동 재출발 없음)
-                    self.gen += 1
-                    await self._safe_stop()
-                    self.fault = f"NO_SAFE_EVASION_ROUTE: 화재 경계 {here_c:.0f} m" + (f" ({err})" if err else "")
-                    if self.current_task():
-                        self._finish(self.task_key, "FAILED", error=self.fault, physical_state="DANGER")
-                    self.state = "DANGER"
-                    self._event("DANGER", clearance_m=round(here_c, 1), evasion=ev.report() if ev else {"reason": err},
-                                meaning=DANGER_MEANING, operator_action_required=True)
+                    await self._enter_danger(here_c, ev, err)
                     return
                 self.gen += 1
                 try:
                     await self._drive(ev, state="EVADING")
                 except DriverError as e:
-                    self._fail("EVASION_START_FAILED", str(e))
+                    await self._enter_danger(here_c, ev, f"EVASION_START_FAILED: {e}")
                     return
                 self._event("EVADING", clearance_m=round(here_c, 1), evasion=ev.report())
                 return
@@ -587,6 +628,23 @@ class Vehicle:
                 if c < config.FIRE_STANDOFF_M and self.current_task():
                     self.gen += 1
                     await self._replan_task(self.current_task(), f"ROUTE_CLEARANCE_{c:.0f}M")
+
+    async def _enter_danger(self, here_c, ev, err=None):
+        """DANGER: 실행 가능한 이탈 경로 없음 → 도로를 따라 가능한 범위에서 감속 정지 + 운영자 개입 요청.
+        정지가 탈출·안전 확보를 뜻하지 않는다. 정지 경로의 길이 부족·주행 불가도 함께 보고한다."""
+        self.gen += 1
+        stop = await self._safe_stop()
+        why = (ev.reason if ev is not None and ev.reason else None) or err or "UNKNOWN"
+        self.fault = f"NO_SAFE_EVASION_ROUTE: 화재 경계 {here_c:.0f} m (안전거리 {config.FIRE_STANDOFF_M:g} m 안), {why}"
+        if stop.get("problems"):
+            self.fault += " / 정지: " + "; ".join(stop["problems"])
+        if self.current_task():
+            self._finish(self.task_key, "FAILED", error=self.fault, physical_state="DANGER")
+        self.state = "DANGER"
+        self.danger = {"clearance_m": round(here_c, 1), "evasion": ev.report() if ev else {"reason": err},
+                       "stop_path": stop, "meaning": DANGER_MEANING, "operator_action_required": True,
+                       "failure_reasons": [why] + stop.get("problems", [])}
+        self._event("DANGER", **self.danger)
 
     # ------------------------------------------------------------------ 상태
     def state_view(self) -> dict:
@@ -608,6 +666,7 @@ class Vehicle:
             "operator_intervention": {
                 "required": self.state in ("FAULT", "DANGER"), "reason": self.fault,
                 "meaning": DANGER_MEANING if self.state == "DANGER" else None,
+                "danger": self.danger if self.state == "DANGER" else None,
                 "release": "POST /ugv/{id}/stop — 차량 정지(0.2 m/s 미만)·텔레메트리 확인 뒤에만 해제. 원격 운전 기능 없음"},
             "safety": {"fire_clearance_m": None if self.last_clearance_m is None or math.isinf(self.last_clearance_m)
                        else round(self.last_clearance_m, 1), "standoff_m": config.FIRE_STANDOFF_M,

@@ -1,0 +1,41 @@
+{
+ "defect1": [
+  {
+   "start_s_m": 5.0,
+   "status": "OK",
+   "reason": null,
+   "reported_check_ok": true,
+   "min_radius_m": 1.56,
+   "radius_violations_recorded": 13,
+   "independent_full_check_radius_violations": 13,
+   "approved_with_violation": true
+  },
+  {
+   "start_s_m": 36.0,
+   "status": "OK",
+   "reason": null,
+   "reported_check_ok": true,
+   "min_radius_m": 1.51,
+   "radius_violations_recorded": 3,
+   "independent_full_check_radius_violations": 3,
+   "approved_with_violation": true
+  },
+  {
+   "start_s_m": 72.0,
+   "status": "OK",
+   "reason": null,
+   "reported_check_ok": true,
+   "min_radius_m": 4.94,
+   "radius_violations_recorded": 0,
+   "independent_full_check_radius_violations": 0,
+   "approved_with_violation": false
+  }
+ ],
+ "defect2": {
+  "injected": "check_route 항상 실패",
+  "status": "OK",
+  "reason": null,
+  "would_execute": true,
+  "reported_check_ok": false
+ }
+}

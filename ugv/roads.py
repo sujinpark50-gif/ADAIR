@@ -68,6 +68,7 @@ class SpeedPlan:
     eta_s: float
     items: List[Tuple[float, float, float]]   # PX4 미션 지점 (x, y, 그 지점까지 구간 속도)
     v_max: float
+    max_chord_dev_m: float = 0.0              # 미션 지점을 이은 직선과 계획 선형의 최대 차이
 
 
 class RoadNetwork:
@@ -91,7 +92,7 @@ class RoadNetwork:
             self.roads[road.road_id] = road
             self.adj.setdefault(road.a, []).append((road.road_id, road.b))
             self.adj.setdefault(road.b, []).append((road.road_id, road.a))
-        self._graph = None
+        self._graphs = {}
         self._seg_index: Dict[Tuple[int, int], List[Tuple[str, int]]] = {}
         for rid, road in self.roads.items():
             for i, (p, q) in enumerate(zip(road.xy, road.xy[1:])):
@@ -101,11 +102,17 @@ class RoadNetwork:
 
     @property
     def graph(self):
-        """방향 경로 그래프 (진행 방향 유지·회전 가능성). 처음 쓸 때 만든다."""
-        if self._graph is None:
+        """기본 UGV 특성의 방향 경로 그래프 (진행 방향 유지·회전 가능성). 처음 쓸 때 만든다."""
+        from .profiles import DEFAULT_PROFILE
+        return self.graph_for(DEFAULT_PROFILE)
+
+    def graph_for(self, profile):
+        """차량 특성별 방향 경로 그래프 — 회전 가능성·급커브·차체 검사는 차량 치수·회전반경으로 따로 계산한다."""
+        g = self._graphs.get(profile.name)
+        if g is None:
             from .drive_graph import DriveGraph
-            self._graph = DriveGraph(self)
-        return self._graph
+            g = self._graphs[profile.name] = DriveGraph(self, profile)
+        return g
 
     # ------------------------------------------------------------------ 위치
     _CELL = 200.0
@@ -239,11 +246,13 @@ def _curvature(pts, cum, i, w):
     return 0.0 if den <= 1e-9 else 2.0 * area2 / den
 
 
-def plan_speeds(route: Route, v0: float = 0.0, *, lat_accel=None, accel=None, decel=None,
+def plan_speeds(route: Route, v0: float = 0.0, *, profile=None, lat_accel=None, accel=None, decel=None,
                 spacing=None, turn_deg=None) -> SpeedPlan:
-    """곡선·도착 구간 감속을 반영한 속도 계획과 PX4 미션 지점."""
-    lat_accel = lat_accel or config.LAT_ACCEL_MPS2
-    accel, decel = accel or config.ACCEL_MPS2, decel or config.DECEL_MPS2
+    """곡선·도착 구간 감속을 반영한 속도 계획과 PX4 미션 지점. profile(ugv/profiles.py) 의 횡가속·가감속·최고속도를 쓴다."""
+    if profile is None:
+        from .profiles import DEFAULT_PROFILE as profile
+    lat_accel = lat_accel or profile.lat_accel_mps2
+    accel, decel = accel or profile.accel_mps2, decel or profile.decel_mps2
     spacing, turn_deg = spacing or config.ITEM_SPACING_M, turn_deg or config.ITEM_TURN_DEG
     pts, vl = _densify(route.pts, route.vlim)
     cum = [0.0]
@@ -252,7 +261,7 @@ def plan_speeds(route: Route, v0: float = 0.0, *, lat_accel=None, accel=None, de
     v = []
     for i in range(len(pts)):
         k = _curvature(pts, cum, i, config.CURVE_WINDOW_M)
-        v.append(min(vl[i], math.sqrt(lat_accel / k) if k > 1e-6 else math.inf))
+        v.append(min(vl[i], profile.max_speed_mps, math.sqrt(lat_accel / k) if k > 1e-6 else math.inf))
     v[0] = min(v[0], max(v0, 0.0)) if v0 > 0 else 0.0
     v[-1] = 0.0
     for i in range(1, len(v)):
@@ -262,12 +271,19 @@ def plan_speeds(route: Route, v0: float = 0.0, *, lat_accel=None, accel=None, de
     eta = 0.0
     for i in range(1, len(v)):
         eta += (cum[i] - cum[i - 1]) / max((v[i] + v[i - 1]) / 2, 0.5)
-    # PX4 미션 지점: 간격 상한 + 꺾이는 곳. 지점 속도 = 앞 지점부터 이 지점까지 계획 속도의 최소 (구간에 들어가기 전에 낮춘다)
-    items, last, last_hd = [], 0, None
+    # PX4 미션 지점: 간격 상한 + 꺾이는 곳 + 지점을 이은 직선이 계획 선형에서 ITEM_CHORD_TOL_M 넘게 벗어나기 전.
+    # PX4 는 지점 사이를 직선으로 잇는다 → 지점을 생략해 검사를 통과한 원호를 직선이 다시 가로지르지 않게 한다.
+    # 지점 속도 = 앞 지점부터 이 지점까지 계획 속도의 최소 (구간에 들어가기 전에 낮춘다)
+    def chord_dev(a, b):
+        return max((_seg_point_dist(pts[k], pts[a], pts[b]) for k in range(a + 1, b)), default=0.0)
+
+    items, last, last_hd, max_dev = [], 0, None, 0.0
     for i in range(1, len(pts)):
         hd = bearing_deg(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) if math.dist(pts[i], pts[i - 1]) > 0 else last_hd
         turn = 0.0 if last_hd is None or hd is None else abs((hd - last_hd + 180) % 360 - 180)
-        if i == len(pts) - 1 or cum[i] - cum[last] >= spacing or turn >= turn_deg:
+        bulge = i + 1 < len(pts) and chord_dev(last, i + 1) > config.ITEM_CHORD_TOL_M
+        if i == len(pts) - 1 or cum[i] - cum[last] >= spacing or turn >= turn_deg or bulge:
+            max_dev = max(max_dev, chord_dev(last, i))
             seg_v = min(v[last + 1:i + 1]) if i > last else v[i]
             if i == len(pts) - 1:
                 seg_v = min(v[last + 1:i]) if i - 1 > last else 1.0
@@ -275,4 +291,11 @@ def plan_speeds(route: Route, v0: float = 0.0, *, lat_accel=None, accel=None, de
             last, last_hd = i, hd
         elif last_hd is None:
             last_hd = hd
-    return SpeedPlan(pts, v, cum, eta, items, max(v) if v else 0.0)
+    return SpeedPlan(pts, v, cum, eta, items, max(v) if v else 0.0, round(max_dev, 3))
+
+
+def _seg_point_dist(q, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / L2))
+    return math.hypot(q[0] - a[0] - t * dx, q[1] - a[1] - t * dy)
