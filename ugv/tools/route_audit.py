@@ -7,7 +7,7 @@
     python -m ugv.tools.route_audit --seed 2 --pairs 1000
 
 수치
-  - 도로 수·길이·일방통행 수 (원자료 gpkg 를 직접 읽음, ugv/road_source.py. 자동차전용 도로 제외)
+  - 도로 수·길이·일방통행 수 (트윈 환경과 같은 gpkg 를 직접 읽음, ugv/road_source.py. 자동차전용 도로는 넣되 통행 안 함)
   - 막다른 노드: 원자료 범위(= 환경 격자 경계) 5 m 안 → CLIP_BOUNDARY (지도를 자른 자리), 나머지 → OTHER
     (실제 막다른 길인지, 자료에서 끊긴 길인지는 이 자료만으로 구분할 수 없다 — 미확인)
   - 회전: 일방통행을 지키고 같은 도로 되짚기를 뺀 회전 수, 그중 기하 검사(차체·추정 도로 폭)로 막힌 수
@@ -103,7 +103,7 @@ def main():
         FRAME_LL[n] = FRAME.to_ll(x, y)
     res = {"conditions": {
         "network": str(config.ROAD_GPKG.relative_to(ROOT)).replace("\\", "/"),
-        "excluded": net.excluded,
+        "counts": net.counts,
         "rules": "ugv/drive_graph.py: 같은 도로 즉시 되짚기 금지, 일방통행, 차체가 도로 안에 들어오는 회전만, 급커브 도로 제외",
         "vehicle": {"wheelbase_m": config.WHEELBASE_M, "steer_max_deg": config.STEER_MAX_DEG,
                     "body_m": [config.BODY_LENGTH_M, config.BODY_WIDTH_M], "r_min_rear_axle_m": round(R_MIN, 2)},

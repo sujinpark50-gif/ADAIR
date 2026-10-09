@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """ugv/road_source.py — 원자료 도로망(GeoPackage)을 직접 읽는다. 변환본 파일을 따로 두지 않는다.
 
-원자료: data/inje2019/roads/roads_clipped_2019.gpkg (표준 노드·링크, 환경 격자 범위로 잘림, EPSG:5186)
+원자료: environment/data/processed/roads_clipped.gpkg — 트윈 환경 도로 격자의 벡터 원본 (표준 노드·링크,
+  환경 격자 범위로 잘림, EPSG:5186). data/inje2019/roads/roads_clipped_2019.gpkg 와 링크·형상이 같다
+  (환경 쪽은 값이 문자열로 저장됐고 도로 이름 글자가 깨져 있다 → 이름은 쓰지 않아도 되는 표시용)
   - 링크 하나 = 도로 하나. 노드 = UP_FROM_NO(a) → UP_TO_NODE(b). 형상은 a → b 순서
   - 일방통행: ONEWAY=1 이면 a → b 만 (attrs.oneway = A_TO_B)
   - 차로 수: LANES / UP_LANES / DOWN_LANES. 도로 폭 추정에 쓴다 (drive_graph.est_half_width)
   - BARRIER·WIDTH 는 코드 의미·단위가 확인되지 않아 원본 값만 attrs 에 둔다
-  - 자동차전용 도로(AUTO_EXCLU=1, 이 범위에서는 서울양양고속도로)는 config.EXCLUDE_MOTORWAY 면 뺀다
+  - 링크는 모두 넣는다 (환경과 같은 도로 수). 자동차전용 도로(AUTO_EXCLU=1, 서울양양고속도로)는 attrs.motorway 로
+    표시하고 UGV 가 다니지 않는다 (drive_graph.allowed, config.UGV_ON_MOTORWAY)
   - 범위 경계에서 잘린 링크 끝은 원래 노드 번호를 쓰지 않는다. 경계 밖 같은 노드를 공유하던 다른 링크와 실제로는
     이어져 있지 않기 때문이다 (원자료에 12곳) → 'EDGE:<링크>:<a|b>' 노드로 따로 둔다
   - 제한속도: MAX_SPD 가 있으면 그 값, 없으면 도로 등급 기본값 (config.ROAD_RANK_SPEED_KMH)
@@ -59,6 +62,19 @@ def _gpkg_lines(blob: bytes) -> List[Tuple[float, float]]:
     return out
 
 
+def _int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _name(v) -> str:
+    """도로 이름 (표시용). 인코딩이 깨진 값('?' 뿐)은 버린다."""
+    v = (v or "").strip()
+    return "" if not v or set(v) <= {"?"} else v
+
+
 def load(path=None) -> dict:
     """{"nodes": {id: (lat, lon)}, "roads": [...], "clip_extent": {...}, "source": 파일명, "excluded": {...}}"""
     from rasterio.warp import transform           # 좌표계 변환 (EPSG:5186 → WGS84)
@@ -68,16 +84,17 @@ def load(path=None) -> dict:
     try:
         table, minx, miny, maxx, maxy, srs = db.execute(
             "select table_name, min_x, min_y, max_x, max_y, srs_id from gpkg_contents where data_type='features'").fetchone()
-        rows = db.execute(f"select {', '.join(COLUMNS)} from \"{table}\"").fetchall()
+        have = {r[1] for r in db.execute(f"pragma table_info(\"{table}\")")}
+        cols = [c if c in have else f"NULL AS {c}" for c in COLUMNS]     # 없는 열(예: MAX_SPD)은 비운다
+        rows = db.execute(f"select {', '.join(cols)} from \"{table}\"").fetchall()
     finally:
         db.close()
 
-    links, excluded = [], {"motorway": 0}
+    links, counts = [], {"links": len(rows), "motorway": 0}
     for row in rows:
         rec = dict(zip(COLUMNS, row))
-        if config.EXCLUDE_MOTORWAY and str(rec["AUTO_EXCLU"]) == "1":
-            excluded["motorway"] += 1
-            continue
+        if str(rec["AUTO_EXCLU"]) == "1":
+            counts["motorway"] += 1
         pts = _gpkg_lines(rec.pop("geom"))
         if len(pts) >= 2:
             links.append((rec, pts))
@@ -108,13 +125,15 @@ def load(path=None) -> dict:
             vmax = float(rec["MAX_SPD"] or 0)
         except ValueError:
             vmax = 0.0
-        rank = int(rec["ROAD_RANK"] or 0)
+        rank = int(float(rec["ROAD_RANK"] or 0))
         speed = vmax if vmax > 0 else config.ROAD_RANK_SPEED_KMH.get(rank, min(config.ROAD_RANK_SPEED_KMH.values()))
-        roads.append({"road_id": lid, "node_a": a, "node_b": b, "name": rec["ROAD_NAME"] or "", "speed_kmh": speed,
+        roads.append({"road_id": lid, "node_a": a, "node_b": b, "name": _name(rec["ROAD_NAME"]), "speed_kmh": speed,
                       "xy5186": pts,
-                      "attrs": {"oneway": "A_TO_B" if str(rec["ONEWAY"]) == "1" else "BOTH", "lanes": rec["LANES"],
-                                "up_lanes": rec["UP_LANES"], "down_lanes": rec["DOWN_LANES"], "road_rank": rank,
-                                "barrier_code": rec["BARRIER"], "width_code": rec["WIDTH"]}})
+                      "attrs": {"oneway": "A_TO_B" if str(rec["ONEWAY"]).strip() in ("1", "1.0") else "BOTH",
+                                "lanes": _int(rec["LANES"]), "up_lanes": _int(rec["UP_LANES"]),
+                                "down_lanes": _int(rec["DOWN_LANES"]), "road_rank": rank,
+                                "barrier_code": rec["BARRIER"], "width_code": rec["WIDTH"],
+                                "motorway": str(rec["AUTO_EXCLU"]) == "1"}})
 
     # 좌표 변환 한 번에
     flat = [p for r in roads for p in r["xy5186"]] + list(node_xy.values())
@@ -129,5 +148,5 @@ def load(path=None) -> dict:
     for nid in node_xy:
         nodes[nid] = (lats[k], lons[k])
         k += 1
-    return {"source": str(path), "nodes": nodes, "roads": roads, "excluded": excluded,
+    return {"source": str(path), "nodes": nodes, "roads": roads, "counts": counts,
             "clip_extent": {"min_x": minx, "min_y": miny, "max_x": maxx, "max_y": maxy, "srs_id": srs}}

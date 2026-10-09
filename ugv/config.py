@@ -15,9 +15,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UGV_DIR = Path(__file__).resolve().parent
 STATIONS_JSON = Path(os.getenv("UGV_STATIONS_JSON", ROOT / "environment" / "config" / "fire_stations.json"))
-# 도로망 원자료 (ugv/road_source.py 가 직접 읽는다. 변환본 파일 없음)
-ROAD_GPKG = Path(os.getenv("UGV_ROAD_GPKG", ROOT / "data" / "inje2019" / "roads" / "roads_clipped_2019.gpkg"))
-EXCLUDE_MOTORWAY = os.getenv("UGV_EXCLUDE_MOTORWAY", "1") == "1"   # 자동차전용 도로(AUTO_EXCLU=1)는 UGV 가 쓰지 않는다
+# 도로망: 트윈 환경과 같은 도로 자료를 읽는다 (ugv/road_source.py 가 직접 읽는다. 변환본 파일 없음).
+# 트윈 환경 설정 scenario_whatif_2019_legacy.yaml 의 도로 격자(data/processed/roads_raster.tif)를 만든 벡터 원본.
+# 링크 901개를 모두 도로망에 넣는다 (환경과 같은 도로 수). 자동차전용 도로는 넣되 UGV 는 다니지 않는다
+ROAD_GPKG = Path(os.getenv("UGV_ROAD_GPKG", ROOT / "environment" / "data" / "processed" / "roads_clipped.gpkg"))
+UGV_ON_MOTORWAY = os.getenv("UGV_ON_MOTORWAY", "0") == "1"   # 자동차전용 도로(AUTO_EXCLU=1) 통행 (기본 안 함)
 # 제한속도가 원자료에 없을 때 도로 등급(ROAD_RANK)별 값 (km/h). 실제 경로 속도는 MIN_ROAD_SPEED_KMH~MAX_SPEED 로 묶인다
 ROAD_RANK_SPEED_KMH = {101: 100, 102: 80, 103: 80, 104: 60, 105: 60, 106: 60, 107: 50, 108: 30}
 STATE_DIR = Path(os.getenv("UGV_STATE_DIR", UGV_DIR / ".state"))

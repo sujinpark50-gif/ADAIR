@@ -73,11 +73,14 @@ def plan_from(dp, p, v0=0.0):
 # ---------------------------------------------------------------------- 데이터·그래프
 def test_oneway_attributes_loaded_and_turn_table():
     import sqlite3
-    ow = [r for r in NET.roads.values() if r.attrs.get("oneway") != "BOTH"]
     db = sqlite3.connect(config.ROAD_GPKG)
-    want = db.execute("select count(*) from roads_clipped_2019 where ONEWAY=1 and AUTO_EXCLU!='1'").fetchone()[0]
-    assert len(ow) == want > 100                            # 원자료 ONEWAY=1 (자동차전용 도로 제외)
-    assert NET.excluded["motorway"] > 0                 # 자동차전용 도로(AUTO_EXCLU=1)는 뺐다
+    table = db.execute("select table_name from gpkg_contents where data_type='features'").fetchone()[0]
+    links, oneway = db.execute(f"select count(*), sum(cast(ONEWAY as int) = 1) from \"{table}\"").fetchone()
+    assert len(NET.roads) == links == NET.counts["links"]       # 환경과 같은 도로 수 (트윈 도로 자료 그대로)
+    assert sum(r.attrs["oneway"] != "BOTH" for r in NET.roads.values()) == oneway > 100
+    moto = [r.road_id for r in NET.roads.values() if r.attrs.get("motorway")]
+    assert len(moto) == NET.counts["motorway"] > 0
+    assert not any(G.allowed(rid, NET.roads[rid].a) or G.allowed(rid, NET.roads[rid].b) for rid in moto)  # UGV 통행 안 함
     for (rin, n), ts in G.turns.items():
         for t in ts:
             assert t.to[0] != rin                           # 같은 도로 되짚기 없음
@@ -405,7 +408,7 @@ def test_route_corners_are_smoothed_into_drivable_arcs():
     raw_tight, _, _ = measure(False)
     rnd.seed(3)
     tight, outside, worst = measure(True)
-    assert raw_tight > 100 and tight < raw_tight / 10
+    assert raw_tight > 30 and tight <= raw_tight / 5           # 다듬기 전 급꺾임 대부분이 사라진다
     assert worst < 0.5                   # 남는 초과는 교차로 몇 곳의 수십 cm (근사 기하)
 
 

@@ -26,7 +26,7 @@ python run_integrated.py            # 기본 8스텝 (python run_integrated.py 1
 | UAV | 김동현 | `uav/uav-agent` **FastAPI 서버(MockDrone)를 서브프로세스로 기동**(포트 8000·8001).<br>이원규님 실제 HTTP 커넥터가 `/evaluate`·`/execute`를 **진짜 HTTP로 호출**. |
 | UGV | — | **원자료 도로망(roads_clipped_2019.gpkg 직접 읽기) + 진행 방향 유지 경로**로 도달성·ETA·도로차단 재탐색.<br>통합 실행은 in-process(`bridge_ugv`), UGV 서버(`ugv/server.py`, :8100)는 `UGV_CONNECTION_MODE="real"`로 전환 가능. |
 | 통합·재평가 | 이원규 | `main.process_task`의 폐루프·재평가·Decision ID를 그대로 사용. |
-| 총괄·Safety | 박수진 | 폐루프는 계약 기반 Mock 후보선택(**UAV만 후보**)·Safety 분기.<br>Orchestrator v0.1.2(`orchestrator_v012/`, UAV→UGV 전환 포함)는 병합됐으나 폐루프 연결은 합의 대기. |
+| 총괄·Safety | 박수진 | 폐루프는 계약 기반 Mock 후보선택(**UAV만 후보**)·Safety 분기.<br>총괄 오케스트레이터는 `orchestrator/`. |
 
 실행하면 다음이 순서대로 보입니다:
 1. UAV 서버 2대 기동 → 준비 완료 로그

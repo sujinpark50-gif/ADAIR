@@ -155,7 +155,7 @@ class LocalResponse:
     counter_constraint: Optional[dict] = None   # COUNTER일 때 제한조건 (〃)
     # 판정 근거 (박수진님 문서 H "판정 근거 — 공통 타입에서 정보 생략" 항목)
     # Local Agent 가 판단에 쓴 근거를 버리지 않고 총괄·로그로 전달한다. ETA 도 여기(eta_sec 키)에 담는다.
-    # 정식 eta_sec 필드 추가(R01)는 총괄 설계(orchestrator_v012 의 UavEvaluation 확장)와 맞물려 합의 대기.
+    # 정식 eta_sec 필드 추가(R01)는 총괄 설계와 맞물려 합의 대기.
     evidence: Optional[dict] = None             # UAV: eta_sec/constraints/detail, UGV: eta_sec/target_node/경로
 
 

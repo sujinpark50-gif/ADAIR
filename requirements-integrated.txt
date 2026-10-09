@@ -13,6 +13,6 @@ openai         # 총괄 오케스트레이터 LLM 호출(orchestrator/llm.py)·�
 # run_integrated.py 는 없어도 내장 산불 모델로 돌지만, 웹 관제판(web/app.py)과 DEM 실측 테스트에는 필수입니다.
 rasterio
 
-# 테스트: python -m pytest -q orchestrator_v012/tests
+# 테스트: python -m pytest -q orchestrator ugv/tests
 pytest
 scipy          # 멘토 패치 위성 피해지 분석(tools/burn_scar_s2.py) 시험

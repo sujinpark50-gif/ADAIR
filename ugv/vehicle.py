@@ -134,12 +134,14 @@ class Vehicle:
 
     def _reconcile_restart(self):
         def close(t):
+            # 실행 키 계약 (UGV-04): 재시작 전 진행 중이던 임무는 FAILED(AGENT_RESTARTED). 같은 키 재전송은 이 기록을 돌려준다
             t["status"] = "FAILED"
-            t["error"] = "AGENT_RESTART: 서버 재시작으로 주행 감시가 끊김 (차량 실제 상태는 텔레메트리로 다시 읽음)"
+            t["error"] = "AGENT_RESTARTED: 서버 재시작으로 주행 감시가 끊김 (차량 실제 상태는 텔레메트리로 다시 읽음)"
             t["physical_state"] = "UNKNOWN_AFTER_RESTART"
+            t["progress"] = {**(t.get("progress") or {}), "phase": "FAILED"}
+        basis = "SIM_DRIVER_RESET" if self.driver.kind == "sim" else "PX4_TELEMETRY_REREAD"
         self.store.reconcile_after_restart(
-            lambda t: t.get("resource_id") == self.resource_id and t.get("status") in ACTIVE, close,
-            basis=f"{self.driver.kind} driver restarted")
+            lambda t: t.get("resource_id") == self.resource_id and t.get("status") in ACTIVE, close, basis=basis)
 
     # ------------------------------------------------------------------ 보조
     def _event(self, kind, **kw):
@@ -250,7 +252,8 @@ class Vehicle:
                 t = self.store.tasks.get(key, {})
                 return {**meta["response"], "duplicate": True, "current_status": t.get("status")}
             if kind == "CONFLICT":
-                raise HttpError(409, f"EXECUTION_KEY_CONFLICT: 같은 task_id {key} 로 다른 내용이 이미 실행됨")
+                raise HttpError(409, {"reason": "EXECUTION_ID_CONFLICT",
+                                      "detail": f"같은 task_id {key} 로 다른 내용이 이미 실행됨"})
             if self.state in ("FAULT", "DANGER"):
                 raise HttpError(409, f"FAILSAFE_ACTIVE: {self.state} {self.fault} (/stop 으로 운영자 해제 필요)")
             start, v0, err = self.here_state()
@@ -297,7 +300,7 @@ class Vehicle:
             resp = {"task_id": key, "resource_id": self.resource_id, "status": "STARTED",
                     "tracking_url": f"/ugv/{self.resource_id}/task/{key}", "target_node": tn,
                     "eta_sec": int(round(self.speed.eta_s)), "approach": plan.report(),
-                    "superseded_task_id": prev}
+                    "superseded_task_id": prev, "duplicate": False}
             task = {"task_id": key, "decision_id": body.get("decision_id"), "resource_id": self.resource_id,
                     "status": "STARTED", "target": body.get("target"), "target_node": tn["node_id"] if tn else None,
                     "approach": plan.report(), "mission_result": "NOT_ARRIVED", "physical_state": "DRIVING",

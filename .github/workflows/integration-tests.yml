@@ -48,9 +48,6 @@ jobs:
       - name: INT-04·05 거점 좌표 단일 출처·관제판 시계 (환경 서버 읽기)
         run: python -m tests.int04_05_check
 
-      - name: Orchestrator v0.1.2 (박수진)
-        run: python -m pytest -q orchestrator_v012/tests
-
       - name: 총괄 오케스트레이터 (박수진) + 환경 계약 어댑터 (멘토 패치)
         run: python -m pytest -q orchestrator
 

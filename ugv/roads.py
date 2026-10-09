@@ -75,7 +75,7 @@ class RoadNetwork:
         from .road_source import load
         doc = load(path)
         self.source = doc["source"]
-        self.excluded = doc["excluded"]
+        self.counts = doc["counts"]
         self.clip_extent = doc["clip_extent"]
         self.nodes: Dict[str, Tuple[float, float]] = {n: FRAME.to_xy(*ll) for n, ll in doc["nodes"].items()}
         self.roads: Dict[str, Road] = {}

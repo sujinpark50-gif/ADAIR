@@ -168,7 +168,9 @@ class DriveGraph:
         return True
 
     def allowed(self, rid: str, frm: str) -> bool:
-        """도로 rid 에 frm 노드에서 들어가 달릴 수 있나 (일방통행·급커브)."""
+        """도로 rid 에 frm 노드에서 들어가 달릴 수 있나 (일방통행·급커브·자동차전용 도로)."""
+        if self.net.roads[rid].attrs.get("motorway") and not config.UGV_ON_MOTORWAY:
+            return False
         return rid not in self.sharp_roads and self.oneway_ok(rid, frm)
 
     def other(self, rid: str, node: str) -> str:
