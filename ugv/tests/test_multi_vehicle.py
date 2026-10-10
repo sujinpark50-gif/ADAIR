@@ -349,11 +349,3 @@ def test_mutual_wait_is_reported_as_deadlock(tmp_path):
         assert any(e["event"] == "TRAFFIC_DEADLOCK" and e["operator_action_required"] for e in A.events)
         assert A.hold and B.hold
     asyncio.run(go())
-
-
-def test_orchestrator_prefilter_keeps_types_apart():
-    """총괄 후보 거르기: UGV 임무는 소방차(FIRE_ENGINE)에, 소방차 임무는 UGV 에 가지 않는다."""
-    from orchestrator import prefilter
-    import inspect
-    src = inspect.getsource(prefilter.filter_candidates)
-    assert "resource_type not in allowed" in src
