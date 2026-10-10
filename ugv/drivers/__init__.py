@@ -6,7 +6,8 @@ def build_driver(vehicle_cfg: dict, start_xy, clock, heading_deg: float = 0.0, p
     kind = vehicle_cfg.get("driver", "sim")
     if kind == "px4":
         from .px4 import Px4Driver
-        return Px4Driver(vehicle_cfg["px4"]["address"], clock, decel_mps2=profile.decel_mps2 if profile else None)
+        return Px4Driver(vehicle_cfg["px4"]["address"], clock, decel_mps2=profile.decel_mps2 if profile else None,
+                         gazebo=bool(vehicle_cfg["px4"].get("gz_world")))      # Gazebo SITL 차량 (실차 설정에는 gz_world 가 없다)
     from .sim import SimDriver, ACCEL, DECEL
     if profile is None or profile.vehicle_kind == "UGV":
         return SimDriver(start_xy, clock, heading_deg)

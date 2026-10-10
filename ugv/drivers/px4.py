@@ -17,17 +17,18 @@
 
 import asyncio
 import math
+import os
 import time
 from typing import List, Optional
 
-from ..geo import FRAME
+from ..geo import FRAME, GZ_FRAME
 from .base import Driver, DriverError, Item, Progress, Telemetry
 
 START_RETRIES = 20
 PARK_AFTER_S = 1.0          # 미션 끝 + 0.3 m/s 미만이 이만큼 이어지면 시동을 꺼 정차 유지
 LEAD_BASE_M = 5.0           # 선행 지점 = 지금 위치에서 경로를 따라 LEAD_BASE_M + 속도 × LEAD_TIME_S 앞
 LEAD_TIME_S = 2.0           #   (업로드·시작에 걸리는 동안 지나쳐 뒤에 남지 않게. 뒤에 남으면 rover 가 되돌아간다)
-ACCEPT_M = 3.0              # 미션 지점 도착 반경
+ACCEPT_M = float(os.getenv("UGV_PX4_ACCEPT_M", "3.0"))   # 미션 지점 도착 반경 (airframe NAV_ACC_RAD 와 맞춘다. 환경변수는 시험용)
 START_RETRY_S = 0.5
 ARM_RETRIES = 15
 ARM_RETRY_S = 1.0
@@ -58,15 +59,17 @@ def _mission_item(lat, lon, speed, through):
     return MissionItem(latitude_deg=lat, longitude_deg=lon, relative_altitude_m=0.0, speed_m_s=speed,
                        is_fly_through=through, gimbal_pitch_deg=float("nan"), gimbal_yaw_deg=float("nan"),
                        camera_action=MissionItem.CameraAction.NONE, loiter_time_s=0.0,
-                       camera_photo_interval_s=0.0, acceptance_radius_m=3.0, yaw_deg=float("nan"),
+                       camera_photo_interval_s=0.0, acceptance_radius_m=ACCEPT_M, yaw_deg=float("nan"),
                        camera_photo_distance_m=0.0, vehicle_action=MissionItem.VehicleAction.NONE)
 
 
 class Px4Driver(Driver):
     kind = "px4"
 
-    def __init__(self, address: str, clock, connect_timeout_s: float = 30.0, decel_mps2=None):
+    def __init__(self, address: str, clock, connect_timeout_s: float = 30.0, decel_mps2=None, gazebo: bool = False):
         self.address, self.clock, self.connect_timeout_s = address, clock, connect_timeout_s
+        # Gazebo SITL 이면 Gazebo 와 같은 위경도 변환 (geo.GzEnuFrame — 도로 월드 좌표와 PX4 위치를 맞춘다). 실차는 FRAME
+        self.frame = GZ_FRAME if gazebo else FRAME
         self.decel_mps2 = decel_mps2
         self._sdk = self._tel = self._act = self._mis = None
         self._pos = self._vel = None
@@ -110,6 +113,18 @@ class Px4Driver(Driver):
         if not self.connected:
             raise DriverError("PX4_NO_POSITION")
         self._tasks.append(asyncio.create_task(self._park_watch()))
+
+    async def test_link(self, cut: bool) -> dict:
+        """시험용 (UGV_TEST_HOOKS=1): 이 차량의 MAVLink 연결만 끊거나 잇는다. 끊으면 이 차량의 MAVSDK 인스턴스를 닫아 서버는 이 차에
+        아무것도 보내지 못하고(하트비트 포함) PX4 는 지상국 연결 끊김(COM_DL_LOSS_T)으로 판단한다 — PX4 안의 MAVLink 모듈은 그대로라
+        실제 무선 단절과 같다. 마지막 텔레메트리는 그대로 남아 낡아 간다 (서버는 TELEMETRY_LOST 로 판단).
+        (remove_connection 만으로는 하트비트가 계속 나가 PX4 가 끊김을 몰랐다. PX4 MAVLink 인스턴스를 멈추는 방법은 dataman 읽기
+        시간 초과로 미션 추종이 흔들려 결과를 바꿨다, 2026-10-10)"""
+        if cut and self._sdk is not None:
+            await self.close()
+        elif not cut and self._sdk is None:
+            await self.start()
+        return {"linked": self._sdk is not None}
 
     async def _park_watch(self):
         """미션이 끝나고 멈춘 차의 시동을 끈다 (정차 유지). 다음 follow 가 다시 시동을 건다."""
@@ -185,7 +200,7 @@ class Px4Driver(Driver):
         if self._pos is None:
             return None
         import time
-        x, y = FRAME.to_xy(self._pos.latitude_deg, self._pos.longitude_deg)
+        x, y = self.frame.to_xy(self._pos.latitude_deg, self._pos.longitude_deg)
         v = math.hypot(self._vel.north_m_s, self._vel.east_m_s) if self._vel is not None else 0.0
         return Telemetry(x, y, self._pos.latitude_deg, self._pos.longitude_deg, v, self._heading, self._armed,
                          self._mode, self._pos_mono, self._pos.absolute_altitude_m)
@@ -216,7 +231,7 @@ class Px4Driver(Driver):
         self.last_sent = {"wall": time.time(), "here": [round(here[0], 2), round(here[1], 2)],
                           "items": [[round(x, 2), round(y, 2), round(v, 2), th] for x, y, v, th in sent]}
         for x, y, v, through in sent:
-            lat, lon = FRAME.to_ll(x, y)
+            lat, lon = self.frame.to_ll(x, y)
             plan.append(_mission_item(lat, lon, float(v), through=through))
         async with self._cmd:
             seq = self._prog.mission_seq + 1

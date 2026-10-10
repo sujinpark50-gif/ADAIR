@@ -935,7 +935,7 @@ SLOT_END_M = 35.0                # 대기 위치는 도로 끝(교차로)에서 
 
 
 def access_point(net: RoadNetwork, base_id: str, search_m: float = STATION_SEARCH_M, graph=None, slot: int = 0,
-                 slot_lengths: Optional[List[float]] = None):
+                 slot_lengths: Optional[List[float]] = None, taken_roads=None):
     """소속 거점의 차량 출입 지점(대기 위치): 소방서 좌표(environment/config/fire_stations.json)에서 가까운 도로 지점 중
     양방향 통행이고 두 방향 모두 가장 큰 강연결 성분(서로 오갈 수 있는 묶음)에 들며, 이 차량 특성(graph.p)으로 급커브가
     아닌 곳. 소방서 좌표와 따로 둔다 — 좌표에서 가장 가까운 도로가 막다른 길일 수 있다 (인제119: 약 44 m 떨어진 도로가 막다른 길).
@@ -943,6 +943,8 @@ def access_point(net: RoadNetwork, base_id: str, search_m: float = STATION_SEARC
     slot: 같은 거점의 k 번째 차량 — 조건 맞는 **서로 다른 도로** 중 k 번째로 가까운 도로 (2026-10-10). 같은 도로에 한 줄로
     세우면 중심선 주행이라 서로 비켜 갈 수 없어, 반대 방향으로 돌아온 앞 차가 뒤 차에 막혔다 (Gazebo 4대 시험).
     다른 도로가 모자라면 0 번 도로에서 진행 방향 뒤로 (앞 차량들 길이 + 간격) 물린 자리 (slot_lengths: 앞 차량 길이).
+    taken_roads: 같은 거점 앞 대기 위치들이 이미 쓴 도로 — 빼고 고른다. 차종마다 그래프(급커브·회전 가능)가 달라 'k 번째 도로' 가
+    차종마다 다르다 → 대기 위치 1 소방차와 대기 위치 2 UGV 가 같은 도로·같은 지점을 받았다 (2026-10-10 폐루프 시험 준비 중 발견).
     (RoadPos, 방위°, 설명) 또는 None (search_m 안에 조건 맞는 도로 없음 — 배치 불가)"""
     st = config.load_station(base_id)
     from .geo import FRAME
@@ -969,8 +971,16 @@ def access_point(net: RoadNetwork, base_id: str, search_m: float = STATION_SEARC
         ranked = [ranked[0]] + [v for v in ranked[1:] if g.road_is_spare(v[1].road_id, keep=first.road_id)
                                 and g.detour_ok(v[1].road_id, first)]
     note = ""
-    if slot < len(ranked):
-        d, p = ranked[slot]
+    n_spare = len(ranked)                           # 대기 위치로 쓸 수 있는 서로 다른 도로 수 (줄 서기 계산용)
+    pick = slot
+    if slot > 0 and taken_roads is not None:
+        # 번호 의미는 그대로 (k 번째 차량 = k 번째 도로). 앞 차량들이 쓴 예비 도로는 빼고, 그만큼 앞으로 당긴다
+        n_taken = sum(1 for v in ranked[1:] if v[1].road_id in taken_roads)
+        free = [v for v in ranked[1:] if v[1].road_id not in taken_roads]
+        ranked = [ranked[0]] + free
+        pick = slot - n_taken if slot - n_taken >= 1 else len(ranked)
+    if pick < len(ranked):
+        d, p = ranked[pick]
         r = net.roads[p.road_id]
         s_ = min(max(p.s, SLOT_END_M), r.length - SLOT_END_M)          # 교차로 원호 구간을 피해 도로 끝에서 떨어진 곳
         p = net.at(p.road_id, s_)
@@ -979,7 +989,7 @@ def access_point(net: RoadNetwork, base_id: str, search_m: float = STATION_SEARC
     else:
         d, p = ranked[0]
         own = g.p.body_length_m
-        k = slot - len(ranked) + 1
+        k = slot - n_spare + 1
         lens = list(slot_lengths or [own] * k)
         back = lens[0] / 2 + sum(lens[1:k]) + SLOT_GAP_M * k + own / 2
         if p.s - back < 5.0:

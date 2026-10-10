@@ -324,13 +324,74 @@ def test_stopped_vehicle_is_occupied_and_reported(tmp_path):
         X2, Y2 = f2.vehicles["X-ugv"], f2.vehicles["Y-ugv"]
         Y2._fail("VEHICLE_FAULT", "시험 주입 — 도로 위 고장 정지")
         await X2.execute(body("X2", *tgt))
+        # 고장 차는 스스로 움직이지 않는다 → 충돌을 예측하자마자 막힘 처리: 출발 도로라 우회 경로가 없다 → 기다리지 않고 임무 실패로
+        # 보고, 차는 그 앞 대기 지점에 선다 (2026-10-10 개선 전: 60 s 뒤 보고만 하고 임무는 끝없이 IN_PROGRESS 로 기다렸다)
         ok, w = await run(f2, clock2, 120)
         assert w["overlaps"] == 0 and w["min_gap_m"] > 1.0, w
-        assert X2.hold is not None and X2.hold["other"] == "Y-ugv" and X2.hold["kind"] == "STATIC"
-        assert f2.store.tasks["X2"]["status"] in ("STARTED", "IN_PROGRESS")     # 기다리는 중 (도착·고장 아님)
-        assert any(e["event"] == "TRAFFIC_BLOCKED_BY_VEHICLE" for e in X2.events)
-        assert X2.state == "DRIVING" and X2.fault is None
-        # 고장 차가 해제되어 비키면(여기서는 다른 곳으로 옮겼다고 가정할 수 없으므로) 기다림이 유지되는지만 본다
+        t = f2.store.tasks["X2"]
+        assert t["status"] == "FAILED" and t["error"].startswith("BLOCKED_BY_VEHICLE: Y-ugv"), t["error"]
+        assert t["physical_state"] == "STOPPED_BLOCKED" and t["blocked"][0]["result"] == "FAILED_NO_DETOUR"
+        assert X2.state == "IDLE" and X2.fault is None and X2.hold is None
+        ev = [e["event"] for e in X2.events]
+        assert ev.count("TRAFFIC_BLOCKED_BY_VEHICLE") == 1 and ev.count("TRAFFIC_BLOCKED_NO_DETOUR") == 1
+        assert "REPLANNED_AROUND_VEHICLE" not in ev
+        p0 = X2.driver.telemetry()
+        ok, w = await run(f2, clock2, 60)                       # 그 뒤 움직이지 않고, 막힘 처리를 되풀이하지 않는다
+        p1 = X2.driver.telemetry()
+        assert math.hypot(p1.x - p0.x, p1.y - p0.y) < 0.5 and p1.speed_mps < 0.2
+        assert [e["event"] for e in X2.events].count("TRAFFIC_BLOCKED_BY_VEHICLE") == 1
+        dist_y = math.hypot(p1.x - Y2.driver.telemetry().x, p1.y - Y2.driver.telemetry().y)
+        assert dist_y > (X2.profile.body_length_m + Y2.profile.body_length_m) / 2 + 1.0
+    asyncio.run(go())
+
+
+def test_vehicle_stopping_on_route_after_planning_is_bypassed(tmp_path):
+    """계획한 뒤에 경로 위(교차로 사이 도로)에 다른 차가 임무 없이 선다 → 막은 차가 스스로 움직이지 않을 차이므로 충돌을 예측하자마자
+    그 도로를 뺀 우회 경로로 다시 계획해(그 도로에 들어가기 전) 목적지에 간다. 우회는 한 번만."""
+    async def go():
+        A0 = {**FLEET_CFG[0], "resource_id": "X-ugv"}
+        probe, _ = make_fleet(tmp_path / "probe", [A0])
+        X0 = probe.vehicles["X-ugv"]
+        tgt = FRAME.to_ll(X0.access.x - 900, X0.access.y - 700)
+        await X0.execute(body("P1", *tgt))
+        route0 = X0.plan.route
+        mid = next(r for r in route0.road_ids[4:-1] if NET.roads[r].length > 60)
+        rm = NET.roads[mid]
+        far = {"lat": FRAME.to_ll(X0.access.x + 3000, X0.access.y + 3000)[0],
+               "lon": FRAME.to_ll(X0.access.x + 3000, X0.access.y + 3000)[1], "heading_deg": 0.0}
+        cfg = [A0, {**FLEET_CFG[2], "resource_id": "Y-ugv", "initial": far}]
+        f, clock = make_fleet(tmp_path / "a", cfg)
+        X, Y = f.vehicles["X-ugv"], f.vehicles["Y-ugv"]
+        await X.execute(body("X1", *tgt))
+        assert mid in X.plan.route.road_ids
+        # 계획 뒤 Y 가 그 도로 가운데에 선다 (임무 없음)
+        pm, q = NET.at(mid, rm.length / 2), NET.at(mid, rm.length / 2 + 1)
+        Y.driver.x, Y.driver.y = pm.x, pm.y
+        Y.driver.heading = bearing_deg(q.x - pm.x, q.y - pm.y)
+        ok, w = await run(f, clock, 900, until=done(f, "X1"))
+        assert ok and w["overlaps"] == 0 and w["min_gap_m"] > 1.0, w
+        t = f.store.tasks["X1"]
+        assert t["status"] == "COMPLETED", t
+        assert t["blocked"][0]["result"] == "REPLANNED" and t["blocked"][0]["blocked_road"] == mid
+        assert mid not in X.plan.route.road_ids
+        ev = [e["event"] for e in X.events]
+        assert ev.count("REPLANNED_AROUND_VEHICLE") == 1
+    asyncio.run(go())
+
+
+def test_repeated_block_by_same_vehicle_fails_instead_of_replanning_again(tmp_path):
+    """같은 임무에서 같은 차에 다시 막히면 또 다시 계획하지 않고 실패로 보고한다 (되풀이 재계획 방지)."""
+    async def go():
+        f, clock = make_fleet(tmp_path, [FLEET_CFG[0], FLEET_CFG[2]])
+        A = f.vehicles["A-ugv1"]
+        await A.execute(body("A1", *FRAME.to_ll(A.access.x - 900, A.access.y - 700)))
+        await run(f, clock, 10)
+        A.hold = {"s": A._s_now() + 20, "other": "B-ugv1", "kind": "STATIC", "since_sim": clock.now()}
+        f.store.tasks["A1"]["blocked"] = [{"other": "B-ugv1", "result": "REPLANNED"}]
+        await A.blocked_by_vehicle("B-ugv1", 15.0, True)
+        t = f.store.tasks["A1"]
+        assert t["status"] == "FAILED" and t["error"].startswith("BLOCKED_BY_VEHICLE")
+        assert t["blocked"][-1]["result"] == "FAILED_NO_DETOUR" and "REPEATED_BLOCK" in t["blocked"][-1]["why"]
     asyncio.run(go())
 
 
@@ -411,4 +472,35 @@ def test_vehicle_with_lost_telemetry_occupies_where_it_may_be(tmp_path):
         assert P.static and P.samples[-1][3] >= v * 10 + 20 - 6          # 경로를 따라 넓은 구간
         occ = AF.occupied_roads()
         assert len([r for r, who in occ.items() if who == "A-ugv1"]) >= 1
+    asyncio.run(go())
+
+
+def test_mutual_static_wait_is_broken_without_replan_loop(tmp_path):
+    """두 차가 서로를 '서 있는 차' 로 보고 기다리는 고리 (둘 다 임무 중 → 바로 처리하지 않고 TRAFFIC_BLOCK_REPORT_S 기다림).
+    60 s 뒤 막힘 처리로 고리가 풀리고, 충돌 판단이 계속 같아도 재계획을 되풀이하지 않는다 (같은 상대 한 번 → 그다음은 실패 보고)."""
+    from ugv.traffic import TRAFFIC_BLOCK_REPORT_S
+    async def go():
+        f, clock = make_fleet(tmp_path, [FLEET_CFG[0], FLEET_CFG[2]])
+        A, B = f.vehicles["A-ugv1"], f.vehicles["B-ugv1"]
+        await A.execute(body("A1", *FRAME.to_ll(A.access.x - 900, A.access.y - 700)))
+        await B.execute(body("B1", *FRAME.to_ll(B.access.x + 600, B.access.y + 900)))
+        await run(f, clock, 10)
+        tm = f.traffic
+        tm._first_conflict = lambda P, Q: ("STATIC", P.samples[-1], Q.samples[-1])
+        tm._decide = lambda kind, P, Q, a, b, prefer=None: (P, Q, max(P.s_now, a[3] - 5), "TEST")
+        for _ in range(int((TRAFFIC_BLOCK_REPORT_S + 90) / 0.5)):
+            clock.advance(0.5)
+            for v in (A, B):
+                v.driver.step(0.5)
+                await v.tick()
+            await tm.tick()
+        ev = {v.resource_id: [e["event"] for e in v.events] for v in (A, B)}
+        handled = {r: e.count("TRAFFIC_BLOCKED_BY_VEHICLE") for r, e in ev.items()}
+        replans = {r: e.count("REPLANNED_AROUND_VEHICLE") for r, e in ev.items()}
+        assert sum(handled.values()) >= 1                                   # 고리가 풀림 (처리됨)
+        assert all(n <= 1 for n in replans.values())                        # 같은 상대로 두 번 이상 다시 계획하지 않음
+        st = {k: f.store.tasks[k]["status"] for k in ("A1", "B1")}
+        assert any(s == "FAILED" for s in st.values()), st                  # 계속 막히면 결국 실패로 보고 (끝없이 기다리지 않음)
+        for k in ("A1", "B1"):
+            assert len(f.store.tasks[k].get("blocked", [])) <= 2
     asyncio.run(go())

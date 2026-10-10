@@ -28,6 +28,7 @@ resource_id 로 나뉘고 한 차량의 재시작 정리는 그 차량 기록만
 """
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -52,11 +53,18 @@ class Fleet:
         self.store = store or ExecStore(config.STATE_DIR / "ugv_tasks.json")
         self.vehicles = {}
         self.unplaced = {}                       # 배치 불가 차량: 사유 (소속 거점 출입 지점·대기 위치 없음)
-        for c in (vehicles_cfg or config.load_vehicles()):
+        cfgs = list(vehicles_cfg or config.load_vehicles())
+        # 같은 거점은 대기 위치 순서대로 두고, 앞 차량들이 쓴 대기 도로를 빼고 고른다 (drive_graph.access_point taken_roads)
+        taken, built = {}, {}
+        for c in sorted(cfgs, key=lambda c: (c.get("station_base_id", ""), int(c.get("station_slot", 0)))):
+            base = c.get("station_base_id")
             try:
-                self.vehicles[c["resource_id"]] = Vehicle(c, self.net, self.fire_source, self.clock, self.store)
+                v = Vehicle(c, self.net, self.fire_source, self.clock, self.store, taken_roads=set(taken.get(base, ())))
+                built[c["resource_id"]] = v
+                taken.setdefault(base, set()).add(v.access.road_id)
             except PlacementError as e:
                 self.unplaced[c["resource_id"]] = str(e)
+        self.vehicles = {c["resource_id"]: built[c["resource_id"]] for c in cfgs if c["resource_id"] in built}
 
         for v in self.vehicles.values():
             v.peers = (lambda me: (lambda: [x for x in self.vehicles.values() if x is not me]))(v)
@@ -133,6 +141,26 @@ def create_app(fleet: Optional[Fleet] = None, *, autostart: bool = True) -> Fast
             return await coro
         except HttpError as e:
             return JSONResponse({"detail": e.detail}, status_code=e.code)
+
+    if os.getenv("UGV_TEST_HOOKS") == "1":
+        @app.post("/ugv/{rid}/_test/link")
+        async def test_link(rid: str, body: dict = Body(default={})):
+            """시험용: 한 차량의 MAVLink 연결만 끊기/잇기 (Gazebo 다중 차량 링크 단절 시험). UGV_TEST_HOOKS=1 일 때만 있다."""
+            d = F().get(rid).driver
+            if not hasattr(d, "test_link"):
+                raise HTTPException(400, "px4 드라이버만")
+            return await d.test_link(bool((body or {}).get("cut", True)))
+
+    if os.getenv("UGV_TEST_HOOKS") == "1":
+        @app.post("/ugv/{rid}/_test/fault")
+        async def test_fault(rid: str, body: dict = Body(default={})):
+            """시험용: 주행 중 차량 고장 주입 (고장 기록 → 도로를 따라 정지 → FAULT). 폐루프 시험 (총괄 재판단·다른 자원 배정)."""
+            v = F().get(rid)
+            async with v.lock:
+                v._fail((body or {}).get("code") or "VEHICLE_FAULT", (body or {}).get("detail") or "시험 주입")
+                await v._safe_stop()
+                v.state = "FAULT"
+            return v.state_view()
 
     @app.get("/health")
     def health():

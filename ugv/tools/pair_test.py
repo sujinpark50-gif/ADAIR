@@ -8,6 +8,8 @@
 
 junction: 다른 거점 차량(A-ugv1·B-fire1)이 교차로 494928 로 각자 다른 도로에서 110 m 떨어져 출발 → 같은 도로 682501929 로 합류
           (X 목적지 170 m, Y 60 m). 기대: 늦게 오는 차가 교차로 앞에서 기다린다(YIELD), 차체 겹침 0, 간격 > 1 m.
+block:    교차로 배치에서 목적지를 바꿈 — A-ugv1 이 합류 도로 60 m 에 서고 B-fire1 은 그 너머 170 m 로. 기대: B-fire1 이 막힘 처리
+          (우회 경로로 다시 계획해 도착, 또는 우회가 없으면 기다리지 않고 BLOCKED_BY_VEHICLE 실패 보고 후 정지), 겹침 0, 재계획 1회 이하.
 head_on:  A-ugv1·A-fire1 이 공유 도로 683400826 양 끝에서 70 m 떨어져 출발, 서로 반대 방향으로 그 도로를 지나야 함.
           기대: UGV 가 그 도로에 들어가기 전에 기다린다(YIELD HEAD_ON, 소방차 우선), 겹침 0.
 배치는 ugv/tests/test_multi_vehicle.py 의 JUNCTION·HEAD_ON (진행 방향·복귀 조건으로 두 차 모두 계획되는 곳, 2026-10-10).
@@ -48,6 +50,13 @@ def layout(sc):
         q3 = net.roads[r3]
         s = lambda d: d if q3.a == n else q3.length - d
         return net, [("A-ugv1", r1, n, 110, r3, s(170.0)), ("B-fire1", r2, n, 110, r3, s(60.0))]
+    if sc == "block":
+        # 교차로 배치에서 목적지를 바꾼다: 먼저 합류하는 A-ugv1 이 합류 도로 60 m 에 서고(임무 끝 → 스스로 움직이지 않음),
+        # 뒤따르는 B-fire1 은 그 너머 170 m 로 가야 한다 → 막힘 처리 (우회 재계획 또는 BLOCKED_BY_VEHICLE 실패 보고)
+        n, r1, r2, r3 = JUNCTION
+        q3 = net.roads[r3]
+        s = lambda d: d if q3.a == n else q3.length - d
+        return net, [("A-ugv1", r1, n, 110, r3, s(60.0)), ("B-fire1", r2, n, 125, r3, s(170.0))]
     rid, ra, rb, rc, rd = HEAD_ON
     r, qc, qd = net.roads[rid], net.roads[rc], net.roads[rd]
     return net, [("A-ugv1", ra, r.a, 70, rc, 60.0 if qc.a == r.b else qc.length - 60.0),
@@ -69,8 +78,10 @@ def make(sc):
     print(fp, sp, *spawn, sep="\n")
 
 
-def run(sc, track_s):
+def run(sc, track_s, after_s=0.0):
     net, lay = layout(sc)
+    on = {v["resource_id"] for v in fleet_test.httpx.get(fleet_test.SERVER + "/ugv", timeout=30).json()}
+    lay = [x for x in lay if x[0] in on]                # 서버에 있는 차량만 (한 대만 띄운 시험)
     r = fleet_test.Run(f"pair_{sc}", track_s, rids=[x[0] for x in lay])
     r.log["layout"] = [{"rid": a, "entry_road": b, "node": c, "start_m": d, "dest_road": e, "dest_s_m": round(f, 1)}
                        for a, b, c, d, e, f in lay]
@@ -82,16 +93,21 @@ def run(sc, track_s):
         if rec["status_code"] == 200:
             keys.append((rid, key))
     r.wait(keys, track_s * 0.8, every=1.0)
+    end = time.time() + after_s              # 임무가 끝난 뒤에도 기록 (실패 뒤 실제로 서는지·간격)
+    while time.time() < end:
+        r.poll()
+        time.sleep(1.0)
     return r.finish()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("action", choices=("make", "run"))
-    ap.add_argument("scenario", choices=("junction", "head_on"))
+    ap.add_argument("scenario", choices=("junction", "head_on", "block"))
     ap.add_argument("--track-s", type=float, default=600)
+    ap.add_argument("--after-s", type=float, default=0.0, help="임무가 끝난 뒤 더 기록할 시간 s")
     a = ap.parse_args()
-    make(a.scenario) if a.action == "make" else run(a.scenario, a.track_s)
+    make(a.scenario) if a.action == "make" else run(a.scenario, a.track_s, a.after_s)
 
 
 if __name__ == "__main__":

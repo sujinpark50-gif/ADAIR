@@ -80,6 +80,9 @@ def _dist_to_polyline(x, y, pts, lo=0, hi=None):
     return best, bi
 
 
+BLOCK_REPLAN_MAX = 3      # 한 임무에서 서 있는 차에 막혀 다시 계획하는 최대 횟수
+
+
 def _progress_index(x, y, pts, cum, near_i, back=20, ahead=200, tol_m=3.0, gap_m=30.0):
     """계획 선형 위 진행 위치 (가장 가까운 구간). 선형이 같은 곳을 두 번 지나면(거점을 지나 한 바퀴 돌아 같은 도로를 되짚어 오는 복귀
     등) 가장 가까운 구간이 나중 통과일 수 있다 → 경로상 gap_m 넘게 앞선, 거리 차 tol_m 안의 더 이른 통과가 있으면 그쪽을 고른다.
@@ -103,7 +106,8 @@ def _progress_index(x, y, pts, cum, near_i, back=20, ahead=200, tol_m=3.0, gap_m
 
 
 class Vehicle:
-    def __init__(self, cfg: dict, net: RoadNetwork, fire_source, clock, store: ExecStore, wall=time.monotonic):
+    def __init__(self, cfg: dict, net: RoadNetwork, fire_source, clock, store: ExecStore, wall=time.monotonic,
+                 taken_roads=None):
         self.cfg, self.net, self.fire_source, self.clock, self.store = cfg, net, fire_source, clock, store
         self.wall = wall                        # 통신 단절 판단용 벽시계 (단조). 시험은 가짜 시계를 넣는다
         self.resource_id = cfg["resource_id"]
@@ -119,7 +123,7 @@ class Vehicle:
         nearest = net.snap(sx, sy)
         # 소방서 좌표와 차량 출입 지점을 구분한다. 좌표에서 가장 가까운 도로가 막다른 길일 수 있다 (drive_graph.access_point)
         acc = access_point(net, st["base_id"], graph=self.graph, slot=int(cfg.get("station_slot", 0)),
-                           slot_lengths=cfg.get("slot_lengths"))
+                           slot_lengths=cfg.get("slot_lengths"), taken_roads=taken_roads)
         if acc is None:
             # 임의의 먼 도로에 두지 않는다 — 배치 불가로 보고 (Fleet 가 이 차량을 빼고 사유를 남긴다)
             raise PlacementError(f"{self.resource_id}: 소방서 {st['base_id']} 좌표 {config_station_m():g} m 안에 출입 지점 없음 "
@@ -257,7 +261,7 @@ class Vehicle:
             return "RUNNING"
         return "READY"
 
-    def _approach(self, body: dict, start: DirPos, v0: float) -> ApproachPlan:
+    def _approach(self, body: dict, start: DirPos, v0: float, extra_avoid: Optional[dict] = None) -> ApproachPlan:
         fire = self.fire_source.area()
         tgt = body.get("target") or {}
         fixed = None
@@ -272,7 +276,8 @@ class Vehicle:
             tgt = dict(zip(("lat", "lon"), fixed.ll()))
         home = fixed is not None and fixed.road_id == self.access.road_id and abs(fixed.s - self.access.s) < 1.0
         return plan_approach(self.net, fire, start, float(tgt["lat"]), float(tgt["lon"]), v0=v0, access=self.access,
-                             fixed_dest=fixed, graph=self.graph, avoid_roads=self.occupied_roads(home=home),
+                             fixed_dest=fixed, graph=self.graph,
+                             avoid_roads={**self.occupied_roads(home=home), **(extra_avoid or {})},
                              arrive_toward=self.access_toward if home else None)
 
     def occupied_roads(self, home: bool = False) -> dict:
@@ -291,10 +296,10 @@ class Vehicle:
             t = p.driver.telemetry()
             if t is not None and p.fault and p.fault.startswith("TELEMETRY_LOST") and p.speed is not None:
                 # 위치를 모르는 차: 마지막 위치부터 남은 경로를 따라 갈 수 있었던 구간의 도로 전부 (ugv/traffic.py 와 같은 범위)
-                from .traffic import LINK_LOSS_DRIVE_S, LINK_LOSS_SKID_M
+                from .traffic import link_loss_reach
                 sp = p.speed
                 i0 = max(0, min(p._near_i, len(sp.pts) - 1))
-                reach = t.speed_mps * LINK_LOSS_DRIVE_S + LINK_LOSS_SKID_M
+                reach = link_loss_reach(sp, i0, t.speed_mps)
                 for k in range(i0, len(sp.pts)):
                     if sp.cum[k] - sp.cum[i0] > reach:
                         break
@@ -532,6 +537,11 @@ class Vehicle:
             t["physical_state"] = physical_state
         if mission_result:
             t["mission_result"] = mission_result
+        if status in ("FAILED", "CANCELLED"):
+            # 총괄 계약 (orchestrator/engine.py 제공자 FAILED 처리): progress.phase 가 FAILED 면 고장으로 묶고(운영자 /stop 해제 뒤 반납),
+            # DONE 이면 READY 확인 뒤 반납한다. 그 밖(ENROUTE 등)이면 위치 미확인으로 점유를 계속 잡아 둔다 — 막혀 멈춘 멀쩡한 차도
+            # 다시 배정되지 못했다 (2026-10-10 계약 대조). 고장·위험(fault)이 있으면 FAILED, 아니면 DONE (차는 서 있거나 서는 중)
+            t.setdefault("progress", {})["phase"] = "FAILED" if (status == "FAILED" and self.fault) else "DONE"
         t.setdefault("timing", {})["end_sim_s"] = round(self.clock.now(), 2)
         t["timing"]["end_wall"] = _now_iso()
         self._event(f"TASK_{status}", detail=error)
@@ -743,6 +753,70 @@ class Vehicle:
             self._move_ref = None
             self._event("YIELD_END", waited_s=round(self.clock.now() - info.get("since_sim", self.clock.now()), 1),
                         other=info.get("other"))
+
+    async def blocked_by_vehicle(self, other_id: str, waited_s: float, immovable: bool):
+        """서 있는 차에 막혀 오래 기다렸다 (ugv/traffic.py). 같은 목적지로 그 차가 선 도로를 빼고 다시 계획한다.
+        통과 가능한 우회 경로(진행 방향·차체·회전 검사 통과)가 있으면 그 길로 가고, 없으면 계속 기다리지 않고 임무를 실패
+        (BLOCKED_BY_VEHICLE)로 끝낸다 — 차는 대기 지점에 선 채(이미 보낸 정지 미션) 총괄의 재판단을 기다린다.
+        같은 임무에서 같은 차 때문에 다시 계획하는 것은 한 번, 막힘 재계획은 모두 BLOCK_REPLAN_MAX 번까지
+        (되풀이 재계획·두 차가 번갈아 길을 바꾸는 것을 막는다)."""
+        async with self.lock:
+            t = self.current_task()
+            if t is None or self.state not in ("DRIVING", "EVADING") or self.hold is None:
+                return
+            other = next((p for p in self.peers() if p.resource_id == other_id), None)
+            tel_o = other.driver.telemetry() if other is not None else None
+            blocked_road = self.net.snap(tel_o.x, tel_o.y).road_id if tel_o is not None else None
+            hist = t.setdefault("blocked", [])
+            rec = {"sim_time_s": round(self.clock.now(), 2), "other": other_id, "waited_s": waited_s,
+                   "blocker_immovable": immovable, "blocked_road": blocked_road}
+            hist.append(rec)
+            repeated = sum(1 for h in hist if h["other"] == other_id) > 1 or len(hist) > BLOCK_REPLAN_MAX
+            plan, why = None, None
+            if repeated:
+                why = "REPEATED_BLOCK (같은 차에 다시 막힘 또는 막힘 재계획 횟수 초과)"
+            else:
+                start, v0, err = self.here_state()
+                body = {"target": t["target"]} if t.get("target") else {"target_node": t.get("target_node")}
+                avoid = {blocked_road: other_id} if blocked_road else {}
+                try:
+                    plan = None if start is None else await asyncio.to_thread(self._approach, body, start, v0, avoid)
+                except HttpError as e:
+                    plan, why = None, f"PLAN_ERROR: {e}"
+                if plan is not None and plan.status == "OK" and blocked_road in plan.route.road_ids:
+                    plan, why = None, "DETOUR_STILL_USES_BLOCKED_ROAD"
+                elif plan is not None and plan.status != "OK":
+                    plan, why = None, f"{plan.status}: {plan.reason}"
+                elif plan is None:
+                    why = why or err
+            if plan is not None:
+                rec["result"] = "REPLANNED"
+                try:
+                    await self._drive(plan)
+                except DriverError as e:
+                    await self._safe_stop()
+                    self._finish(self.task_key, "FAILED", error=f"DRIVER: {e}", physical_state="STOPPING")
+                    return
+                tn = self._target_node(plan)
+                t["target_node"] = tn["node_id"] if tn else t.get("target_node")
+                t["approach"] = plan.report()
+                t.setdefault("replans", []).append({"sim_time_s": rec["sim_time_s"], "why": f"BLOCKED_BY_VEHICLE:{other_id}",
+                                                    "result": "OK", "approach": plan.report()})
+                self._event("REPLANNED_AROUND_VEHICLE", other=other_id, blocked_road=blocked_road, waited_s=waited_s,
+                            route_length_m=round(self.speed.cum[-1], 1), eta_sec=int(round(self.speed.eta_s)))
+                self.store.save()
+                return
+            rec["result"] = "FAILED_NO_DETOUR"
+            rec["why"] = why
+            # 대기 지점 정지 미션은 그대로 둔다 (새 명령을 보내지 않는다 — 이미 서 있거나 그 앞에서 선다)
+            self.hold = None
+            self.state = "IDLE"
+            self._finish(self.task_key, "FAILED",
+                         error=f"BLOCKED_BY_VEHICLE: {other_id} 가 선 도로 {blocked_road} 에 막힘, 우회 경로 없음 "
+                               f"({why}), {waited_s:.0f} s 대기",
+                         physical_state="STOPPED_BLOCKED")
+            self._event("TRAFFIC_BLOCKED_NO_DETOUR", other=other_id, blocked_road=blocked_road, waited_s=waited_s,
+                        why=why, reported_to="ORCHESTRATOR_TASK_FAILED")
 
     async def traffic_emergency_stop(self, info: dict):
         """차량 간 충돌을 피할 수 없다고 판단될 때: 계획 경로를 따라 최대 감속으로 가장 짧게 선다.

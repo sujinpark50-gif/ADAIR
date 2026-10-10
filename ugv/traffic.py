@@ -32,10 +32,36 @@ TRAFFIC_FOLLOW_HEADWAY_S = 2.0  # 같은 방향 앞뒤: 같은 곳을 이 시간
 TRAFFIC_LANE_M = 3.5             # 반대 방향 두 경로 중심선이 이보다 가까우면 같은 도로 구간 (교행 안 함)
 TRAFFIC_HOLD_MARGIN_M = 3.0      # 기다리는 지점 = 충돌 표본보다 이만큼 앞
 TRAFFIC_RELEASE_TICKS = 2        # 연속 이만큼 충돌이 없어야 다시 출발 (흔들림 방지)
-TRAFFIC_BLOCK_REPORT_S = 60.0    # 정지 차량 때문에 이보다 오래 기다리면 보고
+TRAFFIC_BLOCK_REPORT_S = 60.0    # 정지 차량 때문에 이보다 오래 기다리면 막힘 처리 (우회 재계획, 없으면 임무 실패로 총괄에 보고)
+TRAFFIC_BLOCK_IMMOVABLE_S = 0.0   # 막은 차가 스스로 움직이지 않을 차(임무 없음·고장·위험·통신 끊김)면 기다리지 않고 바로 막힘 처리
+#   (충돌을 예측한 순간 — 최대 TRAFFIC_HORIZON_S 앞 — 에 다시 계획해야 그 도로에 들어가기 전에 다른 길로 빠질 수 있다)
 RANK = {"FIRE_ENGINE": 0, "UGV": 1}
-LINK_LOSS_DRIVE_S = 10.0         # PX4 COM_DL_LOSS_T: 링크가 끊겨도 이 시간 동안은 마지막 미션을 계속 달린다 (그 뒤 시동 끔)
-LINK_LOSS_SKID_M = 30.0          # 시동 끔 뒤 미끄러지는 거리 여유 (Gazebo 16.4 m/s 에서 15 m)
+# 자동조종기 링크 단절: PX4 는 COM_DL_LOSS_T(10 s) 동안 마지막 미션을 계획 속도대로 계속 달리고(가속 포함), 그 뒤 시동을 꺼 미끄러져 선다.
+# 2026-10-10 Gazebo 비교 시험(ugv/tools/link_loss_compare.py, 서버 일시 정지로 끊음): 시동 끔은 끊고 12.1~12.2 s 뒤, 미끄럼 13~14 m/s 에서
+# 9~11 m (약 9 m/s²). 예전 '마지막 속도 × 10 s + 30 m' 는 끊길 때 8 m/s 로 가속 중이던 차가 159 m 를 가 34.6 m 모자랐다.
+LINK_LOSS_DRIVE_S = 13.0         # 끊긴 뒤 시동 끔까지 (COM_DL_LOSS_T 10 s + 판정 지연 실측 2.2 s + 여유)
+LINK_LOSS_SKID_DECEL = 6.0       # 미끄럼 감속 (실측 약 9 m/s² 보다 작게 — 길게 잡는다)
+LINK_LOSS_MARGIN_M = 10.0        # 추종 오차·표본 여유
+
+
+def link_loss_reach(sp, i0: int, vel: float) -> float:
+    """링크가 끊긴 차가 계획 경로 위 i0(마지막으로 안 위치)부터 갈 수 있는 거리: 남은 계획을 max(마지막 속도, 계획 속도)로
+    LINK_LOSS_DRIVE_S 동안 + 그 속도에서 미끄럼 + 여유. 미션 끝(목적지)에서는 계획대로 서므로 거기까지 + 여유."""
+    t, k, n = 0.0, i0, len(sp.pts) - 1
+    while k < n and t < LINK_LOSS_DRIVE_S:
+        u = max(vel, sp.v[k], sp.v[k + 1], 0.5)
+        t += (sp.cum[k + 1] - sp.cum[k]) / u
+        k += 1
+    if k >= n:
+        return sp.cum[n] - sp.cum[i0] + LINK_LOSS_MARGIN_M
+    v_end = max(vel, sp.v[k])
+    return sp.cum[k] - sp.cum[i0] + v_end * v_end / (2 * LINK_LOSS_SKID_DECEL) + LINK_LOSS_MARGIN_M
+
+
+def _immovable(v) -> bool:
+    """지시 없이는 움직이지 않을 차: 임무 없음, 고장·위험(운영자 해제 전), 통신 끊김."""
+    return (v.current_task() is None or v.state in ("FAULT", "DANGER", "IDLE")
+            or bool(v.fault and v.fault.startswith("TELEMETRY_LOST")))
 
 
 class _Pred:
@@ -78,11 +104,11 @@ class TrafficManager:
         hx, hy = math.sin(hd), math.cos(hd)
         moving_plan = v.state in ("DRIVING", "EVADING") and v.speed is not None
         if v.fault and v.fault.startswith("TELEMETRY_LOST") and v.speed is not None:
-            # 위치를 모른다: 마지막 위치부터 계획 경로를 따라 (마지막 속도 × PX4 링크 단절 판정 시간 + 미끄럼) 까지
-            # 어디에든 있을 수 있다 → 그 구간 전체를 서 있는 점유로 본다 (2026-10-10 Gazebo: 끊긴 뒤 10 s 더 달리고 미끄러져 섬)
+            # 위치를 모른다: 마지막 위치부터 계획 경로를 따라 link_loss_reach 까지 어디에든 있을 수 있다
+            # → 그 구간 전체를 서 있는 점유로 본다 (2026-10-10 Gazebo: 끊긴 뒤 12 s 계획대로 가속하며 달리고 미끄러져 섬)
             sp = v.speed
             i0 = max(0, min(v._near_i, len(sp.pts) - 1))
-            reach = vel * LINK_LOSS_DRIVE_S + LINK_LOSS_SKID_M
+            reach = link_loss_reach(sp, i0, vel)
             pts = [(tel.x, tel.y, 0.0, 0.0, hx, hy)]
             for k in range(i0 + 1, len(sp.pts)):
                 if sp.cum[k] - sp.cum[i0] > reach:
@@ -246,14 +272,19 @@ class TrafficManager:
                 prev = self.waits.get(rid)
                 since = prev["since_sim"] if prev and prev["other"] == h["other"] else now
                 self.waits[rid] = {**h, "since_sim": since}
-                if (h["kind"] == "STATIC" and now - since > TRAFFIC_BLOCK_REPORT_S
-                        and not (prev or {}).get("reported")):
-                    self.waits[rid]["reported"] = True
-                    v._event("TRAFFIC_BLOCKED_BY_VEHICLE", other=h["other"], waited_s=round(now - since, 1),
-                             operator_action_required=True)
-                elif prev and prev.get("reported"):
+                if prev and prev.get("reported") and prev["other"] == h["other"]:
                     self.waits[rid]["reported"] = True
                 await v.set_hold(h["s"], {k: x for k, x in h.items() if k != "s"})
+                if h["kind"] == "STATIC" and not self.waits[rid].get("reported"):
+                    other = self.vehicles.get(h["other"])
+                    immovable = other is not None and _immovable(other)
+                    waited = now - since
+                    if waited > TRAFFIC_BLOCK_REPORT_S or (immovable and waited >= TRAFFIC_BLOCK_IMMOVABLE_S):
+                        # 막힘 처리는 같은 상대에 한 번 — 우회 경로가 있으면 다시 계획, 없으면 임무를 실패로 끝내 총괄이 재판단한다
+                        self.waits[rid]["reported"] = True
+                        v._event("TRAFFIC_BLOCKED_BY_VEHICLE", other=h["other"], waited_s=round(waited, 1),
+                                 blocker_immovable=immovable)
+                        await v.blocked_by_vehicle(h["other"], round(waited, 1), immovable)
             elif getattr(v, "hold", None):
                 self._clear_ticks[rid] = self._clear_ticks.get(rid, 0) + 1
                 if self._clear_ticks[rid] >= TRAFFIC_RELEASE_TICKS:

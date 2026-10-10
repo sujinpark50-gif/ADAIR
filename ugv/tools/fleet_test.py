@@ -126,8 +126,14 @@ class Run:
 
 
 def link(rid, act):
+    """한 차량 링크 끊기/잇기. 서버가 UGV_TEST_HOOKS=1 이면 그 차의 MAVSDK 연결만 끊는다 (실제 무선 단절과 같음).
+    아니면 PX4 안 MAVLink 인스턴스를 멈춘다 (wsl_link.sh — dataman 시간 초과로 미션 추종이 흔들릴 수 있어 결과가 다르다)."""
+    r = httpx.post(f"{SERVER}/ugv/{rid}/_test/link", json={"cut": act == "stop"}, timeout=30)
+    if r.status_code == 200:
+        return "mavsdk"
     sh = to_wsl_path(ROOT / "ugv" / "tools" / "wsl_link.sh")
     subprocess.run(["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash", sh, str(INSTANCE[rid]), act], check=False)
+    return "px4_mavlink_instance"
 
 
 # ---------------------------------------------------------------------------- 분석
@@ -303,9 +309,10 @@ def sc_fault_block(track_s):
     def cut_when_moving(p):
         v = p["vehicles"]["B-ugv1"]
         if st["cut"] is None and (v["speed"] or 0) > 8 and run.t() > 15:
-            link("B-ugv1", "stop")
+            run.log["link_cut_method"] = link("B-ugv1", "stop")
             st["cut"] = run.t()
             run.log["link_cut_t"] = st["cut"]
+            run.log["link_cut_wall"] = time.time()
             print(f"[{run.t():6.1f}] B-ugv1 링크 끊음", flush=True)
         if st["cut"] is not None and "fire" not in st and run.t() > st["cut"] + 25:
             st["fire"] = run.go("B-fire1", "FB-BF", beyond["lat"], beyond["lon"])

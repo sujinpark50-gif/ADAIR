@@ -198,3 +198,35 @@ def test_home_route_avoids_same_station_waiting_road(tmp_path):
         assert AF.access.road_id not in A.plan.route.road_ids
         assert A.plan.report()["avoided_roads_occupied_by_vehicles"][AF.access.road_id].startswith("A-fire1")
     asyncio.run(go())
+
+
+def test_link_loss_reach_covers_acceleration_and_response_delay():
+    """링크가 끊긴 차의 점유 구간: PX4 는 끊긴 뒤 약 12 s(COM_DL_LOSS_T 10 s + 판정 지연) 계획 속도대로 가속하며 달린 뒤 시동을 꺼 미끄러진다.
+    2026-10-10 Gazebo (link_loss_compare disarm_s): 끊길 때 8.2 m/s → 13.9 m/s 까지 가속, 끊긴 곳에서 158.8 m 에 정지.
+    예전 '마지막 속도 × 10 s + 30 m' = 111.6 m 로 모자랐다."""
+    import math
+    from types import SimpleNamespace
+    from ugv.traffic import link_loss_reach
+    pts = [(float(x), 0.0) for x in range(0, 601, 5)]
+    cum = [p[0] for p in pts]
+    v = [min(13.89, 8.16 + 0.11 * c) for c in cum]                       # 약 50 m 동안 8.2 → 13.9 m/s
+    sp = SimpleNamespace(pts=pts, cum=cum, v=v)
+    r = link_loss_reach(sp, 0, 8.16)
+    assert r >= 158.8 + 10.0 and 8.16 * 10 + 30 < 158.8
+    # 목적지가 가까우면 계획대로 거기 선다 → 목적지까지 + 여유
+    short = SimpleNamespace(pts=pts[:20], cum=cum[:20], v=v[:19] + [0.0])
+    assert abs(link_loss_reach(short, 0, 8.16) - (cum[19] + 10.0)) < 1e-9
+    assert math.isfinite(link_loss_reach(sp, 110, 0.0))
+
+
+def test_waiting_slots_of_same_station_use_different_roads_across_profiles(tmp_path):
+    """대기 위치 1 소방차와 대기 위치 2 UGV 가 같은 도로·같은 지점을 받던 결함 (차종마다 'k 번째 도로' 목록이 다름).
+    앞 대기 위치들이 쓴 도로를 빼고 고른다. 기존 4대 배치는 그대로."""
+    from ugv.tests.test_multi_vehicle import make_fleet
+    cfg = FLEET_CFG + [{**FLEET_CFG[0], "resource_id": "A-ugv2", "station_slot": 2}]
+    f, _ = make_fleet(tmp_path, [{**c, "driver": "sim"} for c in cfg])
+    assert not f.unplaced
+    roads = [f.vehicles[r].access.road_id for r in ("A-ugv1", "A-fire1", "A-ugv2")]
+    assert len(set(roads)) == 3, roads
+    f4, _ = make_fleet(tmp_path / "four", [{**c, "driver": "sim"} for c in FLEET_CFG])
+    assert f4.vehicles["A-fire1"].access.road_id == "682500724" and f4.vehicles["B-fire1"].access.road_id == "683400570"
