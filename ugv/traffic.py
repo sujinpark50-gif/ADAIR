@@ -118,6 +118,12 @@ class TrafficManager:
         kind: FOLLOW(같은 방향) / CROSS / HEAD_ON(반대 방향 같은 구간) / STATIC(B 가 멈춰 있음)."""
         la, lb = A.v.profile.body_length_m, B.v.profile.body_length_m
         d_safe = (la + lb) / 2 + TRAFFIC_GAP_M
+        # 두 예측 표본 묶음의 범위가 간격보다 멀면 볼 것 없다 (예: 거점 A·B 차량 — 표본 쌍 전부 비교하면 판단 한 번이 0.5 s 걸렸다)
+        r = max(d_safe, TRAFFIC_LANE_M)
+        ax0, ax1 = min(p[0] for p in A.samples) - r, max(p[0] for p in A.samples) + r
+        ay0, ay1 = min(p[1] for p in A.samples) - r, max(p[1] for p in A.samples) + r
+        if all(not (ax0 <= q[0] <= ax1 and ay0 <= q[1] <= ay1) for q in B.samples):
+            return None
         slack = TRAFFIC_TIME_SLACK_S + max(A.v.latency_s(), B.v.latency_s())
         bs = B.samples
         b_end_t = bs[-1][2] if bs else 0.0
@@ -125,6 +131,12 @@ class TrafficManager:
             ax, ay, at, as_, ahx, ahy = a
             for b in bs:
                 bx, by, bt, bs_, bhx, bhy = b
+                if abs(ax - bx) > r or abs(ay - by) > r:
+                    continue
+                # 상대가 내 진행 방향 뒤쪽이면 내가 멀어지는 중 — 내 충돌이 아니다 (상대가 자기 판단에서 나를 앞차로 본다).
+                # 2026-10-10 Gazebo: 출입 지점 조금 앞에 서 있던 UGV 가 뒤 소방차에서 멀어지는 출발을 '피할 수 없음' 으로 판정
+                if (bx - ax) * ahx + (by - ay) * ahy < 0:
+                    continue
                 dist = math.hypot(ax - bx, ay - by)
                 dot = ahx * bhx + ahy * bhy
                 if dist < TRAFFIC_LANE_M and dot < -0.5:

@@ -375,3 +375,22 @@ def test_gazebo_b_station_return_sequence_no_contact(tmp_path):
         dead = any(e["event"] == "TRAFFIC_DEADLOCK" for v in (U, F) for e in v.events)
         assert all(s == "COMPLETED" for s in st.values()) or dead or f.traffic.waits, st
     asyncio.run(go())
+
+
+def test_departing_away_from_close_vehicle_behind_is_not_a_conflict(tmp_path):
+    """앞차가 뒤차와 간격보다 가깝게 서 있다가 멀어지며 출발해도 충돌로 보지 않는다 (2026-10-10 Gazebo F4)."""
+    async def go():
+        A0, F0 = dict(FLEET_CFG[0]), dict(FLEET_CFG[1])
+        f0, _ = make_fleet(tmp_path / "p", [A0])
+        acc = f0.vehicles["A-ugv1"].access
+        p = NET.at(acc.road_id, acc.s - 4.0)                      # 출입 지점 4 m 앞에 선 UGV → 뒤 소방차와 간격 8 m 미만
+        q = NET.at(acc.road_id, acc.s - 3.0)
+        A0["initial"] = {"lat": FRAME.to_ll(p.x, p.y)[0], "lon": FRAME.to_ll(p.x, p.y)[1],
+                         "heading_deg": bearing_deg(q.x - p.x, q.y - p.y)}
+        f, clock = make_fleet(tmp_path, [A0, F0])
+        A = f.vehicles["A-ugv1"]
+        await A.execute(body("U1", *FRAME.to_ll(acc.x - 900, acc.y - 700)))
+        ok, w = await run(f, clock, 60)
+        assert not any(e["event"] == "TRAFFIC_CONFLICT_UNAVOIDABLE" for e in A.events)
+        assert f.store.tasks["U1"]["status"] in ("STARTED", "IN_PROGRESS", "COMPLETED") and w["overlaps"] == 0
+    asyncio.run(go())
