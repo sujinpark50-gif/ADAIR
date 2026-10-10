@@ -1,0 +1,124 @@
+{
+ "file": "logs/ugv/G1_long_return_20261010_085131.json",
+ "tag": "G1_long_return",
+ "start": "2026-10-10 08:51:34",
+ "end": "2026-10-10 09:07:17",
+ "distance_m": 12991.6,
+ "sim_s": 911.63,
+ "rtf": 0.963,
+ "rtf_min10s": 0.857,
+ "vmax_kmh": 60.5,
+ "v3s_kmh": 60.3,
+ "roll_max": 0.0,
+ "pitch_max": 0.0,
+ "rollover": false,
+ "offroad_events": 3,
+ "offroad_max_m": 0.33,
+ "offroad_longest_s": 0.8,
+ "offroad_by_cause": {
+  "PLAN_OUTSIDE": 0,
+  "PX4_TRACKING": 0,
+  "JUDGEMENT": 3
+ },
+ "pose_gap_max_s": 0.056,
+ "tel_age_max_s": 0.03,
+ "cmd_rtt_s": [
+  2.544,
+  4.699
+ ],
+ "cmd_timing": [
+  null,
+  null
+ ],
+ "at_command": [
+  {
+   "position": {
+    "lat": 38.061698,
+    "lon": 128.1681308
+   },
+   "speed_mps": 0.0,
+   "heading_deg": 209.2,
+   "mission_state": "IDLE"
+  },
+  {
+   "position": {
+    "lat": 38.0278529,
+    "lon": 128.1302096
+   },
+   "speed_mps": 0.14,
+   "heading_deg": 183.4,
+   "mission_state": "IDLE"
+  }
+ ],
+ "second_trigger": null,
+ "fire": null,
+ "tasks": {
+  "RT1-20261010_085131": [
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ],
+  "HOME-20261010_085131": [
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ]
+ },
+ "runs": {
+  "RT1-20261010_085131": {
+   "length_m": 5568.6,
+   "eta_s": 356,
+   "dur_s": 376.2,
+   "end_err_m": 0.28,
+   "end_v": 0.03,
+   "vmax": 16.77,
+   "curves": 28,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.68,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 1.76,
+    "p99": 2.69,
+    "max": 3.77,
+    "samples_over_plan+1": 99
+   },
+   "plan_body_check": {
+    "samples": 5484,
+    "outside_samples": 0,
+    "max_excess_m": -0.94,
+    "worst_xy": [
+     3517.7,
+     5063.5
+    ]
+   }
+  },
+  "HOME-20261010_085131": {
+   "length_m": 7425.2,
+   "eta_s": 496,
+   "dur_s": 530.9,
+   "end_err_m": 0.25,
+   "end_v": 0.02,
+   "vmax": 16.81,
+   "curves": 26,
+   "curves_over_1mps": 1,
+   "worst_over_mps": 1.02,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 1.71,
+    "p99": 2.76,
+    "max": 4.46,
+    "samples_over_plan+1": 161
+   },
+   "plan_body_check": {
+    "samples": 7299,
+    "outside_samples": 1,
+    "max_excess_m": 0.0,
+    "worst_xy": [
+     754.8,
+     1010.5
+    ]
+   }
+  }
+ },
+ "key_events": []
+}

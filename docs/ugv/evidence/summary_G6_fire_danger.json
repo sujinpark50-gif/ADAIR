@@ -1,0 +1,127 @@
+{
+ "file": "logs/ugv/G6_fire_danger_20261010_104835.json",
+ "tag": "G6_fire_danger",
+ "start": "2026-10-10 10:48:38",
+ "end": "2026-10-10 10:52:44",
+ "distance_m": 3307.4,
+ "sim_s": 224.59,
+ "rtf": 0.936,
+ "rtf_min10s": 0.769,
+ "vmax_kmh": 60.4,
+ "v3s_kmh": 60.2,
+ "roll_max": 0.0,
+ "pitch_max": 0.0,
+ "rollover": false,
+ "offroad_events": 0,
+ "offroad_max_m": null,
+ "offroad_longest_s": 0.0,
+ "offroad_by_cause": {
+  "PLAN_OUTSIDE": 0,
+  "PX4_TRACKING": 0,
+  "JUDGEMENT": 0
+ },
+ "pose_gap_max_s": 0.054,
+ "tel_age_max_s": 0.03,
+ "cmd_rtt_s": [
+  2.473
+ ],
+ "cmd_timing": [
+  {
+   "plan_s": 1.687,
+   "driver_start_s": 0.782,
+   "total_s": 2.469,
+   "latency_assumed_s": 1.0,
+   "v0_mps": 0.01,
+   "projected_m": 0.0,
+   "trimmed_items_behind": 0
+  }
+ ],
+ "at_command": [
+  {
+   "position": {
+    "lat": 38.0616981,
+    "lon": 128.16813109999998
+   },
+   "speed_mps": 0.01,
+   "heading_deg": 209.1,
+   "mission_state": "IDLE"
+  }
+ ],
+ "second_trigger": null,
+ "fire": {
+  "kind": "surround",
+  "set_wall": 1791597156.74821,
+  "sim_t": 252.074,
+  "cells": 52824,
+  "saved": "C:\\Users\\수다쟁이고양이들\\Documents\\GitHub\\ADAIR\\logs\\ugv\\fire_fixture\\fire_20261010_105236_v7.json",
+  "vehicle_at": {
+   "lat": 38.0600419,
+   "lon": 128.1659229
+  },
+  "speed_mps": 13.87
+ },
+ "tasks": {
+  "RT1-20261010_104835": [
+   "FAILED",
+   "NOT_ARRIVED",
+   "NO_SAFE_EVASION_ROUTE: 화재 경계 6 m (안전거리 100 m 안), NO_SAFE_EVASION_ROUTE (진행 방향을 지키며 불 칸을 지나지 않고 갈 수 있는 안전 지점 없음)"
+  ]
+ },
+ "runs": {
+  "RT1-20261010_104835": {
+   "length_m": 5568.6,
+   "eta_s": 356,
+   "dur_s": 220.6,
+   "end_err_m": 1970.89,
+   "end_v": 16.67,
+   "vmax": 16.77,
+   "curves": 21,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.72,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 1.61,
+    "p99": 2.44,
+    "max": 3.49,
+    "samples_over_plan+1": 34
+   },
+   "plan_body_check": {
+    "samples": 5484,
+    "outside_samples": 0,
+    "max_excess_m": -0.94,
+    "worst_xy": [
+     3517.7,
+     5063.5
+    ]
+   }
+  }
+ },
+ "key_events": [
+  {
+   "event": "STOP_PATH",
+   "sim_time_s": 256.23,
+   "basis": "PLANNED_ROUTE",
+   "length_m": 97.7,
+   "needed_m": 97.7,
+   "short": false,
+   "drivable": true,
+   "clearance_m": null,
+   "failure_reasons": null,
+   "operator_action_required": null
+  },
+  {
+   "event": "DANGER",
+   "sim_time_s": 256.23,
+   "basis": null,
+   "length_m": null,
+   "needed_m": null,
+   "short": null,
+   "drivable": null,
+   "clearance_m": 6.4,
+   "failure_reasons": [
+    "NO_SAFE_EVASION_ROUTE (진행 방향을 지키며 불 칸을 지나지 않고 갈 수 있는 안전 지점 없음)"
+   ],
+   "operator_action_required": true
+  }
+ ]
+}

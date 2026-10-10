@@ -1,0 +1,111 @@
+{
+ "file": "logs/ugv/G4_abort_stop_20261010_100311.json",
+ "tag": "G4_abort_stop",
+ "start": "2026-10-10 10:03:14",
+ "end": "2026-10-10 10:04:48",
+ "distance_m": 702.3,
+ "sim_s": 92.02,
+ "rtf": 0.941,
+ "rtf_min10s": 0.786,
+ "vmax_kmh": 60.4,
+ "v3s_kmh": 60.2,
+ "roll_max": 0.0,
+ "pitch_max": 0.0,
+ "rollover": false,
+ "offroad_events": 1,
+ "offroad_max_m": 0.02,
+ "offroad_longest_s": 0.2,
+ "offroad_by_cause": {
+  "PLAN_OUTSIDE": 0,
+  "PX4_TRACKING": 0,
+  "JUDGEMENT": 1
+ },
+ "pose_gap_max_s": 0.054,
+ "tel_age_max_s": 0.03,
+ "cmd_rtt_s": [
+  2.565
+ ],
+ "cmd_timing": [
+  {
+   "plan_s": 1.907,
+   "driver_start_s": 0.656,
+   "total_s": 2.563,
+   "latency_assumed_s": 2.48,
+   "v0_mps": 0.01,
+   "projected_m": 0.0,
+   "trimmed_items_behind": 0
+  }
+ ],
+ "at_command": [
+  {
+   "position": {
+    "lat": 38.0350044,
+    "lon": 128.1449821
+   },
+   "speed_mps": 0.01,
+   "heading_deg": 48.0,
+   "mission_state": "IDLE"
+  }
+ ],
+ "second_trigger": null,
+ "fire": null,
+ "tasks": {
+  "RT1-20261010_100311": [
+   "CANCELLED",
+   "NOT_ARRIVED",
+   "ROAD_TEST_ABORT"
+  ]
+ },
+ "runs": {
+  "RT1-20261010_100311": {
+   "length_m": 3853.1,
+   "eta_s": 269,
+   "dur_s": 88.0,
+   "end_err_m": 2930.38,
+   "end_v": 0.0,
+   "vmax": 16.78,
+   "curves": 3,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.56,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 1.46,
+    "p99": 2.31,
+    "max": 2.97,
+    "samples_over_plan+1": 10
+   },
+   "plan_body_check": {
+    "samples": 3777,
+    "outside_samples": 0,
+    "max_excess_m": -0.12,
+    "worst_xy": [
+     3604.6,
+     4989.0
+    ]
+   }
+  }
+ },
+ "abort": {
+  "speed_at_cmd_mps": 16.7,
+  "stopped": true,
+  "stop_time_s": 20.79,
+  "stop_distance_m": 100.3,
+  "min_forward_m": 0.0,
+  "moved_after_stop_m": 0.17,
+  "went_backward_or_uturn": false
+ },
+ "key_events": [
+  {
+   "event": "STOP_PATH",
+   "sim_time_s": 940.09,
+   "basis": "PLANNED_ROUTE",
+   "length_m": 97.2,
+   "needed_m": 97.2,
+   "short": false,
+   "drivable": true,
+   "clearance_m": null,
+   "failure_reasons": null,
+   "operator_action_required": null
+  }
+ ]
+}

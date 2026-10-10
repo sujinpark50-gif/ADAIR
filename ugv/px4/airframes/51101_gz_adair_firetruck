@@ -71,3 +71,9 @@ param set-default SIM_GZ_SV_MINA1 -35
 param set-default CA_SV_CS_COUNT 1
 param set-default SIM_GZ_SV_FUNC1 201
 param set-default SIM_GZ_SV_REV 1
+
+# UGV 서버(자동조종기 상대)와 MAVLink 가 COM_DL_LOSS_T(10 s) 넘게 끊기면 시동을 끈다 (NAV_DLL_ACT 6 = Disarm).
+# 기본(0)은 끊겨도 마지막 미션을 계속 달리고, 미션이 끝난 뒤 이 rover 는 스스로 다시 움직였다 (2026-10-10 Gazebo).
+# 대가: 16.4 m/s 에서 바퀴가 멈춰 15 m 미끄러지며 선다 (평균 약 9 m/s², 비상 제동 수준). Hold(1) 는 이 rover 에서 주행을 일으켜 쓰지 않는다
+param set-default COM_DL_LOSS_T 10
+param set-default NAV_DLL_ACT 6

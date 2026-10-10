@@ -1,0 +1,81 @@
+{
+ "file": "logs/ugv/G5_fire_evade_20261010_100521.json",
+ "tag": "G5_fire_evade",
+ "start": "2026-10-10 10:05:24",
+ "end": "2026-10-10 10:08:00",
+ "distance_m": 475.8,
+ "sim_s": 149.04,
+ "rtf": 0.937,
+ "rtf_min10s": 0.789,
+ "vmax_kmh": 60.2,
+ "v3s_kmh": 60.1,
+ "roll_max": 0.0,
+ "pitch_max": 0.0,
+ "rollover": false,
+ "offroad_events": 0,
+ "offroad_max_m": null,
+ "offroad_longest_s": 0.0,
+ "offroad_by_cause": {
+  "PLAN_OUTSIDE": 0,
+  "PX4_TRACKING": 0,
+  "JUDGEMENT": 0
+ },
+ "pose_gap_max_s": 0.054,
+ "tel_age_max_s": 0.03,
+ "cmd_rtt_s": [],
+ "cmd_timing": [],
+ "at_command": [],
+ "second_trigger": null,
+ "fire": {
+  "kind": "near",
+  "set_wall": 1791594329.9331057,
+  "sim_t": 979.894,
+  "cells": 1,
+  "saved": "C:\\Users\\수다쟁이고양이들\\Documents\\GitHub\\ADAIR\\logs\\ugv\\fire_fixture\\fire_20261010_100529_v1.json",
+  "vehicle_at": {
+   "lat": 38.0389573,
+   "lon": 128.1511741
+  },
+  "speed_mps": 0.01
+ },
+ "tasks": {},
+ "runs": {},
+ "key_events": [
+  {
+   "event": "STOP_PATH",
+   "sim_time_s": 940.09,
+   "basis": "PLANNED_ROUTE",
+   "length_m": 97.2,
+   "needed_m": 97.2,
+   "short": false,
+   "drivable": true,
+   "clearance_m": null,
+   "failure_reasons": null,
+   "operator_action_required": null
+  },
+  {
+   "event": "EVADING",
+   "sim_time_s": 1022.14,
+   "basis": null,
+   "length_m": null,
+   "needed_m": null,
+   "short": null,
+   "drivable": null,
+   "clearance_m": 15.0,
+   "failure_reasons": null,
+   "operator_action_required": null
+  },
+  {
+   "event": "EVADED",
+   "sim_time_s": 1073.14,
+   "basis": null,
+   "length_m": null,
+   "needed_m": null,
+   "short": null,
+   "drivable": null,
+   "clearance_m": null,
+   "failure_reasons": null,
+   "operator_action_required": null
+  }
+ ]
+}

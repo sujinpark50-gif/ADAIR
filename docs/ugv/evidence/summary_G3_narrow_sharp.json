@@ -1,0 +1,89 @@
+{
+ "file": "logs/ugv/G3_narrow_sharp_20261010_095430.json",
+ "tag": "G3_narrow_sharp",
+ "start": "2026-10-10 09:54:33",
+ "end": "2026-10-10 10:02:30",
+ "distance_m": 6479.8,
+ "sim_s": 452.25,
+ "rtf": 0.943,
+ "rtf_min10s": 0.776,
+ "vmax_kmh": 60.5,
+ "v3s_kmh": 60.3,
+ "roll_max": 0.0,
+ "pitch_max": 0.0,
+ "rollover": false,
+ "offroad_events": 0,
+ "offroad_max_m": null,
+ "offroad_longest_s": 0.0,
+ "offroad_by_cause": {
+  "PLAN_OUTSIDE": 0,
+  "PX4_TRACKING": 0,
+  "JUDGEMENT": 0
+ },
+ "pose_gap_max_s": 0.054,
+ "tel_age_max_s": 0.03,
+ "cmd_rtt_s": [
+  3.448
+ ],
+ "cmd_timing": [
+  {
+   "plan_s": 2.422,
+   "driver_start_s": 1.016,
+   "total_s": 3.438,
+   "latency_assumed_s": 1.94,
+   "v0_mps": 0.01,
+   "projected_m": 0.0,
+   "trimmed_items_behind": 0
+  }
+ ],
+ "at_command": [
+  {
+   "position": {
+    "lat": 38.0756927,
+    "lon": 128.18515689999998
+   },
+   "speed_mps": 0.01,
+   "heading_deg": 42.7,
+   "mission_state": "IDLE"
+  }
+ ],
+ "second_trigger": null,
+ "fire": null,
+ "tasks": {
+  "RT1-20261010_095430": [
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ]
+ },
+ "runs": {
+  "RT1-20261010_095430": {
+   "length_m": 6480.6,
+   "eta_s": 421,
+   "dur_s": 447.3,
+   "end_err_m": 0.02,
+   "end_v": 0.0,
+   "vmax": 16.79,
+   "curves": 16,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.71,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 1.83,
+    "p99": 2.73,
+    "max": 4.76,
+    "samples_over_plan+1": 116
+   },
+   "plan_body_check": {
+    "samples": 6371,
+    "outside_samples": 0,
+    "max_excess_m": -0.15,
+    "worst_xy": [
+     5535.2,
+     7216.5
+    ]
+   }
+  }
+ },
+ "key_events": []
+}

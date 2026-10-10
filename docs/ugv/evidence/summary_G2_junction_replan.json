@@ -1,0 +1,145 @@
+{
+ "file": "logs/ugv/G2_junction_replan_20261010_094835.json",
+ "tag": "G2_junction_replan",
+ "start": "2026-10-10 09:48:38",
+ "end": "2026-10-10 09:53:37",
+ "distance_m": 3723.9,
+ "sim_s": 284.63,
+ "rtf": 0.945,
+ "rtf_min10s": 0.815,
+ "vmax_kmh": 60.5,
+ "v3s_kmh": 60.3,
+ "roll_max": 0.0,
+ "pitch_max": 0.0,
+ "rollover": false,
+ "offroad_events": 1,
+ "offroad_max_m": 0.21,
+ "offroad_longest_s": 0.6,
+ "offroad_by_cause": {
+  "PLAN_OUTSIDE": 0,
+  "PX4_TRACKING": 1,
+  "JUDGEMENT": 0
+ },
+ "pose_gap_max_s": 0.054,
+ "tel_age_max_s": 0.03,
+ "cmd_rtt_s": [
+  2.484,
+  1.935
+ ],
+ "cmd_timing": [
+  {
+   "plan_s": 1.688,
+   "driver_start_s": 0.797,
+   "total_s": 2.485,
+   "latency_assumed_s": 1.0,
+   "v0_mps": 0.0,
+   "projected_m": 0.0,
+   "trimmed_items_behind": 0
+  },
+  {
+   "plan_s": 1.422,
+   "driver_start_s": 0.515,
+   "total_s": 1.937,
+   "latency_assumed_s": 2.48,
+   "v0_mps": 13.91,
+   "projected_m": 34.6,
+   "trimmed_items_behind": 0
+  }
+ ],
+ "at_command": [
+  {
+   "position": {
+    "lat": 38.061698299999996,
+    "lon": 128.1681309
+   },
+   "speed_mps": 0.0,
+   "heading_deg": 209.2,
+   "mission_state": "IDLE"
+  },
+  {
+   "position": {
+    "lat": 38.058887399999996,
+    "lon": 128.16438979999998
+   },
+   "speed_mps": 13.91,
+   "heading_deg": 226.6,
+   "mission_state": "DRIVING"
+  }
+ ],
+ "second_trigger": {
+  "ahead_to_junction_m": 22.7,
+  "speed_mps": 13.93,
+  "road": "682501896",
+  "toward_node": "495043"
+ },
+ "fire": null,
+ "tasks": {
+  "RT1-20261010_094835": [
+   "CANCELLED",
+   "NOT_ARRIVED",
+   "SUPERSEDED_BY:RT2-20261010_094835"
+  ],
+  "RT2-20261010_094835": [
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ]
+ },
+ "runs": {
+  "RT1-20261010_094835": {
+   "length_m": 5568.6,
+   "eta_s": 356,
+   "dur_s": 42.9,
+   "end_err_m": 4578.02,
+   "end_v": 13.85,
+   "vmax": 13.97,
+   "curves": 8,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.07,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 0.23,
+    "p99": 0.42,
+    "max": 0.43,
+    "samples_over_plan+1": 0
+   },
+   "plan_body_check": {
+    "samples": 5484,
+    "outside_samples": 0,
+    "max_excess_m": -0.94,
+    "worst_xy": [
+     3517.7,
+     5063.5
+    ]
+   }
+  },
+  "RT2-20261010_094835": {
+   "length_m": 3237.8,
+   "eta_s": 217,
+   "dur_s": 237.2,
+   "end_err_m": 0.11,
+   "end_v": 0.0,
+   "vmax": 16.8,
+   "curves": 19,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.59,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 1.53,
+    "p99": 2.66,
+    "max": 4.27,
+    "samples_over_plan+1": 58
+   },
+   "plan_body_check": {
+    "samples": 3225,
+    "outside_samples": 0,
+    "max_excess_m": -0.22,
+    "worst_xy": [
+     3609.1,
+     4994.4
+    ]
+   }
+  }
+ },
+ "key_events": []
+}

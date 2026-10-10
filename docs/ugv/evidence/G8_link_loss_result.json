@@ -1,0 +1,23 @@
+{
+ "link_cut_local": "10:57:54",
+ "speed_at_cut_mps": 16.44,
+ "decel_start_after_cut_s": 9.6,
+ "stopped_after_cut_s": null,
+ "braking_distance_m": null,
+ "distance_cut_to_stop_m": null,
+ "max_abs_roll_deg": 0.0,
+ "max_abs_pitch_deg": 0.0,
+ "moved_after_stop_m": null,
+ "observed_after_stop_s": null,
+ "px4": "NAV_DLL_ACT=6 (Disarm), COM_DL_LOSS_T=10 s (런타임 설정)",
+ "final_rest_xy": [
+  1175.06,
+  2579.88
+ ],
+ "skid_distance_after_disarm_m": 15.0,
+ "distance_cut_to_rest_m": 121.4,
+ "mean_decel_after_disarm_mps2": 9.0,
+ "final_body_outside_road_m": -5.9,
+ "final_roll_pitch": "~0 deg (quaternion)",
+ "note": "트래커가 t+11 s 에서 끝나 정지까지는 Gazebo 최종 자세로 계산"
+}
