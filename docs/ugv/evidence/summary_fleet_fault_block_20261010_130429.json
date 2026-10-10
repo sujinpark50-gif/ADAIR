@@ -1,0 +1,230 @@
+{
+ "vehicles": {
+  "A-ugv1": {
+   "profile": "adair_ugv",
+   "distance_m": 1140.4,
+   "sim_s": 145.1,
+   "max_speed_kmh": 50.3,
+   "final_speed_mps": 0.0,
+   "max_abs_roll_deg": 0.0,
+   "max_abs_pitch_deg": 0.0,
+   "rollover": false,
+   "offroad_samples": 2,
+   "offroad_events": 1,
+   "offroad_max_m": 0.07,
+   "offroad_longest_s": 0.4,
+   "offroad_list": [
+    {
+     "first": 702.424,
+     "last": 702.64,
+     "max": 0.07,
+     "x": 4070.3,
+     "y": 5682.1,
+     "speed": 4.35
+    }
+   ],
+   "rtf": 1.0,
+   "pose_gap_max_s": 0.054,
+   "basis": "차체 4.2×1.8 m 둘레 표본 vs 추정 도로 띠 (0.2 s)"
+  },
+  "A-fire1": {
+   "profile": "adair_firetruck",
+   "distance_m": 0.0,
+   "sim_s": 145.1,
+   "max_speed_kmh": 0.0,
+   "final_speed_mps": 0.0,
+   "max_abs_roll_deg": 0.0,
+   "max_abs_pitch_deg": 0.0,
+   "rollover": false,
+   "offroad_samples": 0,
+   "offroad_events": 0,
+   "offroad_max_m": 0.0,
+   "offroad_longest_s": 0.0,
+   "offroad_list": [],
+   "rtf": 1.0,
+   "pose_gap_max_s": 0.054,
+   "basis": "차체 7.0×2.3 m 둘레 표본 vs 추정 도로 띠 (0.2 s)"
+  },
+  "B-ugv1": {
+   "profile": "adair_ugv",
+   "distance_m": 259.1,
+   "sim_s": 145.0,
+   "max_speed_kmh": 50.3,
+   "final_speed_mps": 0.0,
+   "max_abs_roll_deg": 0.0,
+   "max_abs_pitch_deg": 0.0,
+   "rollover": false,
+   "offroad_samples": 520,
+   "offroad_events": 1,
+   "offroad_max_m": 2.28,
+   "offroad_longest_s": 112.3,
+   "offroad_list": [
+    {
+     "first": 723.628,
+     "last": 835.728,
+     "max": 2.28,
+     "x": 17173.5,
+     "y": -5292.0,
+     "speed": 12.22
+    }
+   ],
+   "rtf": 1.0,
+   "pose_gap_max_s": 0.054,
+   "basis": "차체 4.2×1.8 m 둘레 표본 vs 추정 도로 띠 (0.2 s)"
+  },
+  "B-fire1": {
+   "profile": "adair_firetruck",
+   "distance_m": 371.8,
+   "sim_s": 145.0,
+   "max_speed_kmh": 46.0,
+   "final_speed_mps": 0.0,
+   "max_abs_roll_deg": 0.0,
+   "max_abs_pitch_deg": 0.0,
+   "rollover": false,
+   "offroad_samples": 19,
+   "offroad_events": 2,
+   "offroad_max_m": 1.11,
+   "offroad_longest_s": 2.4,
+   "offroad_list": [
+    {
+     "first": 767.69,
+     "last": 769.202,
+     "max": 0.48,
+     "x": 17165.8,
+     "y": -5931.1,
+     "speed": 3.62
+    },
+    {
+     "first": 792.312,
+     "last": 794.472,
+     "max": 1.11,
+     "x": 17223.8,
+     "y": -5827.8,
+     "speed": 3.79
+    }
+   ],
+   "rtf": 1.0,
+   "pose_gap_max_s": 0.054,
+   "basis": "차체 7.0×2.3 m 둘레 표본 vs 추정 도로 띠 (0.2 s)"
+  }
+ },
+ "pairs": {
+  "A-ugv1~A-fire1": {
+   "min_center_gap_minus_half_lengths_m": 30.66,
+   "body_overlap_samples": 0
+  },
+  "A-ugv1~B-ugv1": {
+   "min_center_gap_minus_half_lengths_m": 16933.67,
+   "body_overlap_samples": 0
+  },
+  "A-ugv1~B-fire1": {
+   "min_center_gap_minus_half_lengths_m": 17405.91,
+   "body_overlap_samples": 0
+  },
+  "A-fire1~B-ugv1": {
+   "min_center_gap_minus_half_lengths_m": 16919.06,
+   "body_overlap_samples": 0
+  },
+  "A-fire1~B-fire1": {
+   "min_center_gap_minus_half_lengths_m": 17428.5,
+   "body_overlap_samples": 0
+  },
+  "B-ugv1~B-fire1": {
+   "min_center_gap_minus_half_lengths_m": 473.99,
+   "body_overlap_samples": 0
+  }
+ },
+ "command_rtt_s": {
+  "max": 1.236,
+  "mean": 0.92
+ },
+ "telemetry_age_s": {
+  "max": 103.21,
+  "p95": 76.16,
+  "polls": 42
+ },
+ "traffic_events": {
+  "A-ugv1": [],
+  "A-fire1": [],
+  "B-ugv1": [
+   {
+    "event": "FAULT",
+    "sim_time_s": 680.36,
+    "other": null,
+    "kind": null,
+    "why": null,
+    "waited_s": null,
+    "code": "TELEMETRY_LOST"
+   },
+   {
+    "event": "STOP_PATH",
+    "sim_time_s": 786.42,
+    "other": null,
+    "kind": null,
+    "why": null,
+    "waited_s": null,
+    "code": null
+   },
+   {
+    "event": "STOP_PATH",
+    "sim_time_s": 796.42,
+    "other": null,
+    "kind": null,
+    "why": null,
+    "waited_s": null,
+    "code": null
+   }
+  ],
+  "B-fire1": []
+ },
+ "tasks": {
+  "FB-BU": [
+   "B-ugv1",
+   "FAILED",
+   "NOT_ARRIVED",
+   "TELEMETRY_LOST: 위치 수신 5.3 s 없음"
+  ],
+  "FB-AU": [
+   "A-ugv1",
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ],
+  "FB-BF": [
+   "B-fire1",
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ]
+ },
+ "traffic_tick_ms_max": 0.7,
+ "commands": [
+  {
+   "t": 1.7,
+   "rid": "B-ugv1",
+   "key": "FB-BU",
+   "verdict": "ACCEPT",
+   "status_code": 200,
+   "rtt_s": 1.236
+  },
+  {
+   "t": 3.2,
+   "rid": "A-ugv1",
+   "key": "FB-AU",
+   "verdict": "REJECT",
+   "status_code": 200,
+   "rtt_s": 0.941
+  },
+  {
+   "t": 49.4,
+   "rid": "B-fire1",
+   "key": "FB-BF",
+   "verdict": "ACCEPT",
+   "status_code": 200,
+   "rtt_s": 0.582
+  }
+ ],
+ "link_cut_t": 21.4,
+ "start": "2026-10-10 13:04:32",
+ "end": "2026-10-10 13:06:55"
+}

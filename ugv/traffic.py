@@ -34,6 +34,8 @@ TRAFFIC_HOLD_MARGIN_M = 3.0      # 기다리는 지점 = 충돌 표본보다 이
 TRAFFIC_RELEASE_TICKS = 2        # 연속 이만큼 충돌이 없어야 다시 출발 (흔들림 방지)
 TRAFFIC_BLOCK_REPORT_S = 60.0    # 정지 차량 때문에 이보다 오래 기다리면 보고
 RANK = {"FIRE_ENGINE": 0, "UGV": 1}
+LINK_LOSS_DRIVE_S = 10.0         # PX4 COM_DL_LOSS_T: 링크가 끊겨도 이 시간 동안은 마지막 미션을 계속 달린다 (그 뒤 시동 끔)
+LINK_LOSS_SKID_M = 30.0          # 시동 끔 뒤 미끄러지는 거리 여유 (Gazebo 16.4 m/s 에서 15 m)
 
 
 class _Pred:
@@ -75,6 +77,20 @@ class TrafficManager:
         hd = math.radians(tel.heading_deg)
         hx, hy = math.sin(hd), math.cos(hd)
         moving_plan = v.state in ("DRIVING", "EVADING") and v.speed is not None
+        if v.fault and v.fault.startswith("TELEMETRY_LOST") and v.speed is not None:
+            # 위치를 모른다: 마지막 위치부터 계획 경로를 따라 (마지막 속도 × PX4 링크 단절 판정 시간 + 미끄럼) 까지
+            # 어디에든 있을 수 있다 → 그 구간 전체를 서 있는 점유로 본다 (2026-10-10 Gazebo: 끊긴 뒤 10 s 더 달리고 미끄러져 섬)
+            sp = v.speed
+            i0 = max(0, min(v._near_i, len(sp.pts) - 1))
+            reach = vel * LINK_LOSS_DRIVE_S + LINK_LOSS_SKID_M
+            pts = [(tel.x, tel.y, 0.0, 0.0, hx, hy)]
+            for k in range(i0 + 1, len(sp.pts)):
+                if sp.cum[k] - sp.cum[i0] > reach:
+                    break
+                a, b = sp.pts[k - 1], sp.pts[k]
+                d = math.dist(a, b) or 1.0
+                pts.append((b[0], b[1], 0.0, sp.cum[k] - sp.cum[i0], (b[0] - a[0]) / d, (b[1] - a[1]) / d))
+            return _Pred(v, pts, True, 0.0, 0.0, 0.0)
         if not moving_plan:
             # 정지·고장·대기·정지 중: 지금 자리(정지 중이면 앞쪽 정지 경로까지)를 계속 차지한다
             pts = [(tel.x, tel.y, 0.0, 0.0, hx, hy)]

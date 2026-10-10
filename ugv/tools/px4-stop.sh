@@ -8,7 +8,7 @@ for f in "$STATE_DIR"/px4-*.pid "$STATE_DIR"/gz-server.pid; do
   kill "$(cat "$f")" 2>/dev/null || true
   rm -f "$f"
 done
-pkill -f "gz sim --verbose=1 -r -s" 2>/dev/null || true
+pkill -f "gz sim --verbose=[0-9] -r -s" 2>/dev/null || true
 pkill -f "gz sim -g" 2>/dev/null || true
 if [ "${1:-}" = "--params" ]; then
   rm -f "$STATE_DIR"/px4-*/parameters*.bson "$STATE_DIR"/px4-*/dataman 2>/dev/null || true

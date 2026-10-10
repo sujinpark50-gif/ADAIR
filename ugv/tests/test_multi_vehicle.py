@@ -395,3 +395,20 @@ def test_departing_away_from_close_vehicle_behind_is_not_a_conflict(tmp_path):
         assert not any(e["event"] == "TRAFFIC_CONFLICT_UNAVOIDABLE" for e in A.events)
         assert f.store.tasks["U1"]["status"] in ("STARTED", "IN_PROGRESS", "COMPLETED") and w["overlaps"] == 0
     asyncio.run(go())
+
+
+def test_vehicle_with_lost_telemetry_occupies_where_it_may_be(tmp_path):
+    """텔레메트리가 끊긴 차는 마지막 위치가 아니라 남은 경로 위 (속도 × 10 s + 30 m) 안 어디에든 있을 수 있다고 본다."""
+    async def go():
+        f, clock = make_fleet(tmp_path, [FLEET_CFG[0], FLEET_CFG[1]])
+        A, AF = f.vehicles["A-ugv1"], f.vehicles["A-fire1"]
+        await A.execute(body("U1", *FRAME.to_ll(A.access.x - 900, A.access.y - 700)))
+        await run(f, clock, 25)
+        v = A.driver.telemetry().speed_mps
+        assert v > 8
+        A._fail("TELEMETRY_LOST", "시험 주입")
+        P = f.traffic._predict(A)
+        assert P.static and P.samples[-1][3] >= v * 10 + 20 - 6          # 경로를 따라 넓은 구간
+        occ = AF.occupied_roads()
+        assert len([r for r, who in occ.items() if who == "A-ugv1"]) >= 1
+    asyncio.run(go())

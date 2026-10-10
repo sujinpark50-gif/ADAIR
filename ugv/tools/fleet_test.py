@@ -269,45 +269,53 @@ def sc_separate(track_s):
 
 
 def sc_follow(track_s):
+    """같은 거점 UGV 와 소방차가 같은 길을 앞뒤로: UGV 먼저 출발, 소방차 목표 = UGV 계획 경로 60 % 지점 (같은 길로 뒤따른다)."""
     net, acc, ll = targets()
     run = Run("follow", track_s)
     la, lo = ll("A", -900, -700)
-    run.go("A-ugv1", "FO-U", la, lo)               # 앞차(출입 지점)
-    run.go("A-fire1", "FO-F", *ll("A", -600, -450))  # 같은 길 앞쪽 지점 (UGV 목적지보다 가까움)
+    run.go("A-ugv1", "FO-U", la, lo)
+    items = run.c.get("/ugv/A-ugv1/route").json()["items"]
+    mid = items[int(len(items) * 0.6)]
+    time.sleep(2)
+    run.go("A-fire1", "FO-F", mid["lat"], mid["lon"])
     run.wait([("A-ugv1", "FO-U"), ("A-fire1", "FO-F")], track_s * 0.5)
-    run.home("A-fire1", "FO-HF")
-    time.sleep(1)
     run.home("A-ugv1", "FO-HU")
+    time.sleep(2)
+    run.home("A-fire1", "FO-HF")
     run.wait([("A-ugv1", "FO-HU"), ("A-fire1", "FO-HF")], track_s * 0.45)
     return run.finish()
 
 
 def sc_fault_block(track_s):
-    """B-ugv1 을 출발시킨 뒤 링크를 끊어 길 위에서 고장 정지(시동 끔)시킨다. B-fire1 이 같은 길로 따라오다 점유 차량으로 기다린다.
-    그동안 A 쪽 두 차는 정상 운용(한 차량 고장이 다른 차량에 번지지 않음). 마지막에 링크 복구·운영자 해제."""
+    """B-ugv1 을 출발시킨 뒤 링크를 끊어 길 위에서 고장 정지(시동 끔)시킨다. 그 뒤 B-fire1 에 B-ugv1 경로 너머 지점을 준다
+    (고장 차가 막은 길) → 계획이 그 도로를 피하거나(우회) 그 앞에서 기다려야 한다. 그동안 A-ugv1 은 정상 운용 (한 차량 고장이
+    다른 차량에 번지지 않음). 마지막에 링크 복구·운영자 해제."""
     net, acc, ll = targets()
     run = Run("fault_block", track_s)
-    tgt = ll("B", 600, 900)
-    run.go("B-ugv1", "FB-BU", *tgt)
+    run.go("B-ugv1", "FB-BU", 37.951004, 128.337462)
+    items = run.c.get("/ugv/B-ugv1/route").json()["items"]
+    beyond = items[int(len(items) * 0.85)]
     run.go("A-ugv1", "FB-AU", *ll("A", -900, -700))
-    t_cut = [None]
+    st = {"cut": None}
 
     def cut_when_moving(p):
         v = p["vehicles"]["B-ugv1"]
-        if t_cut[0] is None and (v["speed"] or 0) > 8 and run.t() > 20:
+        if st["cut"] is None and (v["speed"] or 0) > 8 and run.t() > 15:
             link("B-ugv1", "stop")
-            t_cut[0] = run.t()
-            run.log["link_cut_t"] = t_cut[0]
+            st["cut"] = run.t()
+            run.log["link_cut_t"] = st["cut"]
             print(f"[{run.t():6.1f}] B-ugv1 링크 끊음", flush=True)
-            run.go("B-fire1", "FB-BF", *tgt)            # 같은 목표 → 같은 길 → 고장 차 뒤에서 기다려야 한다
-    run.wait([], 150, extra=cut_when_moving)
-    run.wait([("A-ugv1", "FB-AU")], track_s * 0.4)
+        if st["cut"] is not None and "fire" not in st and run.t() > st["cut"] + 25:
+            st["fire"] = run.go("B-fire1", "FB-BF", beyond["lat"], beyond["lon"])
+    run.wait([], 120, extra=cut_when_moving)
+    keys = [("A-ugv1", "FB-AU")] + ([("B-fire1", "FB-BF")] if st.get("fire", {}).get("status_code") == 200 else [])
+    run.wait(keys, track_s * 0.5)
     link("B-ugv1", "start")
     time.sleep(8)
     run.log["release"] = [run.c.post("/ugv/B-ugv1/stop", json={"reason": "FLEET_TEST_RELEASE"}).json()]
     time.sleep(10)
     run.log["release"].append(run.c.post("/ugv/B-ugv1/stop", json={"reason": "FLEET_TEST_RELEASE2"}).json())
-    run.wait([("B-fire1", "FB-BF")], 120)
+    run.poll()
     return run.finish()
 
 

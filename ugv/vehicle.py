@@ -260,6 +260,19 @@ class Vehicle:
         out = {}
         for p in self.peers():
             t = p.driver.telemetry()
+            if t is not None and p.fault and p.fault.startswith("TELEMETRY_LOST") and p.speed is not None:
+                # 위치를 모르는 차: 마지막 위치부터 남은 경로를 따라 갈 수 있었던 구간의 도로 전부 (ugv/traffic.py 와 같은 범위)
+                from .traffic import LINK_LOSS_DRIVE_S, LINK_LOSS_SKID_M
+                sp = p.speed
+                i0 = max(0, min(p._near_i, len(sp.pts) - 1))
+                reach = t.speed_mps * LINK_LOSS_DRIVE_S + LINK_LOSS_SKID_M
+                for k in range(i0, len(sp.pts)):
+                    if sp.cum[k] - sp.cum[i0] > reach:
+                        break
+                    rid_k = self.net.snap(*sp.pts[k]).road_id
+                    if not (home and rid_k == self.access.road_id):
+                        out[rid_k] = p.resource_id
+                continue
             if t is None or t.speed_mps >= 0.3 or p.state in ("DRIVING", "EVADING"):
                 continue
             # 임무 없이 서 있는 차(도착 뒤 대기·거점 대기)와 고장·위험 차는 지시 없이는 움직이지 않는다 → 그 도로로 계획하지 않는다.
