@@ -38,6 +38,24 @@ BODY_HALF_LEN_M, BODY_HALF_WID_M = 2.1, 0.9      # ugv/gazebo/models/adair_ugv �
 # 차체 둘레 표본 (차체 중심 기준). 네 모서리만 보면 교차로처럼 오목한 도로 영역에서 변이 밖으로 나가는 것을 놓친다
 REAR_TO_CENTER = -config.REAR_AXLE_FROM_CENTER_M      # 뒤축 기준 → 차체 중심 기준
 BODY_OUTLINE = tuple((x + REAR_TO_CENTER, y) for x, y in BODY_SAMPLES)
+# 차량 특성 (차체 치수·뒤축 위치). 기본 UGV. 시험 대상이 소방차면 set_profile 로 바꾼다 (2026-10-10 재시험: 소방차를 UGV 치수로
+# 판정하면 이탈을 작게 본다)
+PROF = None
+
+
+def set_profile(name):
+    global PROF, BODY_OUTLINE
+    from ugv.profiles import get as get_profile
+    PROF = get_profile(name)
+    BODY_OUTLINE = tuple((x - PROF.rear_axle_from_center_m, y) for x, y in PROF.body_samples)
+
+
+def _rac():
+    return PROF.rear_axle_from_center_m if PROF else config.REAR_AXLE_FROM_CENTER_M
+
+
+def _g(net):
+    return net.graph_for(PROF) if PROF else net.graph
 CURVE_NEAR_M = 20.0              # 곡선 감속 지점 앞뒤 이 거리 안의 최대 횡가속을 본다
 CURVE_TOL_MPS = 1.0              # 꼭짓점 통과 속도가 계획보다 이만큼 넘게 빠르면 곡선 감속 실패
 
@@ -89,7 +107,7 @@ def footprint_dev(net, r):
     도로 띠 = 근처 모든 도로의 중심선 ± 추정 반폭의 합집합 (교차로에서는 어느 도로 띠 안이든 안). 0 이하면 도로 안."""
     c, s = math.cos(r["yaw"]), math.sin(r["yaw"])
     worst, excess = 0.0, -math.inf
-    g = net.graph
+    g = _g(net)
     for fx, fy in BODY_OUTLINE:
         x, y = r["x"] + fx * c - fy * s, r["y"] + fx * s + fy * c
         p = net.snap(x, y)
@@ -112,8 +130,8 @@ def _poly_dist(x, y, poly):
 
 def _body_on_path(net, p, yaw):
     """뒤축이 경로 점 p 에 있고 경로 방향 yaw 로 서 있는 차체가 추정 도로 띠 밖으로 나간 거리 (0 이하면 안)."""
-    g = net.graph
-    cx, cy = p[0] + 1.35 * math.cos(yaw), p[1] + 1.35 * math.sin(yaw)
+    g = _g(net)
+    cx, cy = p[0] + _rac() * math.cos(yaw), p[1] + _rac() * math.sin(yaw)
     c, s = math.cos(yaw), math.sin(yaw)
     return max(g.outside_m(cx + fx * c - fy * s, cy + fx * s + fy * c) for fx, fy in BODY_OUTLINE)
 
@@ -169,8 +187,8 @@ def offroad_events(net, rows, idx, excess, spd, plans):
             tt = 0.0 if L2 == 0 else max(0.0, min(1.0, ((r["x"] - ax) * (bx - ax) + (r["y"] - ay) * (by - ay)) / L2))
             q = (ax + tt * (bx - ax), ay + tt * (by - ay))
             # 차량 중심의 가장 가까운 계획점 → 뒤축 위치는 1.35 m 뒤
-            plan_ex = max(_body_on_path(net, (q[0] - 1.35 * math.cos(yaw) + dd * math.cos(yaw),
-                                              q[1] - 1.35 * math.sin(yaw) + dd * math.sin(yaw)), yaw) for dd in (-1.0, 0.0, 1.0))
+            plan_ex = max(_body_on_path(net, (q[0] - _rac() * math.cos(yaw) + dd * math.cos(yaw),
+                                              q[1] - _rac() * math.sin(yaw) + dd * math.sin(yaw)), yaw) for dd in (-1.0, 0.0, 1.0))
         if plan_ex is not None and plan_ex > 0:
             cause = "PLAN_OUTSIDE"
         elif cross is not None and cross > 0.5:
@@ -190,6 +208,10 @@ def offroad_events(net, rows, idx, excess, spd, plans):
 
 
 def evaluate_log(log: dict, rows) -> dict:
+    rid = log.get("rid") or "A-ugv1"
+    prof = (((log.get("health") or {}).get("vehicles") or {}).get(rid) or {}).get("profile")
+    if prof:
+        set_profile(prof)
     net = RoadNetwork()
     spd = speeds(rows)
     alat = lateral_accel(rows, spd)
@@ -460,7 +482,8 @@ def main():
             sim_t = last_sim_t(out_csv)
             r = c.post(f"/ugv/{a.rid}/task/{active}/abort", json={"reason": "ROAD_TEST_ABORT"})
             print(f"[{active}] abort {r.status_code} {r.json().get('status')} {r.json().get('error')}")
-            log["abort"] = {"key": active, "sim_t_cmd": sim_t, "response": r.json()}
+            log["abort"] = {"key": active, "sim_t_cmd": sim_t, "response": r.json(),
+                            "state_at_cmd": stx, "route_after": c.get(f"/ugv/{a.rid}/route").json()}
             aborted, t_abort = True, time.time()
             continue
         if aborted:

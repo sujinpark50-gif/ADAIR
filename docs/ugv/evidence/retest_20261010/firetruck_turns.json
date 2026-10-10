@@ -1,0 +1,95 @@
+{
+ "condition": "A 평탄 월드, A-fire1 단독, 이전 4대 시험 대기 자세, 같은 목표 (logs/ugv/retest_20261010/fleet_firetruck_repro.json)",
+ "R1_before_lookahead_min4_gain1": {
+  "log": "logs/ugv/R1_firetruck_turns_20261010_134515",
+  "offroad_samples": 65,
+  "offroad_max_m": 0.63,
+  "worst": {
+   "sim_t": 54.75,
+   "x": 3940.0,
+   "y": 5563.8,
+   "body_m": 4.38,
+   "excess_m": 0.63,
+   "speed_mps": 4.29
+  },
+  "rtf": {
+   "overall": 1.0,
+   "min_10s": 1.0,
+   "sim_s": 201.1,
+   "wall_s": 201.1,
+   "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"
+  }
+ },
+ "R1b_lookahead_min2": {
+  "log": "logs/ugv/R1b_firetruck_lookahead2_20261010_135029",
+  "offroad_samples": 49,
+  "offroad_max_m": 0.45,
+  "worst": {
+   "sim_t": 161.37,
+   "x": 4248.2,
+   "y": 5838.7,
+   "body_m": 4.2,
+   "excess_m": 0.45,
+   "speed_mps": 4.15
+  },
+  "rtf": {
+   "overall": 1.0,
+   "min_10s": 1.0,
+   "sim_s": 201.1,
+   "wall_s": 201.1,
+   "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"
+  }
+ },
+ "R1c_lookahead_min2_gain0.4": {
+  "log": "logs/ugv/R1c_firetruck_gain04_20261010_135554",
+  "offroad_samples": 30,
+  "offroad_max_m": 0.35,
+  "worst": {
+   "sim_t": 75.712,
+   "x": 3902.2,
+   "y": 5604.0,
+   "body_m": 4.1,
+   "excess_m": 0.35,
+   "speed_mps": 4.15
+  },
+  "rtf": {
+   "overall": 1.0,
+   "min_10s": 1.0,
+   "sim_s": 201.1,
+   "wall_s": 201.1,
+   "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"
+  }
+ },
+ "head_on_A_fire1_cause": {
+  "file": "logs/ugv/retest_20261010/HO_fire_cause.json",
+  "events": [
+   {
+    "first": 68.0,
+    "duration_s": 1.7,
+    "cause": "PX4_TRACKING",
+    "sim_t": 69.08,
+    "x": 16773.1,
+    "y": -7227.63,
+    "body_excess_actual": 0.63,
+    "cross_track_m": 0.93,
+    "plan_excess_m": -0.06,
+    "heading_err_deg": -3.3
+   },
+   {
+    "first": 91.98,
+    "duration_s": 1.5,
+    "cause": "PX4_TRACKING",
+    "sim_t": 92.84,
+    "x": 16846.3,
+    "y": -7095.91,
+    "body_excess_actual": 0.475,
+    "cross_track_m": 0.803,
+    "plan_excess_m": -0.135,
+    "heading_err_deg": 2.8
+   }
+  ],
+  "max_cross_track_m": 2.141,
+  "min_plan_margin_m": -2.6
+ },
+ "basis": "차체 7.0x2.3 m 둘레 표본 vs 추정 도로 띠 (판정 기준 변경 없음). 원인 분류 ugv/tools/offroad_cause.py"
+}

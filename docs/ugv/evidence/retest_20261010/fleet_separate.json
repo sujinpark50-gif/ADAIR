@@ -1,0 +1,854 @@
+{
+ "invalid_duplicate_run": {
+  "note": "시험 도구 두 번 동시 실행 — 판정에 쓰지 않음",
+  "a": {
+   "log": "logs/ugv/fleet_separate_20261010_152818.json",
+   "start_local": "2026-10-10 15:28:21",
+   "vehicles": {
+    "A-ugv1": {
+     "profile": "adair_ugv",
+     "distance_m": 6034.9,
+     "max_speed_kmh": 60.4,
+     "offroad_events": 4,
+     "offroad_max_m": 9.99,
+     "offroad_list": [
+      {
+       "first": 322.938,
+       "last": 322.938,
+       "max": 0.01,
+       "x": 2947.0,
+       "y": 3449.5,
+       "speed": 5.73
+      },
+      {
+       "first": 337.626,
+       "last": 338.274,
+       "max": 0.1,
+       "x": 2968.4,
+       "y": 3378.6,
+       "speed": 3.71
+      },
+      {
+       "first": 631.372,
+       "last": 636.34,
+       "max": 9.99,
+       "x": 4051.8,
+       "y": 5666.7,
+       "speed": 4.81
+      },
+      {
+       "first": 637.204,
+       "last": 639.796,
+       "max": 3.05,
+       "x": 4046.3,
+       "y": 5654.7,
+       "speed": 5.16
+      }
+     ],
+     "rtf": 0.983,
+     "rollover": false
+    },
+    "A-fire1": {
+     "profile": "adair_firetruck",
+     "distance_m": 2433.5,
+     "max_speed_kmh": 51.0,
+     "offroad_events": 4,
+     "offroad_max_m": 0.28,
+     "offroad_list": [
+      {
+       "first": 141.682,
+       "last": 142.546,
+       "max": 0.28,
+       "x": 4580.8,
+       "y": 6029.6,
+       "speed": 3.96
+      },
+      {
+       "first": 381.906,
+       "last": 382.77,
+       "max": 0.14,
+       "x": 4071.9,
+       "y": 5849.5,
+       "speed": 4.26
+      },
+      {
+       "first": 400.914,
+       "last": 401.994,
+       "max": 0.17,
+       "x": 3994.8,
+       "y": 5768.4,
+       "speed": 3.92
+      },
+      {
+       "first": 420.132,
+       "last": 420.996,
+       "max": 0.24,
+       "x": 4075.1,
+       "y": 5686.8,
+       "speed": 4.02
+      }
+     ],
+     "rtf": 0.983,
+     "rollover": false
+    },
+    "B-ugv1": {
+     "profile": "adair_ugv",
+     "distance_m": 2207.3,
+     "max_speed_kmh": 60.3,
+     "offroad_events": 3,
+     "offroad_max_m": 0.51,
+     "offroad_list": [
+      {
+       "first": 162.876,
+       "last": 163.956,
+       "max": 0.45,
+       "x": 17226.5,
+       "y": -5815.7,
+       "speed": 4.38
+      },
+      {
+       "first": 246.682,
+       "last": 247.546,
+       "max": 0.51,
+       "x": 17208.4,
+       "y": -5973.7,
+       "speed": 4.51
+      },
+      {
+       "first": 326.394,
+       "last": 326.826,
+       "max": 0.14,
+       "x": 17079.4,
+       "y": -5201.6,
+       "speed": 6.25
+      }
+     ],
+     "rtf": 0.983,
+     "rollover": false
+    },
+    "B-fire1": {
+     "profile": "adair_firetruck",
+     "distance_m": 1076.1,
+     "max_speed_kmh": 51.1,
+     "offroad_events": 2,
+     "offroad_max_m": 0.45,
+     "offroad_list": [
+      {
+       "first": 119.254,
+       "last": 120.55,
+       "max": 0.45,
+       "x": 17109.0,
+       "y": -6096.7,
+       "speed": 3.82
+      },
+      {
+       "first": 258.364,
+       "last": 259.444,
+       "max": 0.25,
+       "x": 17063.5,
+       "y": -6229.5,
+       "speed": 4.09
+      }
+     ],
+     "rtf": 0.983,
+     "rollover": false
+    }
+   },
+   "pairs": {
+    "A-ugv1~A-fire1": {
+     "min_center_gap_minus_half_lengths_m": 56.18,
+     "body_overlap_samples": 0
+    },
+    "A-ugv1~B-ugv1": {
+     "min_center_gap_minus_half_lengths_m": 16299.67,
+     "body_overlap_samples": 0
+    },
+    "A-ugv1~B-fire1": {
+     "min_center_gap_minus_half_lengths_m": 16753.35,
+     "body_overlap_samples": 0
+    },
+    "A-fire1~B-ugv1": {
+     "min_center_gap_minus_half_lengths_m": 16919.06,
+     "body_overlap_samples": 0
+    },
+    "A-fire1~B-fire1": {
+     "min_center_gap_minus_half_lengths_m": 17427.96,
+     "body_overlap_samples": 0
+    },
+    "B-ugv1~B-fire1": {
+     "min_center_gap_minus_half_lengths_m": 249.55,
+     "body_overlap_samples": 0
+    }
+   },
+   "tasks": {
+    "S-A-U": [
+     "A-ugv1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ],
+    "S-B-U": [
+     "B-ugv1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ],
+    "S-A-F": [
+     "A-fire1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ],
+    "S-B-F": [
+     "B-fire1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ],
+    "H-S-A-U": [
+     "A-ugv1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ],
+    "H-S-B-U": [
+     "B-ugv1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ],
+    "H-S-A-F": [
+     "A-fire1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ],
+    "H-S-B-F": [
+     "B-fire1",
+     "COMPLETED",
+     "ARRIVED",
+     null
+    ]
+   },
+   "traffic_events": {
+    "A-ugv1": [
+     {
+      "event": "YIELD",
+      "sim_time_s": 600.12,
+      "other": "A-fire1",
+      "kind": "STATIC",
+      "why": "STOPPED_VEHICLE_AHEAD",
+      "waited_s": null,
+      "code": null
+     },
+     {
+      "event": "YIELD_END",
+      "sim_time_s": 604.64,
+      "other": "A-fire1",
+      "kind": null,
+      "why": null,
+      "waited_s": 4.7,
+      "code": null
+     }
+    ],
+    "A-fire1": [],
+    "B-ugv1": [],
+    "B-fire1": []
+   },
+   "command_rtt_s": {
+    "max": 9.501,
+    "mean": 2.865
+   },
+   "telemetry_age_s": {
+    "max": 0.21,
+    "p95": 0.03,
+    "polls": 179
+   }
+  },
+  "b_ugv1_route_last_sent": {
+   "wall": 1791614266.4225829,
+   "here": [
+    4048.3,
+    5659.76
+   ],
+   "items": [
+    [
+     4032.64,
+     5644.81,
+     10.5,
+     true
+    ],
+    [
+     4018.81,
+     5631.59,
+     3.71,
+     true
+    ],
+    [
+     3992.09,
+     5606.29,
+     3.71,
+     false
+    ]
+   ]
+  }
+ },
+ "after_progress_fix_blocked_home": {
+  "log": "logs/ugv/fleet_separate_20261010_155201.json",
+  "start_local": "2026-10-10 15:52:04",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 6227.9,
+    "max_speed_kmh": 60.4,
+    "offroad_events": 4,
+    "offroad_max_m": 0.41,
+    "offroad_list": [
+     {
+      "first": 782.21,
+      "last": 782.21,
+      "max": 0.02,
+      "x": 2947.6,
+      "y": 3451.0,
+      "speed": 5.51
+     },
+     {
+      "first": 797.33,
+      "last": 797.33,
+      "max": 0.13,
+      "x": 2969.0,
+      "y": 3378.5,
+      "speed": 3.85
+     },
+     {
+      "first": 797.762,
+      "last": 797.762,
+      "max": 0.12,
+      "x": 2970.7,
+      "y": 3378.8,
+      "speed": 3.92
+     },
+     {
+      "first": 1104.696,
+      "last": 1105.56,
+      "max": 0.41,
+      "x": 4050.6,
+      "y": 5711.3,
+      "speed": 4.46
+     }
+    ],
+    "rtf": 0.979,
+    "rollover": false
+   },
+   "A-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 2433.8,
+    "max_speed_kmh": 50.9,
+    "offroad_events": 4,
+    "offroad_max_m": 0.25,
+    "offroad_list": [
+     {
+      "first": 611.146,
+      "last": 612.01,
+      "max": 0.16,
+      "x": 4580.5,
+      "y": 6029.6,
+      "speed": 4.02
+     },
+     {
+      "first": 834.932,
+      "last": 835.796,
+      "max": 0.17,
+      "x": 4071.9,
+      "y": 5849.5,
+      "speed": 4.23
+     },
+     {
+      "first": 853.94,
+      "last": 854.804,
+      "max": 0.21,
+      "x": 3994.8,
+      "y": 5768.2,
+      "speed": 3.93
+     },
+     {
+      "first": 872.946,
+      "last": 874.026,
+      "max": 0.25,
+      "x": 4074.5,
+      "y": 5686.9,
+      "speed": 3.89
+     }
+    ],
+    "rtf": 0.979,
+    "rollover": false
+   },
+   "B-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 2207.3,
+    "max_speed_kmh": 60.2,
+    "offroad_events": 4,
+    "offroad_max_m": 0.58,
+    "offroad_list": [
+     {
+      "first": 632.314,
+      "last": 633.178,
+      "max": 0.33,
+      "x": 17226.5,
+      "y": -5816.1,
+      "speed": 4.4
+     },
+     {
+      "first": 693.874,
+      "last": 694.09,
+      "max": 0.06,
+      "x": 17273.7,
+      "y": -5975.3,
+      "speed": 5.42
+     },
+     {
+      "first": 705.106,
+      "last": 706.186,
+      "max": 0.58,
+      "x": 17208.7,
+      "y": -5973.9,
+      "speed": 4.44
+     },
+     {
+      "first": 784.82,
+      "last": 785.468,
+      "max": 0.17,
+      "x": 17079.8,
+      "y": -5202.5,
+      "speed": 6.37
+     }
+    ],
+    "rtf": 0.979,
+    "rollover": false
+   },
+   "B-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 1075.8,
+    "max_speed_kmh": 51.0,
+    "offroad_events": 2,
+    "offroad_max_m": 0.45,
+    "offroad_list": [
+     {
+      "first": 588.466,
+      "last": 589.978,
+      "max": 0.45,
+      "x": 17109.0,
+      "y": -6096.3,
+      "speed": 3.82
+     },
+     {
+      "first": 725.626,
+      "last": 726.706,
+      "max": 0.34,
+      "x": 17063.6,
+      "y": -6229.4,
+      "speed": 4.06
+     }
+    ],
+    "rtf": 0.979,
+    "rollover": false
+   }
+  },
+  "pairs": {
+   "A-ugv1~A-fire1": {
+    "min_center_gap_minus_half_lengths_m": 5.21,
+    "body_overlap_samples": 0
+   },
+   "A-ugv1~B-ugv1": {
+    "min_center_gap_minus_half_lengths_m": 16299.5,
+    "body_overlap_samples": 0
+   },
+   "A-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 16753.28,
+    "body_overlap_samples": 0
+   },
+   "A-fire1~B-ugv1": {
+    "min_center_gap_minus_half_lengths_m": 16919.09,
+    "body_overlap_samples": 0
+   },
+   "A-fire1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 17428.13,
+    "body_overlap_samples": 0
+   },
+   "B-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 207.82,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "S-A-U": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-B-U": [
+    "B-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-A-F": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-B-F": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-A-U": [
+    "A-ugv1",
+    "IN_PROGRESS",
+    "NOT_ARRIVED",
+    null
+   ],
+   "H-S-B-U": [
+    "B-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-A-F": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-B-F": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [
+    {
+     "event": "YIELD",
+     "sim_time_s": 587.67,
+     "other": "A-fire1",
+     "kind": "STATIC",
+     "why": "STOPPED_VEHICLE_AHEAD",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "TRAFFIC_BLOCKED_BY_VEHICLE",
+     "sim_time_s": 647.67,
+     "other": "A-fire1",
+     "kind": null,
+     "why": null,
+     "waited_s": 60.2,
+     "code": null
+    }
+   ],
+   "A-fire1": [],
+   "B-ugv1": [],
+   "B-fire1": []
+  },
+  "command_rtt_s": {
+   "max": 10.499,
+   "mean": 2.842
+  },
+  "telemetry_age_s": {
+   "max": 0.05,
+   "p95": 0.03,
+   "polls": 307
+  }
+ },
+ "after_all_fixes": {
+  "log": "logs/ugv/fleet_separate_20261010_161417.json",
+  "start_local": "2026-10-10 16:14:20",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 6040.0,
+    "max_speed_kmh": 60.3,
+    "offroad_events": 6,
+    "offroad_max_m": 0.49,
+    "offroad_list": [
+     {
+      "first": 299.576,
+      "last": 299.576,
+      "max": 0.01,
+      "x": 2947.5,
+      "y": 3451.0,
+      "speed": 5.56
+     },
+     {
+      "first": 314.264,
+      "last": 314.264,
+      "max": 0.01,
+      "x": 2967.5,
+      "y": 3378.8,
+      "speed": 3.57
+     },
+     {
+      "first": 314.696,
+      "last": 314.696,
+      "max": 0.15,
+      "x": 2969.0,
+      "y": 3378.6,
+      "speed": 3.83
+     },
+     {
+      "first": 315.128,
+      "last": 315.128,
+      "max": 0.14,
+      "x": 2970.7,
+      "y": 3378.8,
+      "speed": 3.94
+     },
+     {
+      "first": 602.834,
+      "last": 603.914,
+      "max": 0.49,
+      "x": 3820.9,
+      "y": 5519.3,
+      "speed": 4.43
+     },
+     {
+      "first": 640.202,
+      "last": 640.85,
+      "max": 0.29,
+      "x": 4019.4,
+      "y": 5638.1,
+      "speed": 4.32
+     }
+    ],
+    "rtf": 0.977,
+    "rollover": false
+   },
+   "A-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 2294.3,
+    "max_speed_kmh": 50.9,
+    "offroad_events": 7,
+    "offroad_max_m": 0.24,
+    "offroad_list": [
+     {
+      "first": 135.414,
+      "last": 136.278,
+      "max": 0.16,
+      "x": 4580.8,
+      "y": 6029.5,
+      "speed": 4.02
+     },
+     {
+      "first": 294.824,
+      "last": 295.688,
+      "max": 0.1,
+      "x": 4319.6,
+      "y": 6148.5,
+      "speed": 4.08
+     },
+     {
+      "first": 307.784,
+      "last": 308.0,
+      "max": 0.04,
+      "x": 4344.6,
+      "y": 6098.9,
+      "speed": 4.35
+     },
+     {
+      "first": 344.288,
+      "last": 344.936,
+      "max": 0.14,
+      "x": 4050.3,
+      "y": 5892.3,
+      "speed": 4.17
+     },
+     {
+      "first": 355.304,
+      "last": 355.952,
+      "max": 0.14,
+      "x": 4071.9,
+      "y": 5849.2,
+      "speed": 4.37
+     },
+     {
+      "first": 374.312,
+      "last": 374.96,
+      "max": 0.15,
+      "x": 3994.8,
+      "y": 5767.9,
+      "speed": 4.07
+     },
+     {
+      "first": 393.536,
+      "last": 394.184,
+      "max": 0.24,
+      "x": 4075.7,
+      "y": 5686.8,
+      "speed": 4.09
+     }
+    ],
+    "rtf": 0.977,
+    "rollover": false
+   },
+   "B-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 2207.7,
+    "max_speed_kmh": 60.4,
+    "offroad_events": 3,
+    "offroad_max_m": 0.48,
+    "offroad_list": [
+     {
+      "first": 156.58,
+      "last": 157.444,
+      "max": 0.48,
+      "x": 17226.7,
+      "y": -5816.3,
+      "speed": 4.39
+     },
+     {
+      "first": 222.674,
+      "last": 223.538,
+      "max": 0.42,
+      "x": 17208.0,
+      "y": -5973.5,
+      "speed": 4.51
+     },
+     {
+      "first": 302.384,
+      "last": 302.816,
+      "max": 0.07,
+      "x": 17079.3,
+      "y": -5201.5,
+      "speed": 6.31
+     }
+    ],
+    "rtf": 0.977,
+    "rollover": false
+   },
+   "B-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 1076.1,
+    "max_speed_kmh": 51.0,
+    "offroad_events": 2,
+    "offroad_max_m": 0.49,
+    "offroad_list": [
+     {
+      "first": 112.536,
+      "last": 114.048,
+      "max": 0.49,
+      "x": 17108.9,
+      "y": -6096.1,
+      "speed": 3.87
+     },
+     {
+      "first": 241.31,
+      "last": 242.39,
+      "max": 0.34,
+      "x": 17063.8,
+      "y": -6230.0,
+      "speed": 4.06
+     }
+    ],
+    "rtf": 0.977,
+    "rollover": false
+   }
+  },
+  "pairs": {
+   "A-ugv1~A-fire1": {
+    "min_center_gap_minus_half_lengths_m": 99.82,
+    "body_overlap_samples": 0
+   },
+   "A-ugv1~B-ugv1": {
+    "min_center_gap_minus_half_lengths_m": 16299.62,
+    "body_overlap_samples": 0
+   },
+   "A-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 16753.28,
+    "body_overlap_samples": 0
+   },
+   "A-fire1~B-ugv1": {
+    "min_center_gap_minus_half_lengths_m": 16919.06,
+    "body_overlap_samples": 0
+   },
+   "A-fire1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 17428.02,
+    "body_overlap_samples": 0
+   },
+   "B-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 214.58,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "S-A-U": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-B-U": [
+    "B-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-A-F": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-B-F": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-A-U": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-B-U": [
+    "B-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-A-F": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-B-F": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [],
+   "A-fire1": [],
+   "B-ugv1": [],
+   "B-fire1": []
+  },
+  "command_rtt_s": {
+   "max": 7.298,
+   "mean": 2.284
+  },
+  "telemetry_age_s": {
+   "max": 0.04,
+   "p95": 0.03,
+   "polls": 191
+  }
+ },
+ "original_20261010_113236": "docs/ugv/evidence/summary_fleet_separate_20261010_113236.json (A-fire1 0.74 m)"
+}

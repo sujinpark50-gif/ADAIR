@@ -1,0 +1,114 @@
+{
+ "log": "logs/ugv/fleet_pair_junction_20261010_151518.json",
+ "start_local": "2026-10-10 15:15:21",
+ "vehicles": {
+  "A-ugv1": {
+   "profile": "adair_ugv",
+   "distance_m": 273.7,
+   "max_speed_kmh": 49.9,
+   "offroad_events": 0,
+   "offroad_max_m": 0.0,
+   "offroad_list": [],
+   "rtf": 0.975,
+   "rollover": false
+  },
+  "B-fire1": {
+   "profile": "adair_firetruck",
+   "distance_m": 169.8,
+   "max_speed_kmh": 22.0,
+   "offroad_events": 0,
+   "offroad_max_m": 0.0,
+   "offroad_list": [],
+   "rtf": 0.975,
+   "rollover": false
+  }
+ },
+ "pairs": {
+  "A-ugv1~B-fire1": {
+   "min_center_gap_minus_half_lengths_m": 28.14,
+   "body_overlap_samples": 0
+  }
+ },
+ "tasks": {
+  "P-JU-A-ugv1": [
+   "A-ugv1",
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ],
+  "P-JU-B-fire1": [
+   "B-fire1",
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ]
+ },
+ "traffic_events": {
+  "A-ugv1": [],
+  "B-fire1": [
+   {
+    "event": "YIELD",
+    "sim_time_s": 36.91,
+    "other": "A-ugv1",
+    "kind": "FOLLOW",
+    "why": "FOLLOWING",
+    "waited_s": null,
+    "code": null
+   },
+   {
+    "event": "YIELD",
+    "sim_time_s": 54.42,
+    "other": "A-ugv1",
+    "kind": "FOLLOW",
+    "why": "FOLLOWING",
+    "waited_s": null,
+    "code": null
+   },
+   {
+    "event": "YIELD",
+    "sim_time_s": 55.94,
+    "other": "A-ugv1",
+    "kind": "FOLLOW",
+    "why": "FOLLOWING",
+    "waited_s": null,
+    "code": null
+   },
+   {
+    "event": "YIELD_END",
+    "sim_time_s": 57.45,
+    "other": "A-ugv1",
+    "kind": null,
+    "why": null,
+    "waited_s": 1.5,
+    "code": null
+   }
+  ]
+ },
+ "command_rtt_s": {
+  "max": 0.562,
+  "mean": 0.368
+ },
+ "telemetry_age_s": {
+  "max": 0.03,
+  "p95": 0.03,
+  "polls": 44
+ },
+ "layout": [
+  {
+   "rid": "A-ugv1",
+   "entry_road": "682501307",
+   "node": "494928",
+   "start_m": 110,
+   "dest_road": "682501929",
+   "dest_s_m": 170.0
+  },
+  {
+   "rid": "B-fire1",
+   "entry_road": "682501539",
+   "node": "494928",
+   "start_m": 110,
+   "dest_road": "682501929",
+   "dest_s_m": 60.0
+  }
+ ]
+}

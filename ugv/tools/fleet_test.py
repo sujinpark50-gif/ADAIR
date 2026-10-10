@@ -37,12 +37,14 @@ INSTANCE = {c["resource_id"]: c["px4"]["instance"] for c in FLEET}
 
 
 class Run:
-    def __init__(self, tag, track_s):
+    def __init__(self, tag, track_s, rids=None):
         self.c = httpx.Client(base_url=SERVER, timeout=90)
         self.stamp = time.strftime("%Y%m%d_%H%M%S")
         self.tag = tag
         self.trackers, self.csv = {}, {}
         for rid, model in MODEL.items():
+            if rids is not None and rid not in rids:       # 일부 차량만 띄운 시험 (pair_test)
+                continue
             p = LOG_DIR / f"fleet_{tag}_{self.stamp}_{rid}.csv"
             self.csv[rid] = p
             self.trackers[rid] = start_tracker(p, track_s, world=WORLD, model=model)
@@ -109,7 +111,7 @@ class Run:
 
     def finish(self):
         self.log["end_local"] = time.strftime("%F %T")
-        self.log["events"] = {rid: self.c.get(f"/ugv/{rid}/events?limit=200").json() for rid in MODEL}
+        self.log["events"] = {rid: self.c.get(f"/ugv/{rid}/events?limit=200").json() for rid in self.trackers}
         self.log["tasks"] = {c["key"]: self.task(c["rid"], c["key"]) for c in self.log["commands"]}
         self.log["traffic_final"] = self.c.get("/traffic").json()
         for p in self.trackers.values():

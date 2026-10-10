@@ -76,3 +76,10 @@ param set-default SIM_GZ_SV_REV 1
 # 대가: 16.4 m/s 에서 바퀴가 멈춰 15 m 미끄러지며 선다 (평균 약 9 m/s², 비상 제동 수준). Hold(1) 는 이 rover 에서 주행을 일으켜 쓰지 않는다
 param set-default COM_DL_LOSS_T 10
 param set-default NAV_DLL_ACT 6
+
+# 방위: Gazebo 자기 센서(위경도로 계산한 자기장)와 PX4 WMM 편각(-9.14°)이 약 15.3° 어긋나, 정차 중 EKF 방위가
+# 실제보다 약 15° 틀어진 채 머물렀다 (2026-10-10 재시험: 스폰 직후 PX4 31.7° / 실제 47.0°, 주행 뒤 정차하면 분당 약 1.5° 씩 그쪽으로 돌아감).
+# 시뮬레이터용 보정 (실차에는 쓰지 않는다 — 실차는 WMM 자동값). 측정(ugv/tools/heading_drift.py): 정차 방위 오차 15.3° → 6.4°.
+# 편각 값을 12.5° 로 바꿔도 6.45° 로 같아, 남은 6.4° 의 원인은 미확인 (EKF2_DECL_TYPE 0 의 효과로 보임)
+param set-default EKF2_DECL_TYPE 0
+param set-default EKF2_MAG_DECL 6.17

@@ -1,0 +1,219 @@
+{
+ "before_fix": {
+  "log": "logs/ugv/fleet_pair_head_on_20261010_151736.json",
+  "start_local": "2026-10-10 15:17:39",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 122.0,
+    "max_speed_kmh": 28.7,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "offroad_list": [],
+    "rtf": 0.992,
+    "rollover": false
+   },
+   "A-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 277.2,
+    "max_speed_kmh": 42.6,
+    "offroad_events": 2,
+    "offroad_max_m": 0.6,
+    "offroad_list": [
+     {
+      "first": 73.062,
+      "last": 74.574,
+      "max": 0.6,
+      "x": 16773.8,
+      "y": -7229.9,
+      "speed": 3.84
+     },
+     {
+      "first": 97.038,
+      "last": 98.55,
+      "max": 0.43,
+      "x": 16844.3,
+      "y": -7096.7,
+      "speed": 3.89
+     }
+    ],
+    "rtf": 0.992,
+    "rollover": false
+   }
+  },
+  "pairs": {
+   "A-ugv1~A-fire1": {
+    "min_center_gap_minus_half_lengths_m": 8.68,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "P-HE-A-ugv1": [
+    "A-ugv1",
+    "FAILED",
+    "NOT_ARRIVED",
+    "VEHICLE_FAULT: 주행 중 시동 꺼짐 (disarm)"
+   ],
+   "P-HE-A-fire1": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [
+    {
+     "event": "YIELD",
+     "sim_time_s": 31.62,
+     "other": "A-fire1",
+     "kind": "HEAD_ON",
+     "why": "HEAD_ON_PRIORITY",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD_END",
+     "sim_time_s": 74.19,
+     "other": "A-fire1",
+     "kind": null,
+     "why": null,
+     "waited_s": 42.6,
+     "code": null
+    },
+    {
+     "event": "FAULT",
+     "sim_time_s": 74.39,
+     "other": null,
+     "kind": null,
+     "why": null,
+     "waited_s": null,
+     "code": "VEHICLE_FAULT"
+    }
+   ],
+   "A-fire1": []
+  },
+  "command_rtt_s": {
+   "max": 0.33,
+   "mean": 0.279
+  },
+  "telemetry_age_s": {
+   "max": 0.03,
+   "p95": 0.02,
+   "polls": 56
+  }
+ },
+ "after_fix": {
+  "log": "logs/ugv/fleet_pair_head_on_20261010_152449.json",
+  "start_local": "2026-10-10 15:24:52",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 282.2,
+    "max_speed_kmh": 49.9,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "offroad_list": [],
+    "rtf": 0.986,
+    "rollover": false
+   },
+   "A-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 277.8,
+    "max_speed_kmh": 42.4,
+    "offroad_events": 2,
+    "offroad_max_m": 0.63,
+    "offroad_list": [
+     {
+      "first": 68.004,
+      "last": 69.516,
+      "max": 0.63,
+      "x": 16774.0,
+      "y": -7230.2,
+      "speed": 3.87
+     },
+     {
+      "first": 91.98,
+      "last": 93.276,
+      "max": 0.48,
+      "x": 16844.6,
+      "y": -7096.5,
+      "speed": 3.86
+     }
+    ],
+    "rtf": 0.986,
+    "rollover": false
+   }
+  },
+  "pairs": {
+   "A-ugv1~A-fire1": {
+    "min_center_gap_minus_half_lengths_m": 8.63,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "P-HE-A-ugv1": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "P-HE-A-fire1": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [
+    {
+     "event": "YIELD",
+     "sim_time_s": 33.73,
+     "other": "A-fire1",
+     "kind": "HEAD_ON",
+     "why": "HEAD_ON_PRIORITY",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD_END",
+     "sim_time_s": 75.78,
+     "other": "A-fire1",
+     "kind": null,
+     "why": null,
+     "waited_s": 42.1,
+     "code": null
+    }
+   ],
+   "A-fire1": []
+  },
+  "command_rtt_s": {
+   "max": 0.819,
+   "mean": 0.777
+  },
+  "telemetry_age_s": {
+   "max": 0.03,
+   "p95": 0.03,
+   "polls": 77
+  }
+ },
+ "layout": [
+  {
+   "rid": "A-ugv1",
+   "entry_road": "683400838",
+   "node": "495756",
+   "start_m": 70,
+   "dest_road": "683401696",
+   "dest_s_m": 178.2
+  },
+  {
+   "rid": "A-fire1",
+   "entry_road": "683400828",
+   "node": "495766",
+   "start_m": 70,
+   "dest_road": "683400719",
+   "dest_s_m": 116.3
+  }
+ ]
+}

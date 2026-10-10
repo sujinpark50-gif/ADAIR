@@ -58,6 +58,8 @@ world_up() { gz service -i --service "/world/$WORLD/scene/info" 2>&1 | grep -q "
 # 3) 월드 (이미 떠 있으면 그대로 쓴다)
 if ! world_up; then
   echo "[ugv] Gazebo 월드 시작: $WORLD"
+  # 앞 실행의 서버 로그는 시각을 붙여 남긴다 (로그 없는 서버 종료 재발 확인용, 2026-10-10)
+  [ -f "$STATE_DIR/gz-server.log" ] && mv "$STATE_DIR/gz-server.log" "$STATE_DIR/gz-server.$(date -r "$STATE_DIR/gz-server.log" +%Y%m%d_%H%M%S).log"
   nohup gz sim --verbose="${GZ_VERBOSE:-1}" -r -s "$WORLD_FILE" > "$STATE_DIR/gz-server.log" 2>&1 &
   echo $! > "$STATE_DIR/gz-server.pid"
   for _ in $(seq 60); do world_up && break; sleep 1; done

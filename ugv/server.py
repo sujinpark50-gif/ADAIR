@@ -193,7 +193,11 @@ def create_app(fleet: Optional[Fleet] = None, *, autostart: bool = True) -> Fast
         return {"resource_id": rid, "mission_state": v.state, "task_id": v.task_key, "eta_sec": round(sp.eta_s),
                 "length_m": round(sp.cum[-1], 1), "approach": v.plan.report() if v.plan else None,
                 "items": [{"lat": round(FRAME.to_ll(x, y)[0], 7), "lon": round(FRAME.to_ll(x, y)[1], 7),
-                           "speed_mps": s} for x, y, s in sp.items]}
+                           "speed_mps": s} for x, y, s in sp.items],
+                # 계획 선형(뒤축 경로, 5 m 이하 간격)·계획 속도 — 시험 분석용 (지역 평면 x, y m)
+                "plan_xy": [[round(x, 2), round(y, 2)] for x, y in sp.pts], "plan_v": [round(v, 2) for v in sp.v],
+                "hold": v.hold,
+                "last_sent_mission": getattr(v.driver, "last_sent", None)}     # PX4 에 실제로 보낸 마지막 미션 (정지 미션 포함)
 
     @app.get("/ugv/{rid}/events")
     def events(rid: str, limit: int = 50):

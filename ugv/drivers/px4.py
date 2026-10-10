@@ -17,6 +17,7 @@
 
 import asyncio
 import math
+import time
 from typing import List, Optional
 
 from ..geo import FRAME
@@ -211,7 +212,10 @@ class Px4Driver(Driver):
         tel = self.telemetry()
         here = (tel.x, tel.y) if tel is not None else items[0][:2]
         plan = []
-        for x, y, v, through in mavsdk_plan(items, here, tel.speed_mps if tel is not None else 0.0):
+        sent = mavsdk_plan(items, here, tel.speed_mps if tel is not None else 0.0)
+        self.last_sent = {"wall": time.time(), "here": [round(here[0], 2), round(here[1], 2)],
+                          "items": [[round(x, 2), round(y, 2), round(v, 2), th] for x, y, v, th in sent]}
+        for x, y, v, through in sent:
             lat, lon = FRAME.to_ll(x, y)
             plan.append(_mission_item(lat, lon, float(v), through=through))
         async with self._cmd:
