@@ -1,0 +1,14 @@
+[
+  {"resource_id": "A-ugv1", "resource_type": "UGV", "profile": "adair_ugv", "station_base_id": "A", "station_slot": 0,
+   "initial": "STATION", "driver": "px4",
+   "px4": {"address": "udpin://0.0.0.0:14541", "instance": 1, "gz_world": "kangwon_flat", "gz_model": "adair_ugv_1"}},
+  {"resource_id": "A-fire1", "resource_type": "FIRE_ENGINE", "profile": "adair_firetruck", "station_base_id": "A",
+   "station_slot": 1, "slot_lengths": [4.2], "initial": "STATION", "driver": "px4",
+   "px4": {"address": "udpin://0.0.0.0:14542", "instance": 2, "gz_world": "kangwon_flat", "gz_model": "adair_firetruck_2"}},
+  {"resource_id": "B-ugv1", "resource_type": "UGV", "profile": "adair_ugv", "station_base_id": "B", "station_slot": 0,
+   "initial": "STATION", "driver": "px4",
+   "px4": {"address": "udpin://0.0.0.0:14543", "instance": 3, "gz_world": "kangwon_flat", "gz_model": "adair_ugv_3"}},
+  {"resource_id": "B-fire1", "resource_type": "FIRE_ENGINE", "profile": "adair_firetruck", "station_base_id": "B",
+   "station_slot": 1, "slot_lengths": [4.2], "initial": "STATION", "driver": "px4",
+   "px4": {"address": "udpin://0.0.0.0:14544", "instance": 4, "gz_world": "kangwon_flat", "gz_model": "adair_firetruck_4"}}
+]

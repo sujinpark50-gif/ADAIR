@@ -45,7 +45,7 @@ def main():
     # 받는 즉시 쓴다 (도중에 종료돼도 그때까지의 기록이 남는다)
     f = open(a.out, "w", newline="")
     writer = csv.writer(f)
-    writer.writerow(["sim_t", "x", "y", "z", "yaw", "roll", "pitch", "steer_rad", "wheel_rad_s"])
+    writer.writerow(["sim_t", "x", "y", "z", "yaw", "roll", "pitch", "steer_rad", "wheel_rad_s", "wall_t"])
     step = 1.0 / a.hz
 
     def on_joints(msg: Model):
@@ -71,7 +71,7 @@ def main():
                 with lock:
                     writer.writerow([round(t, 4), round(p.position.x, 4), round(p.position.y, 4), round(p.position.z, 4),
                                      round(yaw, 5), round(roll, 5), round(pitch, 5),
-                                     round(joints["steer"], 5), round(joints["wheel"], 4)])
+                                     round(joints["steer"], 5), round(joints["wheel"], 4), round(time.time(), 3)])
                     count[0] += 1
                 last_t[0] = t
                 break

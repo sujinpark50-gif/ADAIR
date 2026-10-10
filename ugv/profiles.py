@@ -21,7 +21,7 @@ from . import config
 @dataclass(frozen=True)
 class VehicleProfile:
     name: str
-    vehicle_kind: str                  # UGV / FIRE_TRUCK
+    vehicle_kind: str                  # UGV / FIRE_ENGINE (통합 계약 resource_type)
     wheelbase_m: float
     steer_max_deg: float
     body_length_m: float
@@ -93,10 +93,10 @@ PROFILES: Dict[str, VehicleProfile] = {
     "adair_ugv": VehicleProfile(
         "adair_ugv", "UGV", config.WHEELBASE_M, config.STEER_MAX_DEG, config.BODY_LENGTH_M, config.BODY_WIDTH_M,
         config.REAR_AXLE_FROM_CENTER_M, config.MAX_SPEED_MPS, config.LAT_ACCEL_MPS2, config.ACCEL_MPS2, config.DECEL_MPS2,
-        mass_kg=1500.0, basis="ugv/gazebo/models/adair_ugv/model.sdf + 2단계 Gazebo 실측 (조향 30°, 직선 60 km/h)",
+        mass_kg=1600.0, basis="ugv/gazebo/models/adair_ugv/model.sdf + 2단계 Gazebo 실측 (조향 30°, 직선 60 km/h)",
         gz_model="adair_ugv", px4_airframe=51100),
     "adair_firetruck": VehicleProfile(
-        "adair_firetruck", "FIRE_TRUCK", 3.8, 35.0, 7.0, 2.3, 1.6, 50.0 / 3.6, 1.2, 1.2, 1.5,
+        "adair_firetruck", "FIRE_ENGINE", 3.8, 35.0, 7.0, 2.3, 1.6, 50.0 / 3.6, 1.2, 1.2, 1.5,
         mass_kg=10000.0, basis="시뮬레이션용 가정값 — 국내 중형 펌프차 규모 참고 (실차 제원 아님, 2026-10-10)",
         gz_model="adair_firetruck", px4_airframe=51101),
 }

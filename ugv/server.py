@@ -40,6 +40,7 @@ from . import config
 from .clock import SimClock
 from .fire import build_source
 from .roads import RoadNetwork
+from .traffic import TRAFFIC_PERIOD_S, TrafficManager
 from .vehicle import HttpError, PlacementError, Vehicle
 
 
@@ -57,11 +58,31 @@ class Fleet:
             except PlacementError as e:
                 self.unplaced[c["resource_id"]] = str(e)
 
+        for v in self.vehicles.values():
+            v.peers = (lambda me: (lambda: [x for x in self.vehicles.values() if x is not me]))(v)
+        self.traffic = TrafficManager(self.vehicles, self.clock)
+        self._traffic_task = None
+
     async def start(self):
         for v in self.vehicles.values():
             await v.start()
+        if len(self.vehicles) > 1:
+            self._traffic_task = asyncio.create_task(self._traffic_loop())
+
+    async def _traffic_loop(self):
+        while True:
+            await asyncio.sleep(max(0.05, self.clock.to_wall(TRAFFIC_PERIOD_S)))
+            try:
+                await self.traffic.tick()
+            except Exception as e:  # noqa: BLE001 — 충돌 방지 판단이 죽으면 모든 차를 세운다 (안전 쪽)
+                for v in self.vehicles.values():
+                    v._event("TRAFFIC_MANAGER_ERROR", detail=f"{type(e).__name__}: {e}")
+                    if v.state in ("DRIVING", "EVADING"):
+                        await v.traffic_emergency_stop({"reason": "TRAFFIC_MANAGER_ERROR"})
 
     async def close(self):
+        if self._traffic_task:
+            self._traffic_task.cancel()
         for v in self.vehicles.values():
             await v.close()
 
@@ -126,6 +147,10 @@ def create_app(fleet: Optional[Fleet] = None, *, autostart: bool = True) -> Fast
                 "clock": {"sim_time_s": round(f.clock.now(), 2), "time_scale": f.clock.scale},
                 "rules": {"max_speed_mps": round(config.MAX_SPEED_MPS, 2), "fire_standoff_m": config.FIRE_STANDOFF_M,
                           "min_road_speed_kmh": config.MIN_ROAD_SPEED_KMH, "lat_accel_mps2": config.LAT_ACCEL_MPS2}}
+
+    @app.get("/traffic")
+    def traffic():
+        return F().traffic.status()
 
     @app.get("/ugv")
     def list_ugv(base: Optional[str] = None):

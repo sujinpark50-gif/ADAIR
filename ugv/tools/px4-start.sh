@@ -11,6 +11,7 @@
 #   WORLD_FILE 월드 파일 경로를 직접 줄 때 (시험용 사본 등). 기본 ugv/gazebo/worlds/<WORLD>.sdf
 #   GZ_SIM_RESOURCE_PATH 를 미리 주면 그 경로도 모델 검색에 쓴다 (시험용 모델 사본)
 #   INSTANCE   PX4 인스턴스 번호 (기본 1. 0 은 UAV 몫). MAVLink 는 14540+INSTANCE 로 보낸다
+#   MODEL      차량 모델 adair_ugv (기본, airframe 51100) / adair_firetruck (airframe 51101). Gazebo 이름 = <MODEL>_<INSTANCE>
 #   POSE       스폰 위치 "x,y,z,yaw" (Gazebo 로컬 ENU, m·rad). 기본 "0,0,0.4,0"
 #              거점 출입 지점: python -m ugv.tools.spawn_pose A  (도로 월드 kangwon_flat 에서)
 #   HOST_IP    MAVLink 를 받을 컴퓨터 (UGV 서버). 기본: WSL 기본 게이트웨이 = Windows 호스트
@@ -30,8 +31,13 @@ INSTANCE="${INSTANCE:-1}"
 POSE="${POSE:-0,0,0.4,0}"
 HOST_IP="${HOST_IP:-$(ip route | awk '/^default/ {print $3; exit}')}"
 STATE_DIR="${STATE_DIR:-$HOME/.adair-ugv}"
-MODEL_NAME="adair_ugv_${INSTANCE}"
-AIRFRAME="51100_gz_adair_ugv"
+MODEL="${MODEL:-adair_ugv}"
+MODEL_NAME="${MODEL}_${INSTANCE}"
+case "$MODEL" in
+  adair_ugv)       AUTOSTART=51100; AIRFRAME="51100_gz_adair_ugv" ;;
+  adair_firetruck) AUTOSTART=51101; AIRFRAME="51101_gz_adair_firetruck" ;;
+  *) echo "모델 $MODEL 없음 (adair_ugv / adair_firetruck)"; exit 1 ;;
+esac
 
 [ -x "$BUILD/bin/px4" ] || { echo "PX4 빌드 없음: $BUILD/bin/px4 (make px4_sitl 먼저)"; exit 1; }
 mkdir -p "$STATE_DIR/px4-$INSTANCE"
@@ -66,7 +72,7 @@ if gz model --list 2>/dev/null | grep -qx "    - $MODEL_NAME"; then
   echo "[ugv] 이미 있는 차량: $MODEL_NAME"
 else
   IFS=',' read -r PX PY PZ PYAW <<< "$POSE"
-  SDF="<sdf version='1.9'><include><uri>model://adair_ugv</uri><pose>$PX $PY $PZ 0 0 ${PYAW:-0}</pose></include></sdf>"
+  SDF="<sdf version='1.9'><include><uri>model://$MODEL</uri><pose>$PX $PY $PZ 0 0 ${PYAW:-0}</pose></include></sdf>"
   gz service -s "/world/$WORLD/create" --reqtype gz.msgs.EntityFactory --reptype gz.msgs.Boolean --timeout 5000 \
     --req "name: \"$MODEL_NAME\", allow_renaming: false, sdf: \"$SDF\"" > /dev/null
   echo "[ugv] 차량 스폰: $MODEL_NAME @ $POSE"
@@ -78,7 +84,7 @@ if pgrep -f "px4 -i $INSTANCE " > /dev/null; then
 else
   (
     cd "$STATE_DIR/px4-$INSTANCE"
-    PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=51100 PX4_GZ_MODEL_NAME="$MODEL_NAME" PX4_GZ_WORLD="$WORLD" \
+    PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=$AUTOSTART PX4_GZ_MODEL_NAME="$MODEL_NAME" PX4_GZ_WORLD="$WORLD" \
     PX4_SIM_SPEED_FACTOR="${SPEED:-1}" HEADLESS=1 \
       nohup "$BUILD/bin/px4" -i "$INSTANCE" -d -w "$STATE_DIR/px4-$INSTANCE" "$BUILD/etc" \
       > "$STATE_DIR/px4-$INSTANCE.log" 2>&1 &

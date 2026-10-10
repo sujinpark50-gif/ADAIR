@@ -87,10 +87,11 @@ class Vehicle:
         self.resource_id = cfg["resource_id"]
         self.resource_type = cfg.get("resource_type", "UGV")
         # 차량 특성 (차체·회전반경·속도·가감속). 경로 탐색·회전 가능성·차체 검사·속도 계획을 이 값으로 한다
-        self.profile = get_profile(cfg.get("profile") or ("adair_firetruck" if self.resource_type == "FIRE_TRUCK"
+        self.profile = get_profile(cfg.get("profile") or ("adair_firetruck" if self.resource_type == "FIRE_ENGINE"
                                                           else "adair_ugv"))
         self.graph = net.graph_for(self.profile)
-        self.cmd_latency_s = float(cfg.get("cmd_latency_s", config.CMD_LATENCY_S))
+        self.cmd_latency_s = float(cfg.get("cmd_latency_s", config.CMD_LATENCY_S))   # 하한 (설정값)
+        self._lat_samples = deque(maxlen=20)     # 실측 명령 교체 지연 (계획 시작 → 드라이버 미션 시작 완료, 벽시계 s)
         st = config.load_station(cfg["station_base_id"])
         sx, sy = FRAME.to_xy(st["lat"], st["lon"])
         nearest = net.snap(sx, sy)
@@ -134,6 +135,8 @@ class Vehicle:
         self.last_clearance_m = None
         self.last_stop: dict = {}
         self._last_contact: Optional[float] = None   # 총괄 마지막 연락 (벽시계)
+        self.hold: Optional[dict] = None             # 차량 간 충돌 방지 대기 (ugv/traffic.py): {"s": 계획 선형 위치, ...}
+        self.peers = lambda: []                      # 같은 서버의 다른 차량 (Fleet 가 넣는다)
         self.comm = {"phase": "OK"}                  # OK / STOPPING / STOPPED / RETURNING / RETURNED / FAILED
         self.danger: Optional[dict] = None
 
@@ -168,8 +171,8 @@ class Vehicle:
             lambda t: t.get("resource_id") == self.resource_id and t.get("status") in ACTIVE, close, basis=basis)
 
     # ------------------------------------------------------------------ 보조
-    def _event(self, kind, **kw):
-        e = {"sim_time_s": round(self.clock.now(), 2), "timestamp": _now_iso(), "event": kind,
+    def _event(self, event_name, /, **kw):
+        e = {"sim_time_s": round(self.clock.now(), 2), "timestamp": _now_iso(), "event": event_name,
              "resource_id": self.resource_id, "task_id": self.task_key, **kw}
         self.events.append(e)
         t = self.store.tasks.get(self.task_key) if self.task_key else None
@@ -193,6 +196,14 @@ class Vehicle:
         (ax, ay), (bx, by) = pts[i], pts[i + 1]
         return bearing_deg(bx - ax, by - ay) if math.hypot(bx - ax, by - ay) > 0 else None
 
+    def latency_s(self) -> float:
+        """계획 출발점을 앞으로 옮길 명령 교체 지연: max(설정 하한, 최근 실측 상위 80 %). 상한 LATENCY_MAX_S.
+        2026-10-10 Gazebo 실측 왕복 2.5 s 가 설정 1.0 s 보다 길었다 → 실측을 따른다 (지점을 지나쳐 되돌아가는 미션 방지)."""
+        if not self._lat_samples:
+            return self.cmd_latency_s
+        srt = sorted(self._lat_samples)
+        return min(max(self.cmd_latency_s, srt[int(0.8 * (len(srt) - 1))]), config.CMD_LATENCY_MAX_S)
+
     def here_state(self):
         """계획 출발 상태: (DirPos — 진행 방향, 명령 교체 지연 동안 갈 거리만큼 앞, 속도 m/s, 오류 사유)."""
         tel = self.driver.telemetry()
@@ -209,7 +220,7 @@ class Vehicle:
         if hd is not None:
             _, i = _dist_to_polyline(tel.x, tel.y, self.speed.pts)
             prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
-        return self.graph.project(dp, v * self.cmd_latency_s, prefer), v, None
+        return self.graph.project(dp, v * self.latency_s(), prefer), v, None
 
     def current_task(self) -> Optional[dict]:
         t = self.store.tasks.get(self.task_key) if self.task_key else None
@@ -236,7 +247,26 @@ class Vehicle:
                 raise HttpError(422, "target(lat, lon) 또는 target_node 필요")
             tgt = dict(zip(("lat", "lon"), fixed.ll()))
         return plan_approach(self.net, fire, start, float(tgt["lat"]), float(tgt["lon"]), v0=v0, access=self.access,
-                             fixed_dest=fixed, graph=self.graph)
+                             fixed_dest=fixed, graph=self.graph, avoid_roads=self.occupied_roads(
+                                 home=fixed is not None and fixed.road_id == self.access.road_id and abs(fixed.s - self.access.s) < 1.0))
+
+    def occupied_roads(self, home: bool = False) -> dict:
+        """스스로 움직이지 않을 다른 차량이 차지한 도로 {도로: 차량}: 고장·위험(운영자 해제 전 정지) 또는 임무 없이 자기 거점 대기
+        위치에 서 있는 차. 그 밖에 잠깐 서 있는 차는 피하지 않는다 (움직일 수 있다 — 주행 중 충돌은 ugv/traffic.py 가 막는다).
+        자기 출입 도로는 복귀 임무일 때 뺀다 (같은 거점 대기 위치 순서는 traffic 이 기다리게 한다)."""
+        out = {}
+        for p in self.peers():
+            t = p.driver.telemetry()
+            if t is None or t.speed_mps >= 0.3 or p.state in ("DRIVING", "EVADING"):
+                continue
+            parked_home = p.current_task() is None and math.hypot(t.x - p.access.x, t.y - p.access.y) <= config.ARRIVE_M
+            if p.state not in ("FAULT", "DANGER") and not parked_home:
+                continue
+            rid = self.net.snap(t.x, t.y).road_id
+            if home and rid == self.access.road_id:
+                continue
+            out[rid] = p.resource_id
+        return out
 
     def _target_node(self, plan: ApproachPlan) -> Optional[dict]:
         if plan.dest is None:
@@ -285,6 +315,8 @@ class Vehicle:
                                       "detail": f"같은 task_id {key} 로 다른 내용이 이미 실행됨"})
             if self.state in ("FAULT", "DANGER"):
                 raise HttpError(409, f"FAILSAFE_ACTIVE: {self.state} {self.fault} (/stop 으로 운영자 해제 필요)")
+            w0 = time.monotonic()
+            lat_used = self.latency_s()
             start, v0, err = self.here_state()
             plan = self._approach(body, start, v0) if start is not None else None
             if plan is None or plan.status != "OK":
@@ -317,16 +349,24 @@ class Vehicle:
                 self.plan, self.speed = plan, plan_speeds(plan.route, 0.0, profile=self.profile)
                 seq = self.driver.progress().mission_seq
             else:
+                w1 = time.monotonic()
                 try:
                     seq = await self._drive(plan)
                 except DriverError as e:
                     await self._safe_stop()
                     self.task_key = None
                     raise HttpError(500, f"DRIVER_START_FAILED: {e}")
+                w2 = time.monotonic()
+                self._lat_samples.append(w2 - w0)
+                self.last_cmd_timing = {"plan_s": round(w1 - w0, 3), "driver_start_s": round(w2 - w1, 3),
+                                        "total_s": round(w2 - w0, 3), "latency_assumed_s": round(lat_used, 2),
+                                        "v0_mps": round(v0, 2), "projected_m": round(v0 * lat_used, 1),
+                                        "trimmed_items_behind": getattr(self, "_trimmed", 0)}
             self.task_key = key
             self.target_ll = (body.get("target") or {}) or dict(zip(("lat", "lon"), plan.dest.ll()))
             tn = self._target_node(plan)
             resp = {"task_id": key, "resource_id": self.resource_id, "status": "STARTED",
+                    "command_timing": None if already else getattr(self, "last_cmd_timing", None),
                     "tracking_url": f"/ugv/{self.resource_id}/task/{key}", "target_node": tn,
                     "eta_sec": int(round(self.speed.eta_s)), "approach": plan.report(),
                     "superseded_task_id": prev, "duplicate": False}
@@ -354,7 +394,26 @@ class Vehicle:
         t = self.driver.telemetry()
         self.speed = plan_speeds(plan.route, t.speed_mps if t else 0.0, profile=self.profile)
         self.plan = plan
-        self.seq = await self.driver.follow(self.speed.items)
+        self.hold = None
+        items = self.speed.items
+        self._trimmed = 0
+        t = self.driver.telemetry()
+        if t is not None and len(items) > 1:
+            # 계획하는 동안 차가 이미 지나친 앞쪽 미션 지점은 빼고 보낸다 (뒤에 남은 지점으로 되돌아가지 않게).
+            # 지난 판정 = 계획 선형 위 차량 위치보다 앞(경로를 따라 2 m 이상 뒤)에 있는 지점
+            sp = self.speed
+            hi = next((k for k, c in enumerate(sp.cum) if c > 300.0), len(sp.pts) - 1)   # 경로 앞부분만 (되도는 경로 오인 방지)
+            _, iv = _dist_to_polyline(t.x, t.y, sp.pts, 0, hi)
+            s_veh = sp.cum[iv] + math.dist(sp.pts[iv], (t.x, t.y)) if iv > 0 else 0.0
+            keep, j = [], 0
+            for it in items:                                  # 미션 지점은 속도 계획 점의 부분열 — 차례로 맞춘다
+                while j < len(sp.pts) - 1 and math.dist(sp.pts[j], it[:2]) > 1e-6:
+                    j += 1
+                if sp.cum[j] >= s_veh + 2.0 or it is items[-1]:
+                    keep.append(it)
+            self._trimmed = len(items) - len(keep)
+            items = keep
+        self.seq = await self.driver.follow(items)
         self.state = state
         self._off_since, self._near_i = None, 0
         self._move_ref = (self.clock.now(), t.x, t.y) if t else None
@@ -367,6 +426,7 @@ class Vehicle:
         정지 경로가 제동거리보다 짧거나(short) 회전반경·차체 도로 포함 검사를 통과하지 못하면(drivable=false) 그 사실을
         돌려주고 기록한다 — 정지 명령은 그래도 보낸다 (다른 선택지가 없다). 정지가 안전 확보를 뜻하지 않는다."""
         info = {}
+        self.hold = None
         try:
             tel = self.driver.telemetry()
             items = None
@@ -521,6 +581,13 @@ class Vehicle:
         # 도착
         dest = self.plan.dest
         to_dest = math.hypot(tel.x - dest.x, tel.y - dest.y)
+        if self.hold is not None:
+            # 차량 간 충돌 방지 대기 중: 대기 지점 정지는 도착이 아니다. 정지 고장 판단도 하지 않는다
+            if t is not None:
+                t["progress"]["phase"] = "YIELDING"
+                t["progress"]["yield"] = {k: v for k, v in self.hold.items() if k != "s"}
+            self._move_ref = (now, tel.x, tel.y)
+            return
         if prog.mission_seq == self.seq and prog.finished and tel.speed_mps < 0.5:
             async with self.lock:
                 if prog.mission_seq != self.seq:
@@ -555,6 +622,79 @@ class Vehicle:
             async with self.lock:
                 self._fail("VEHICLE_FAULT", "주행 중 시동 꺼짐 (disarm)")
             return
+
+    # ------------------------------------------------------------------ 차량 간 충돌 방지 (ugv/traffic.py 가 부른다)
+    def _s_now(self) -> float:
+        return self.speed.cum[max(0, min(self._near_i, len(self.speed.cum) - 1))] if self.speed else 0.0
+
+    def _items_between(self, s_to: Optional[float]):
+        """지금 위치 → 계획 선형 위 s_to(없으면 목적지)까지 미션 지점. 검증된 경로의 일부만 쓴다 (형상 그대로)."""
+        sp = self.speed
+        tel = self.driver.telemetry()
+        i0 = max(0, min(self._near_i, len(sp.pts) - 1))
+        pts, caps = [(tel.x, tel.y)], [sp.v[i0]]
+        for k in range(i0 + 1, len(sp.pts)):
+            if s_to is not None and sp.cum[k] >= s_to:
+                a, b = sp.pts[k - 1], sp.pts[k]
+                seg = sp.cum[k] - sp.cum[k - 1]
+                f = 0.0 if seg <= 0 else (s_to - sp.cum[k - 1]) / seg
+                pts.append((a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f))
+                caps.append(sp.v[k])
+                break
+            pts.append(sp.pts[k])
+            caps.append(max(sp.v[k], 1.0) if k < len(sp.pts) - 1 else 1.0)
+        if len(pts) < 2:
+            pts.append(pts[0])
+            caps.append(1.0)
+        r = Route(pts, [max(c, 1.0) for c in caps], [], self.plan.dest, self.plan.dest, 0.0)
+        return plan_speeds(r, tel.speed_mps, profile=self.profile).items
+
+    async def set_hold(self, s_hold: float, info: dict):
+        """s_hold(계획 선형 위치)에서 멈춰 기다린다. 같은 대기 지점이면 다시 보내지 않는다 (명령 교체 지연이 있으므로)."""
+        if self.state not in ("DRIVING", "EVADING") or self.speed is None:
+            return
+        cur = self.hold
+        # 더 앞(가까이)에서 서야 하면 바로 다시 보낸다. 더 멀리 가도 되는 변화는 8 m 넘을 때만 (명령 교체 지연이 있으므로)
+        if cur is not None and -1.0 <= s_hold - cur["s"] < 8.0:
+            self.hold = {**cur, **info}
+            return
+        async with self.lock:
+            if self.state not in ("DRIVING", "EVADING"):
+                return
+            items = self._items_between(s_hold)
+            self.hold = {"s": s_hold, **info, "since_sim": round(self.clock.now(), 2)}
+            try:
+                self.seq = await self.driver.follow(items)
+            except DriverError as e:
+                self._event("YIELD_FAILED", detail=str(e))
+                return
+            self._event("YIELD", s_m=round(s_hold, 1), ahead_m=round(s_hold - self._s_now(), 1), **info)
+
+    async def clear_hold(self):
+        if self.hold is None:
+            return
+        async with self.lock:
+            if self.hold is None or self.state not in ("DRIVING", "EVADING"):
+                self.hold = None
+                return
+            info = self.hold
+            items = self._items_between(None)
+            self.hold = None
+            try:
+                self.seq = await self.driver.follow(items)
+            except DriverError as e:
+                self._fail("RESUME_FAILED", str(e))
+                return
+            self._event("YIELD_END", waited_s=round(self.clock.now() - info.get("since_sim", self.clock.now()), 1),
+                        other=info.get("other"))
+
+    async def traffic_emergency_stop(self, info: dict):
+        async with self.lock:
+            self.gen += 1
+            await self._safe_stop()
+            if self.current_task():
+                self._finish(self.task_key, "FAILED", error=f"TRAFFIC_CONFLICT_UNAVOIDABLE: {info}",
+                             physical_state="STOPPING")
 
     # ------------------------------------------------------------------ 총괄 통신 단절 (벽시계)
     def note_contact(self):

@@ -222,6 +222,23 @@ def evaluate_log(log: dict, rows) -> dict:
                                                "y": round(rows[idx[worst_k]]["y"], 1), "body_m": round(body[worst_k], 2),
                                                "excess_m": round(excess[worst_k], 2), "speed_mps": round(spd[idx[worst_k]], 2)},
     }
+    # 실행 성능: Gazebo RTF (시뮬레이션 시간 / 벽시계, 기록기 wall_t) 와 자세 기록 공백, 전복 여부
+    if rows and "wall_t" in rows[0]:
+        wall = [r["wall_t"] for r in rows]
+        rtf_w = []
+        k = 0
+        for i in range(len(rows)):
+            while wall[i] - wall[k] > 10.0:
+                k += 1
+            if wall[i] - wall[k] >= 9.0:
+                rtf_w.append((t[i] - t[k]) / (wall[i] - wall[k]))
+        overall["rtf"] = {"overall": round((t[-1] - t[0]) / max(wall[-1] - wall[0], 1e-6), 3),
+                          "min_10s": round(min(rtf_w), 3) if rtf_w else None,
+                          "sim_s": round(t[-1] - t[0], 1), "wall_s": round(wall[-1] - wall[0], 1),
+                          "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"}
+    gaps = [t[i + 1] - t[i] for i in range(len(t) - 1)]
+    overall["pose_gap_max_sim_s"] = round(max(gaps), 3) if gaps else None
+    overall["rollover"] = any(abs(r["roll"]) > math.radians(45) or abs(r["pitch"]) > math.radians(45) for r in rows)
     out = {"overall": overall, "runs": {}}
     runs = log["runs"]
     # PX4 에 준 계획선 = 명령 시점 차량 위치 + 미션 지점
@@ -327,6 +344,14 @@ def main():
     ap.add_argument("--track-s", type=float, default=900.0)
     ap.add_argument("--world", default=config.DEFAULT_VEHICLES[0]["px4"]["gz_world"])
     ap.add_argument("--analyze", type=Path, help="저장된 road_*.json 을 다시 분석")
+    ap.add_argument("--model", default="adair_ugv_1", help="Gazebo 모델 이름")
+    ap.add_argument("--tag", default="road", help="기록 파일 이름 앞머리 (시나리오 이름)")
+    ap.add_argument("--target-node", default=None, help="목표를 도로 지점 id(RP:road:s)로")
+    ap.add_argument("--return-home", action="store_true", help="도착 뒤 소속 거점 출입 지점으로 복귀 임무")
+    ap.add_argument("--fire-url", default=None, help="화재 시험 입력 서버 (ugv/tools/fire_fixture_server.py)")
+    ap.add_argument("--fire", choices=("near", "surround"), help="near: 차량 옆 칸(이탈 성공), surround: 사방(이탈 불가)")
+    ap.add_argument("--fire-at", type=float, default=20.0, help="첫 출발 뒤 몇 초(벽시계)에 화재 입력")
+    ap.add_argument("--stay-s", type=float, default=0.0, help="목표 없이 이 시간 동안 관찰 (정차 상태 화재 시험)")
     a = ap.parse_args()
 
     if a.analyze:
@@ -335,34 +360,52 @@ def main():
         a.analyze.write_text(json.dumps(log, ensure_ascii=False, indent=1), encoding="utf-8")
         print(json.dumps(log["analysis"], ensure_ascii=False, indent=1))
         return
-    if not a.target:
-        ap.error("--target 또는 --analyze 필요")
+    if not a.target and not a.target_node and not a.stay_s:
+        ap.error("--target / --target-node / --stay-s 또는 --analyze 필요")
 
-    c = httpx.Client(base_url=a.server, timeout=30)
+    c = httpx.Client(base_url=a.server, timeout=60)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    out_csv = LOG_DIR / f"road_{stamp}.csv"
-    tracker = start_tracker(out_csv, a.track_s, world=a.world)
+    out_csv = LOG_DIR / f"{a.tag}_{stamp}.csv"
+    health = c.get("/health").json()
+    tracker = start_tracker(out_csv, a.track_s, world=a.world, model=a.model)
     time.sleep(3)
-    log = {"stamp": stamp, "world": a.world, "target": a.target, "second": a.second, "abort_after": a.abort_after,
-           "runs": []}
+    log = {"stamp": stamp, "tag": a.tag, "world": a.world, "model": a.model, "rid": a.rid, "target": a.target,
+           "second": a.second, "abort_after": a.abort_after, "runs": [], "health": health, "start_wall": time.time(),
+           "start_local": time.strftime("%Y-%m-%d %H:%M:%S"), "tel_age_max_s": 0.0, "fire": None}
+    fc = httpx.Client(base_url=a.fire_url, timeout=30) if a.fire_url else None
 
-    def run(key, lat, lon):
-        ev = c.post(f"/ugv/{a.rid}/evaluate", json={"task_id": key, "decision_id": "D-" + key,
-                                                   "target": {"lat": lat, "lon": lon}}).json()
+    def run(key, lat=None, lon=None, node=None):
+        tgt = {"target": {"lat": lat, "lon": lon}} if node is None else {"target_node": node}
+        ev = c.post(f"/ugv/{a.rid}/evaluate", json={"task_id": key, "decision_id": "D-" + key, **tgt}).json()
         print(f"[{key}] evaluate {ev['verdict']} eta {ev.get('eta_sec')} 접근 {json.dumps(ev.get('approach', {}).get('mode'))} "
               f"목표까지 {ev.get('approach', {}).get('dist_to_target_m')} m 화재이격 {ev.get('approach', {}).get('fire_clearance_m')}")
-        body = {"task_id": key, "decision_id": "D-" + key, "target": {"lat": lat, "lon": lon},
-                "target_node": (ev.get("target_node") or {}).get("node_id")}
+        body = {"task_id": key, "decision_id": "D-" + key, **({"target": {"lat": lat, "lon": lon}} if node is None else {}),
+                "target_node": (ev.get("target_node") or {}).get("node_id") or node}
         sim_t = last_sim_t(out_csv)
+        st0 = c.get(f"/ugv/{a.rid}/state").json()
+        w0 = time.time()
         r = c.post(f"/ugv/{a.rid}/execute", json=body)
+        cmd_rtt = time.time() - w0
         print(f"[{key}] execute {r.status_code} {r.json().get('status')} superseded={r.json().get('superseded_task_id')}")
         dup = c.post(f"/ugv/{a.rid}/execute", json=body).json()
         print(f"[{key}] 같은 요청 재전송 → duplicate={dup.get('duplicate')}")
         route = c.get(f"/ugv/{a.rid}/route").json()
         log["runs"].append({"key": key, "evaluate": ev, "execute": r.json(), "route": route, "t_wall": time.time(),
-                            "sim_t_cmd": sim_t})
+                            "sim_t_cmd": sim_t, "execute_rtt_s": round(cmd_rtt, 3),
+                            "at_command": {f: st0.get(f) for f in ("position", "speed_mps", "heading_deg", "mission_state")}})
+        print(f"[{key}] 명령 교체 왕복 {cmd_rtt:.2f} s (계획·미션 업로드·시작 포함)")
         return key
+
+    def put_fire(kind):
+        st = c.get(f"/ugv/{a.rid}/state").json()
+        from ugv.tools.fire_cells import near_cells, surround_cells
+        lat, lon = st["position"]["lat"], st["position"]["lon"]
+        cells = near_cells(lat, lon) if kind == "near" else surround_cells(lat, lon)
+        res = fc.post("/set", json={"label": f"{a.tag}:{kind}", "cells": cells}).json()
+        log["fire"] = {"kind": kind, "set_wall": time.time(), "sim_t": last_sim_t(out_csv), "cells": len(cells),
+                       "saved": res.get("saved"), "vehicle_at": st["position"], "speed_mps": st.get("speed_mps")}
+        print(f"  화재 입력 {kind}: {len(cells)} 칸 -> {res.get('saved')}", flush=True)
 
     net_rt = RoadNetwork() if a.second_near_junction else None
 
@@ -385,10 +428,26 @@ def main():
             return True
         return False
 
-    k1 = run(f"RT1-{stamp}", *a.target)
+    if a.target or a.target_node:
+        k1 = run(f"RT1-{stamp}", *(a.target or (None, None)), node=a.target_node)
+    else:
+        k1 = None
     t0 = time.time()
-    active, second_sent, aborted, t_abort = k1, False, False, None
+    active, second_sent, aborted, t_abort, fire_sent, home_sent = k1, False, False, None, False, False
     while time.time() - t0 < a.track_s - 10:
+        stx = c.get(f"/ugv/{a.rid}/state").json()
+        if stx.get("updated_at"):
+            log["tel_age_max_s"] = max(log["tel_age_max_s"], round(time.time() - stx["updated_at"], 2))
+        if a.fire and not fire_sent and time.time() - t0 >= a.fire_at:
+            put_fire(a.fire)
+            fire_sent = True
+        if active is None:
+            print(f"  {time.time() - t0:6.1f}s 상태 {stx.get('mission_state')} 속도 {stx.get('speed_mps')} "
+                  f"화재이격 {(stx.get('safety') or {}).get('fire_clearance_m')}", flush=True)
+            if time.time() - t0 >= a.stay_s:
+                break
+            time.sleep(1.0)
+            continue
         t = c.get(f"/ugv/{a.rid}/task/{active}").json()
         pr = t.get("progress") or {}
         print(f"  {time.time() - t0:6.1f}s {active[:6]} {t['status']:<11} {pr.get('phase')} 남은 {pr.get('remaining_m')} m "
@@ -410,8 +469,19 @@ def main():
                 log["final"] = c.get(f"/ugv/{a.rid}/task/{active}").json()
                 break
         elif t["status"] in ("COMPLETED", "FAILED", "CANCELLED") and (second_sent or not a.second):
-            log["final"] = t
-            break
+            if a.fire and t["status"] != "COMPLETED":
+                # 화재 시험: 임무 실패(DANGER) 뒤 정지·자동 재출발 없음을 더 본다
+                if (stx.get("speed_mps") or 0) < 0.1 and time.time() - t0 > a.fire_at + 40:
+                    time.sleep(15)
+                    log["final"] = t
+                    break
+            elif a.return_home and not home_sent and t["status"] == "COMPLETED":
+                acc = stx["station"]["access_point"]
+                active, home_sent = run(f"HOME-{stamp}", node=f"RP:{acc['road_id']}:{acc['s_m']:.1f}"), True
+                continue
+            else:
+                log["final"] = t
+                break
         waiting_junction = (a.second_near_junction and a.second and not second_sent
                             and time.time() - t0 >= a.second_after)
         time.sleep(0.3 if waiting_junction else 3)   # 교차로 직전을 잡을 때만 촘촘히 (평소 3 s: uvicorn 연결 유지와 겹치지 않게)
@@ -419,11 +489,12 @@ def main():
     log["state"] = c.get(f"/ugv/{a.rid}/state").json()
     log["events"] = c.get(f"/ugv/{a.rid}/events").json()
     log["tasks"] = {r["key"]: c.get(f"/ugv/{a.rid}/task/{r['key']}").json() for r in log["runs"]}
+    log["end_wall"], log["end_local"] = time.time(), time.strftime("%Y-%m-%d %H:%M:%S")
     print("기록기 종료 대기...")
     tracker.terminate()
     time.sleep(2)
     log["analysis"] = evaluate_log(log, load_track(out_csv))
-    (LOG_DIR / f"road_{stamp}.json").write_text(json.dumps(log, ensure_ascii=False, indent=1), encoding="utf-8")
+    (LOG_DIR / f"{a.tag}_{stamp}.json").write_text(json.dumps(log, ensure_ascii=False, indent=1), encoding="utf-8")
     print(json.dumps(log["analysis"], ensure_ascii=False, indent=1))
     print("임무:", json.dumps({k: {f: v.get(f) for f in ("status", "mission_result", "physical_state", "error")}
                               for k, v in log["tasks"].items()}, ensure_ascii=False))

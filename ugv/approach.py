@@ -176,17 +176,19 @@ def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: f
                   v0: float = 0.0, access: Optional[RoadPos] = None,
                   standoff: float = config.FIRE_STANDOFF_M, search_m: float = config.APPROACH_SEARCH_M,
                   snap_limit: float = config.TARGET_SNAP_M, fixed_dest: Optional[RoadPos] = None,
-                  graph=None) -> ApproachPlan:
+                  graph=None, avoid_roads: Optional[dict] = None) -> ApproachPlan:
     """start: 진행 방향을 포함한 출발 위치 (명령 교체 지연만큼 앞으로 옮긴 것). access: 소속 거점 출입 지점 (복귀 검사).
     고른 경로는 verify_route 로 다시 검사한다 (최소 회전반경·차체 둘레의 도로 포함, 출발 도로 포함, PX4 미션 선).
     통과하지 못하면 원인 회전(또는 도로)을 빼고 다시 고른다. 뺀 회전·도로는 복귀 가능성 판단에도 쓰지 않는다.
-    ROUTE_CHECK_TRIES 번 안에 못 찾으면 NO_DRIVABLE_ROUTE. graph: 차량 특성별 그래프 (기본 UGV)."""
+    ROUTE_CHECK_TRIES 번 안에 못 찾으면 NO_DRIVABLE_ROUTE. graph: 차량 특성별 그래프 (기본 UGV).
+    avoid_roads {도로: 사유}: 멈춰 있는 다른 차량이 차지한 도로 — 들어가지 않고 목적지로도 고르지 않는다 (출발 도로를 계속
+    달리는 것은 막지 않는다). 다중 차량 (ugv/traffic.py 는 주행 중 충돌을 막고, 이것은 막힌 길로 계획하지 않게 한다)."""
     g = graph or net.graph
     banned_turns, banned_roads, tried = set(), set(), []
     for _ in range(ROUTE_CHECK_TRIES):
         plan = _plan_once(net, fire, start, target_lat, target_lon, v0=v0, access=access, standoff=standoff,
                           search_m=search_m, snap_limit=snap_limit, fixed_dest=fixed_dest,
-                          banned_turns=banned_turns, banned_roads=banned_roads, g=g)
+                          banned_turns=banned_turns, banned_roads=banned_roads, g=g, avoid=avoid_roads or {})
         if plan.status != "OK":
             if tried:
                 plan.detail["route_check_rejected"] = tried
@@ -206,7 +208,7 @@ def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: f
 
 
 def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: float, target_lon: float, *,
-               v0, access, standoff, search_m, snap_limit, fixed_dest, banned_turns, banned_roads, g) -> ApproachPlan:
+               v0, access, standoff, search_m, snap_limit, fixed_dest, banned_turns, banned_roads, g, avoid) -> ApproachPlan:
     tx, ty = FRAME.to_xy(target_lat, target_lon)
     near = net.snap(tx, ty, max_m=snap_limit)
     if near is None:
@@ -215,18 +217,20 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
     safety = SafetyIndex(net, fire, standoff)
 
     def road_ok(r):
-        return safety.road_ok(r) and r not in banned_roads
+        return safety.road_ok(r) and r not in banned_roads and r not in avoid
     def turn_ok(a, b):
         return (a, b) not in banned_turns
     tree = g.search(start, v0, road_ok, turn_ok)
-    rs = g.return_set(access, road_ok, turn_ok) if access is not None else None
+    def ret_ok(r):                          # 복귀 판단에는 지금 서 있는 차(나중에 움직일 수 있음)를 막힘으로 보지 않는다
+        return safety.road_ok(r) and r not in banned_roads
+    rs = g.return_set(access, ret_ok, turn_ok) if access is not None else None
 
     near_clear = safety.clearance(near.x, near.y)
     cands = [fixed_dest] if fixed_dest is not None else (
         [near] + [p for p in net.samples() if math.hypot(p.x - tx, p.y - ty) <= search_m])
     ok, checked, no_route, no_return = [], 0, 0, 0
     for p in cands:
-        if p.road_id in banned_roads:
+        if p.road_id in banned_roads or (p.road_id in avoid and fixed_dest is None):
             continue
         c = safety.clearance(p.x, p.y)
         if c < standoff:
@@ -280,6 +284,7 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
     return ApproachPlan("OK", None, mode, dest, route, (tx, ty), near.dist, d, c, route_clear, checked,
                         detail={"nearest_road_fire_clearance_m": _r(near_clear), "unsafe_roads": len(safety.unsafe_roads),
                                 "fire_cells_known": len(fire), "fire_source": fire.source, **counts, **sel,
+                                **({"avoided_roads_occupied_by_vehicles": avoid} if avoid else {}),
                                 "direction": _direction_report(start, v0, route, True if rs is not None else None, access)})
 
 

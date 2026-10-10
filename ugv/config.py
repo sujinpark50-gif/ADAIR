@@ -80,6 +80,8 @@ REAR_AXLE_FROM_CENTER_M = 1.35
 LANE_WIDTH_EST_M = 3.25
 SHOULDER_EST_M = 0.5                        # 한쪽 길어깨
 CMD_LATENCY_S = float(os.getenv("UGV_CMD_LATENCY_S", "1.0"))   # 명령 교체 지연 (2026-10-09 PX4 실측 약 1 s)
+# 실측 명령 교체 지연이 하한(CMD_LATENCY_S)보다 길면 실측(최근 20회 상위 80 %)을 쓴다 (vehicle.latency_s). 상한
+CMD_LATENCY_MAX_S = float(os.getenv("UGV_CMD_LATENCY_MAX_S", "6.0"))
 TURN_MARGIN_M = 5.0                         # 회전·정지 전 감속 여유 거리
 
 # ---------------------------------------------------------------------------- 화재 접근 (확정)
