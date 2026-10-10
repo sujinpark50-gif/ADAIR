@@ -1,0 +1,593 @@
+{
+ "address": "udpin://0.0.0.0:14541",
+ "records": [
+  {
+   "t": 1791593070.25,
+   "tag": "mission",
+   "x": 3991.37,
+   "y": 5605.12,
+   "speed": 2.2,
+   "heading": 213.7,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593071.26,
+   "tag": "mission",
+   "x": 3989.89,
+   "y": 5602.67,
+   "speed": 3.04,
+   "heading": 206.9,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593072.27,
+   "tag": "mission",
+   "x": 3988.54,
+   "y": 5600.25,
+   "speed": 3.01,
+   "heading": 205.4,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593073.27,
+   "tag": "mission",
+   "x": 3987.19,
+   "y": 5597.85,
+   "speed": 3.03,
+   "heading": 205.3,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593074.27,
+   "tag": "mission",
+   "x": 3985.81,
+   "y": 5595.38,
+   "speed": 3.01,
+   "heading": 205.1,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593075.26,
+   "tag": "mission",
+   "x": 3984.48,
+   "y": 5592.94,
+   "speed": 3.02,
+   "heading": 205.7,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593076.26,
+   "tag": "mission",
+   "x": 3983.15,
+   "y": 5590.53,
+   "speed": 3.01,
+   "heading": 206.3,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593077.27,
+   "tag": "mission",
+   "x": 3981.91,
+   "y": 5588.27,
+   "speed": 2.26,
+   "heading": 206.7,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593078.27,
+   "tag": "mission",
+   "x": 3980.96,
+   "y": 5586.57,
+   "speed": 1.23,
+   "heading": 207.2,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593079.26,
+   "tag": "mission",
+   "x": 3980.34,
+   "y": 5585.39,
+   "speed": 0.66,
+   "heading": 206.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593080.26,
+   "tag": "mission",
+   "x": 3980.03,
+   "y": 5584.79,
+   "speed": 0.33,
+   "heading": 206.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593081.28,
+   "tag": "mission",
+   "x": 3979.9,
+   "y": 5584.52,
+   "speed": 0.16,
+   "heading": 206.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593082.27,
+   "tag": "mission",
+   "x": 3979.83,
+   "y": 5584.39,
+   "speed": 0.13,
+   "heading": 206.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593083.27,
+   "tag": "mission",
+   "x": 3979.84,
+   "y": 5584.38,
+   "speed": 0.16,
+   "heading": 206.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593084.26,
+   "tag": "mission",
+   "x": 3979.87,
+   "y": 5584.42,
+   "speed": 0.19,
+   "heading": 206.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593085.28,
+   "tag": "mission",
+   "x": 3979.9,
+   "y": 5584.46,
+   "speed": 0.21,
+   "heading": 206.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593086.27,
+   "tag": "mission",
+   "x": 3979.91,
+   "y": 5584.49,
+   "speed": 0.22,
+   "heading": 206.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593087.27,
+   "tag": "mission",
+   "x": 3979.91,
+   "y": 5584.49,
+   "speed": 0.18,
+   "heading": 206.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593088.26,
+   "tag": "mission",
+   "x": 3979.89,
+   "y": 5584.46,
+   "speed": 0.13,
+   "heading": 206.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593089.26,
+   "tag": "mission",
+   "x": 3979.89,
+   "y": 5584.42,
+   "speed": 0.08,
+   "heading": 206.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593090.27,
+   "tag": "after_mission_idle",
+   "x": 3979.82,
+   "y": 5584.35,
+   "speed": 0.04,
+   "heading": 207.6,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593091.27,
+   "tag": "after_mission_idle",
+   "x": 3979.78,
+   "y": 5584.32,
+   "speed": 0.02,
+   "heading": 208.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593092.27,
+   "tag": "after_mission_idle",
+   "x": 3979.77,
+   "y": 5584.31,
+   "speed": 0.02,
+   "heading": 208.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593093.26,
+   "tag": "after_mission_idle",
+   "x": 3979.71,
+   "y": 5584.25,
+   "speed": 0.09,
+   "heading": 208.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593094.28,
+   "tag": "after_mission_idle",
+   "x": 3979.67,
+   "y": 5584.11,
+   "speed": 0.08,
+   "heading": 206.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593095.27,
+   "tag": "after_mission_idle",
+   "x": 3979.62,
+   "y": 5583.86,
+   "speed": 0.27,
+   "heading": 204.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593096.26,
+   "tag": "after_mission_idle",
+   "x": 3979.54,
+   "y": 5583.52,
+   "speed": 0.49,
+   "heading": 201.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593097.26,
+   "tag": "after_mission_idle",
+   "x": 3979.49,
+   "y": 5582.91,
+   "speed": 0.8,
+   "heading": 195.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593098.27,
+   "tag": "after_mission_idle",
+   "x": 3979.5,
+   "y": 5581.83,
+   "speed": 1.38,
+   "heading": 186.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593099.27,
+   "tag": "after_mission_idle",
+   "x": 3978.73,
+   "y": 5580.28,
+   "speed": 2.16,
+   "heading": 198.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593100.26,
+   "tag": "after_HOLD",
+   "x": 3976.94,
+   "y": 5578.59,
+   "speed": 3.08,
+   "heading": 220.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593101.28,
+   "tag": "after_HOLD",
+   "x": 3975.49,
+   "y": 5576.27,
+   "speed": 2.98,
+   "heading": 208.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593102.27,
+   "tag": "after_HOLD",
+   "x": 3974.28,
+   "y": 5573.79,
+   "speed": 3.03,
+   "heading": 207.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593103.26,
+   "tag": "after_HOLD",
+   "x": 3972.96,
+   "y": 5571.42,
+   "speed": 3.0,
+   "heading": 206.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593104.28,
+   "tag": "after_HOLD",
+   "x": 3971.59,
+   "y": 5568.83,
+   "speed": 2.99,
+   "heading": 206.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593105.27,
+   "tag": "after_HOLD",
+   "x": 3970.25,
+   "y": 5566.31,
+   "speed": 2.98,
+   "heading": 206.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593106.26,
+   "tag": "after_HOLD",
+   "x": 3968.96,
+   "y": 5563.83,
+   "speed": 3.0,
+   "heading": 206.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593107.26,
+   "tag": "after_HOLD",
+   "x": 3967.61,
+   "y": 5561.28,
+   "speed": 2.99,
+   "heading": 206.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593108.28,
+   "tag": "after_HOLD",
+   "x": 3966.27,
+   "y": 5558.76,
+   "speed": 3.01,
+   "heading": 205.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593109.27,
+   "tag": "after_HOLD",
+   "x": 3964.98,
+   "y": 5556.28,
+   "speed": 3.01,
+   "heading": 205.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593110.27,
+   "tag": "after_HOLD",
+   "x": 3963.66,
+   "y": 5553.8,
+   "speed": 3.0,
+   "heading": 205.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593111.26,
+   "tag": "after_HOLD",
+   "x": 3962.39,
+   "y": 5551.36,
+   "speed": 2.99,
+   "heading": 205.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593112.26,
+   "tag": "after_HOLD",
+   "x": 3961.03,
+   "y": 5548.81,
+   "speed": 2.99,
+   "heading": 205.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593113.27,
+   "tag": "after_HOLD",
+   "x": 3959.71,
+   "y": 5546.29,
+   "speed": 2.99,
+   "heading": 205.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593114.27,
+   "tag": "after_HOLD",
+   "x": 3958.37,
+   "y": 5543.71,
+   "speed": 3.0,
+   "heading": 205.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593115.26,
+   "tag": "after_HOLD",
+   "x": 3957.08,
+   "y": 5541.27,
+   "speed": 3.0,
+   "heading": 206.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593116.26,
+   "tag": "after_HOLD",
+   "x": 3955.74,
+   "y": 5538.74,
+   "speed": 3.0,
+   "heading": 205.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593117.26,
+   "tag": "after_HOLD",
+   "x": 3954.42,
+   "y": 5536.24,
+   "speed": 3.0,
+   "heading": 205.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593118.27,
+   "tag": "after_HOLD",
+   "x": 3953.09,
+   "y": 5533.7,
+   "speed": 3.01,
+   "heading": 205.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593119.27,
+   "tag": "after_HOLD",
+   "x": 3951.79,
+   "y": 5531.21,
+   "speed": 3.02,
+   "heading": 205.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593120.31,
+   "tag": "one_point_mission_stop",
+   "x": 3951.52,
+   "y": 5530.05,
+   "speed": 0.64,
+   "heading": 196.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593121.3,
+   "tag": "one_point_mission_stop",
+   "x": 3951.57,
+   "y": 5529.2,
+   "speed": 0.93,
+   "heading": 187.6,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593122.3,
+   "tag": "one_point_mission_stop",
+   "x": 3951.75,
+   "y": 5528.23,
+   "speed": 0.96,
+   "heading": 177.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593123.29,
+   "tag": "one_point_mission_stop",
+   "x": 3951.93,
+   "y": 5527.27,
+   "speed": 1.02,
+   "heading": 172.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593124.31,
+   "tag": "one_point_mission_stop",
+   "x": 3951.63,
+   "y": 5526.38,
+   "speed": 0.98,
+   "heading": 181.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593125.3,
+   "tag": "one_point_mission_stop",
+   "x": 3951.24,
+   "y": 5525.55,
+   "speed": 0.96,
+   "heading": 190.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593126.3,
+   "tag": "one_point_mission_stop",
+   "x": 3950.71,
+   "y": 5524.77,
+   "speed": 0.97,
+   "heading": 199.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593127.29,
+   "tag": "one_point_mission_stop",
+   "x": 3950.06,
+   "y": 5524.09,
+   "speed": 0.96,
+   "heading": 209.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593128.31,
+   "tag": "one_point_mission_stop",
+   "x": 3949.34,
+   "y": 5523.53,
+   "speed": 0.98,
+   "heading": 218.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593129.31,
+   "tag": "one_point_mission_stop",
+   "x": 3948.48,
+   "y": 5523.1,
+   "speed": 0.95,
+   "heading": 228.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593130.3,
+   "tag": "one_point_mission_stop",
+   "x": 3947.58,
+   "y": 5522.79,
+   "speed": 0.97,
+   "heading": 237.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593131.29,
+   "tag": "one_point_mission_stop",
+   "x": 3946.68,
+   "y": 5522.66,
+   "speed": 0.96,
+   "heading": 247.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593132.31,
+   "tag": "one_point_mission_stop",
+   "x": 3945.71,
+   "y": 5522.67,
+   "speed": 0.98,
+   "heading": 257.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593133.3,
+   "tag": "one_point_mission_stop",
+   "x": 3944.76,
+   "y": 5522.84,
+   "speed": 0.96,
+   "heading": 266.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593134.29,
+   "tag": "one_point_mission_stop",
+   "x": 3943.87,
+   "y": 5523.18,
+   "speed": 0.96,
+   "heading": 276.1,
+   "mode": "HOLD"
+  }
+ ],
+ "idle_moved_m": 4.21,
+ "hold_moved_m": 53.64,
+ "hold_max_speed": 3.08
+}

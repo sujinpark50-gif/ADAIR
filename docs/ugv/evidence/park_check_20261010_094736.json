@@ -1,0 +1,667 @@
+{
+ "address": "udpin://0.0.0.0:14541",
+ "mode": "PARK_CHECK",
+ "records": [
+  {
+   "t": 1791593184.68,
+   "tag": "mission",
+   "x": 3957.56,
+   "y": 5545.39,
+   "speed": 3.35,
+   "heading": 350.9,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593185.68,
+   "tag": "mission",
+   "x": 3957.04,
+   "y": 5549.04,
+   "speed": 3.02,
+   "heading": 347.4,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593186.67,
+   "tag": "mission",
+   "x": 3956.63,
+   "y": 5551.68,
+   "speed": 3.01,
+   "heading": 346.5,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593187.67,
+   "tag": "mission",
+   "x": 3956.2,
+   "y": 5554.47,
+   "speed": 3.03,
+   "heading": 346.5,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593188.67,
+   "tag": "mission",
+   "x": 3955.77,
+   "y": 5557.24,
+   "speed": 3.03,
+   "heading": 346.8,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593189.68,
+   "tag": "mission",
+   "x": 3955.36,
+   "y": 5559.95,
+   "speed": 3.02,
+   "heading": 346.9,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593190.68,
+   "tag": "mission",
+   "x": 3954.94,
+   "y": 5562.69,
+   "speed": 2.76,
+   "heading": 346.9,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593191.67,
+   "tag": "mission",
+   "x": 3954.63,
+   "y": 5564.79,
+   "speed": 1.74,
+   "heading": 346.5,
+   "mode": "MISSION"
+  },
+  {
+   "t": 1791593192.68,
+   "tag": "mission",
+   "x": 3954.42,
+   "y": 5566.18,
+   "speed": 1.0,
+   "heading": 346.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593193.67,
+   "tag": "mission",
+   "x": 3954.23,
+   "y": 5567.01,
+   "speed": 0.55,
+   "heading": 345.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593194.69,
+   "tag": "mission",
+   "x": 3954.11,
+   "y": 5567.49,
+   "speed": 0.26,
+   "heading": 345.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593195.68,
+   "tag": "mission",
+   "x": 3954.04,
+   "y": 5567.75,
+   "speed": 0.11,
+   "heading": 344.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593196.67,
+   "tag": "mission",
+   "x": 3954.02,
+   "y": 5567.79,
+   "speed": 0.06,
+   "heading": 344.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593197.68,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.81,
+   "speed": 0.11,
+   "heading": 344.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593198.67,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.83,
+   "speed": 0.12,
+   "heading": 344.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593199.68,
+   "tag": "after_mission_parked",
+   "x": 3953.97,
+   "y": 5567.83,
+   "speed": 0.11,
+   "heading": 344.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593200.67,
+   "tag": "after_mission_parked",
+   "x": 3953.96,
+   "y": 5567.84,
+   "speed": 0.09,
+   "heading": 344.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593201.68,
+   "tag": "after_mission_parked",
+   "x": 3953.96,
+   "y": 5567.83,
+   "speed": 0.06,
+   "heading": 343.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593202.67,
+   "tag": "after_mission_parked",
+   "x": 3953.96,
+   "y": 5567.82,
+   "speed": 0.04,
+   "heading": 343.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593203.68,
+   "tag": "after_mission_parked",
+   "x": 3953.97,
+   "y": 5567.81,
+   "speed": 0.02,
+   "heading": 343.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593204.67,
+   "tag": "after_mission_parked",
+   "x": 3953.97,
+   "y": 5567.8,
+   "speed": 0.01,
+   "heading": 343.6,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593205.68,
+   "tag": "after_mission_parked",
+   "x": 3954.0,
+   "y": 5567.79,
+   "speed": 0.0,
+   "heading": 343.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593206.67,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.75,
+   "speed": 0.03,
+   "heading": 343.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593207.68,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.77,
+   "speed": 0.01,
+   "heading": 343.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593208.68,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.79,
+   "speed": 0.0,
+   "heading": 343.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593209.67,
+   "tag": "after_mission_parked",
+   "x": 3954.03,
+   "y": 5567.8,
+   "speed": 0.0,
+   "heading": 343.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593210.67,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.8,
+   "speed": 0.0,
+   "heading": 342.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593211.67,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 342.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593212.67,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 342.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593213.68,
+   "tag": "after_mission_parked",
+   "x": 3954.03,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 342.6,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593214.68,
+   "tag": "after_mission_parked",
+   "x": 3954.03,
+   "y": 5567.8,
+   "speed": 0.0,
+   "heading": 342.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593215.68,
+   "tag": "after_mission_parked",
+   "x": 3954.04,
+   "y": 5567.81,
+   "speed": 0.01,
+   "heading": 342.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593216.67,
+   "tag": "after_mission_parked",
+   "x": 3954.03,
+   "y": 5567.82,
+   "speed": 0.0,
+   "heading": 342.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593217.68,
+   "tag": "after_mission_parked",
+   "x": 3954.0,
+   "y": 5567.83,
+   "speed": 0.01,
+   "heading": 342.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593218.67,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.84,
+   "speed": 0.01,
+   "heading": 342.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593219.67,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.81,
+   "speed": 0.0,
+   "heading": 342.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593220.68,
+   "tag": "after_mission_parked",
+   "x": 3954.0,
+   "y": 5567.78,
+   "speed": 0.01,
+   "heading": 341.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593221.67,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 341.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593222.68,
+   "tag": "after_mission_parked",
+   "x": 3954.0,
+   "y": 5567.8,
+   "speed": 0.0,
+   "heading": 341.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593223.67,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.8,
+   "speed": 0.01,
+   "heading": 341.6,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593224.68,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.8,
+   "speed": 0.01,
+   "heading": 341.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593225.67,
+   "tag": "after_mission_parked",
+   "x": 3954.0,
+   "y": 5567.8,
+   "speed": 0.0,
+   "heading": 341.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593226.68,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.8,
+   "speed": 0.0,
+   "heading": 341.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593227.67,
+   "tag": "after_mission_parked",
+   "x": 3954.04,
+   "y": 5567.8,
+   "speed": 0.01,
+   "heading": 341.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593228.68,
+   "tag": "after_mission_parked",
+   "x": 3954.05,
+   "y": 5567.8,
+   "speed": 0.01,
+   "heading": 341.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593229.67,
+   "tag": "after_mission_parked",
+   "x": 3954.05,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 341.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593230.68,
+   "tag": "after_mission_parked",
+   "x": 3954.05,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 340.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593231.67,
+   "tag": "after_mission_parked",
+   "x": 3954.04,
+   "y": 5567.8,
+   "speed": 0.0,
+   "heading": 340.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593232.66,
+   "tag": "after_mission_parked",
+   "x": 3954.03,
+   "y": 5567.77,
+   "speed": 0.01,
+   "heading": 340.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593233.67,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.77,
+   "speed": 0.0,
+   "heading": 340.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593234.68,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.78,
+   "speed": 0.0,
+   "heading": 340.6,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593235.67,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.79,
+   "speed": 0.0,
+   "heading": 340.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593236.67,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.79,
+   "speed": 0.0,
+   "heading": 340.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593237.68,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.78,
+   "speed": 0.01,
+   "heading": 340.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593238.66,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.78,
+   "speed": 0.01,
+   "heading": 340.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593239.67,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 340.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593240.68,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 340.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593241.66,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.79,
+   "speed": 0.0,
+   "heading": 340.1,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593242.68,
+   "tag": "after_mission_parked",
+   "x": 3954.03,
+   "y": 5567.78,
+   "speed": 0.01,
+   "heading": 340.0,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593243.68,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.77,
+   "speed": 0.01,
+   "heading": 339.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593244.67,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.78,
+   "speed": 0.0,
+   "heading": 339.9,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593245.67,
+   "tag": "after_mission_parked",
+   "x": 3954.0,
+   "y": 5567.8,
+   "speed": 0.01,
+   "heading": 339.8,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593246.67,
+   "tag": "after_mission_parked",
+   "x": 3954.0,
+   "y": 5567.8,
+   "speed": 0.01,
+   "heading": 339.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593247.68,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.79,
+   "speed": 0.0,
+   "heading": 339.7,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593248.68,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.78,
+   "speed": 0.01,
+   "heading": 339.6,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593249.67,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.79,
+   "speed": 0.0,
+   "heading": 339.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593250.66,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.77,
+   "speed": 0.0,
+   "heading": 339.5,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593251.67,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.77,
+   "speed": 0.0,
+   "heading": 339.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593252.67,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.78,
+   "speed": 0.0,
+   "heading": 339.4,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593253.68,
+   "tag": "after_mission_parked",
+   "x": 3953.99,
+   "y": 5567.77,
+   "speed": 0.0,
+   "heading": 339.3,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593254.68,
+   "tag": "after_mission_parked",
+   "x": 3954.01,
+   "y": 5567.77,
+   "speed": 0.0,
+   "heading": 339.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593255.67,
+   "tag": "after_mission_parked",
+   "x": 3954.02,
+   "y": 5567.78,
+   "speed": 0.01,
+   "heading": 339.2,
+   "mode": "HOLD"
+  },
+  {
+   "t": 1791593256.67,
+   "tag": "after_mission_parked",
+   "x": 3954.03,
+   "y": 5567.79,
+   "speed": 0.01,
+   "heading": 339.1,
+   "mode": "HOLD"
+  }
+ ],
+ "parked_seq": 1,
+ "armed_end": false,
+ "moved_m_60s": 0.04,
+ "max_speed_60s": 0.12
+}

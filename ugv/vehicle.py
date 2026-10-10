@@ -719,7 +719,7 @@ class Vehicle:
                     self.gen += 1
                     self._finish(self.task_key, "CANCELLED", error=f"COMM_LOSS: 총괄 연락 {lost:.0f} s 없음",
                                  physical_state="STOPPING")
-                if self.state in ("DRIVING", "EVADING") or tel.speed_mps >= 0.2:
+                if self.state in ("DRIVING", "EVADING"):    # 이미 정차·대기 중인 차에는 정지 명령을 보내지 않는다
                     self.gen += 1
                     await self._safe_stop()
                 self._event("COMM_LOSS_STOP", lost_s=round(lost, 1), threshold_s=config.COMM_LOSS_STOP_S)

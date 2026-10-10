@@ -8,6 +8,9 @@
   (계획 8.7 m/s 곡선을 11.3 m/s, 횡가속 4.75 m/s²) → 한 칸 당겨 싣고, 첫 구간 속도를 정하려고 앞쪽에 선행 지점을 하나 넣는다.
 - follow(): 미션을 통째로 교체 → (시동) → 시작. 업로드 직후 PX4 가 검증을 끝내기 전에는 시작을 거부하므로 재시도한다.
 - stop(): 진행 방향 앞 제동거리 지점 하나짜리 미션으로 교체 (base.Driver.stop). HOLD 는 명령 시점 위치로 U턴한다.
+- 정차 유지 = 시동 끄기(disarm): 미션이 끝나 멈추면(0.3 m/s 미만 PARK_AFTER_S) 시동을 끈다. 이 rover 는 미션 끝 '대기(loiter)'
+  에서 조금 지나친 마지막 지점으로 돌아가려다 다시 달리거나 맴돌았다 (2026-10-10 Gazebo: 정차 5 s 뒤 스스로 출발, 26분 6 km).
+  시동이 꺼지면 바퀴 속도 명령이 0 이라 그 자리에 선다. 다음 미션(follow)에서 다시 시동을 건다.
 - 텔레메트리는 구독을 계속 열어 두고 마지막 값을 보관한다. 위치가 끊기면 Telemetry.age_s() 가 커진다 (감시는 vehicle.py).
 검증 (2026-10-09, 평지 월드): 직선 60.5 km/h, 정지 57 m, 90°·45°·135° 꺾임 17.9/36.1/17.7 km/h. ugv/tools/drive_test.py
 """
@@ -20,6 +23,7 @@ from ..geo import FRAME
 from .base import Driver, DriverError, Item, Progress, Telemetry
 
 START_RETRIES = 20
+PARK_AFTER_S = 1.0          # 미션 끝 + 0.3 m/s 미만이 이만큼 이어지면 시동을 꺼 정차 유지
 LEAD_BASE_M = 5.0           # 선행 지점 = 지금 위치에서 경로를 따라 LEAD_BASE_M + 속도 × LEAD_TIME_S 앞
 LEAD_TIME_S = 2.0           #   (업로드·시작에 걸리는 동안 지나쳐 뒤에 남지 않게. 뒤에 남으면 rover 가 되돌아간다)
 ACCEPT_M = 3.0              # 미션 지점 도착 반경
@@ -76,6 +80,7 @@ class Px4Driver(Driver):
         self._cmd = asyncio.Lock()
         self.connected = False
         self.last_error: Optional[str] = None
+        self.parked_seq = None                  # 정차 유지(시동 끔)한 미션 번호
 
     async def start(self):
         from mavsdk.asyncio import ComponentType, Configuration, Mavsdk
@@ -103,6 +108,35 @@ class Px4Driver(Driver):
         self.connected = self._pos is not None
         if not self.connected:
             raise DriverError("PX4_NO_POSITION")
+        self._tasks.append(asyncio.create_task(self._park_watch()))
+
+    async def _park_watch(self):
+        """미션이 끝나고 멈춘 차의 시동을 끈다 (정차 유지). 다음 follow 가 다시 시동을 건다."""
+        still_since = None
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                tel = self.telemetry()
+                prog = self._prog
+                if tel is None or not self._armed or not prog.finished or self.parked_seq == prog.mission_seq:
+                    still_since = None
+                    continue
+                if tel.speed_mps >= 0.3:
+                    still_since = None
+                    continue
+                import time
+                still_since = still_since or time.monotonic()
+                if time.monotonic() - still_since < PARK_AFTER_S:
+                    continue
+                async with self._cmd:
+                    if self._prog.mission_seq != prog.mission_seq or not self._prog.finished:
+                        continue
+                    await self._act.disarm()
+                    self.parked_seq = prog.mission_seq
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"park: {type(e).__name__}: {e}"
 
     async def _pump(self, name, stream):
         import time
@@ -204,12 +238,18 @@ class Px4Driver(Driver):
             return seq
 
     async def halt_in_place(self) -> int:
+        """이미 거의 멈춘 차의 '제자리 정지'. MAVLink HOLD(action.hold) 는 보내지 않는다:
+        이 rover(ackermann)에서 HOLD 는 정지가 아니라 주행을 일으켰다 — 2026-10-10 Gazebo 에서 정차 중인 차에 HOLD 를 보내자
+        3.8 m/s 로 26분 동안 약 6 km 를 달렸다 (통신 단절 정지 처리가 정차 차량에 정지 명령을 보낸 경우).
+        미션이 끝나 멈춰 있으면 아무것도 보내지 않는다 (미션 끝 정차 상태 유지). 아직 미션을 따라 움직이는 중이면
+        지금 위치 한 점짜리 미션으로 바꿔 그 자리에서 끝나게 한다."""
         async with self._cmd:
             seq = self._prog.mission_seq + 1
-            self._expected_total = 0
-            try:
-                await self._act.hold()
-            except Exception as e:  # noqa: BLE001
-                raise DriverError(f"HOLD_FAILED: {e}") from e
-            self._prog = Progress(0, 0, True, seq)
-            return seq
+            tel = self.telemetry()
+            prog = self._prog
+            if tel is not None and (prog.finished or prog.total == 0) and tel.speed_mps < 0.3:
+                self._prog = Progress(prog.current, prog.total, True, seq)
+                return seq
+        if tel is None:
+            raise DriverError("TELEMETRY_UNAVAILABLE")
+        return await self.follow([(tel.x, tel.y, 1.0)])
