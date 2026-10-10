@@ -80,6 +80,28 @@ def _dist_to_polyline(x, y, pts, lo=0, hi=None):
     return best, bi
 
 
+def _progress_index(x, y, pts, cum, near_i, back=20, ahead=200, tol_m=3.0, gap_m=30.0):
+    """계획 선형 위 진행 위치 (가장 가까운 구간). 선형이 같은 곳을 두 번 지나면(거점을 지나 한 바퀴 돌아 같은 도로를 되짚어 오는 복귀
+    등) 가장 가까운 구간이 나중 통과일 수 있다 → 경로상 gap_m 넘게 앞선, 거리 차 tol_m 안의 더 이른 통과가 있으면 그쪽을 고른다.
+    (2026-10-10 Gazebo 4대: 진행 위치가 되짚어 오는 구간으로 건너뛴 상태에서 대기가 풀려 남은 경로를 다시 보내자, 첫 지점이 차 뒤라
+    PX4 가 도로 밖에서 돌아 10 m 이탈)"""
+    lo, hi = max(near_i - back, 0), min(near_i + ahead, len(pts) - 1)
+    ds = []
+    for i in range(lo, hi):
+        d, _ = _dist_to_polyline(x, y, pts, i, i + 1)
+        ds.append(d)
+    if not ds:
+        return _dist_to_polyline(x, y, pts, lo, hi)
+    b = min(range(len(ds)), key=ds.__getitem__)
+    for j in range(max(near_i - 2 - lo, 0), b):          # 더 이른 통과 — 지금 진행 위치보다 뒤(이미 지난 통과)는 보지 않는다
+        if ds[j] <= ds[b] + tol_m and cum[lo + b] - cum[lo + j] > gap_m:
+            k = j
+            while k + 1 < b and cum[lo + k + 1] - cum[lo + j] <= gap_m and ds[k + 1] <= ds[k]:
+                k += 1                                   # 그 통과 안에서 가장 가까운 구간
+            return ds[k], lo + k
+    return ds[b], lo + b
+
+
 class Vehicle:
     def __init__(self, cfg: dict, net: RoadNetwork, fire_source, clock, store: ExecStore, wall=time.monotonic):
         self.cfg, self.net, self.fire_source, self.clock, self.store = cfg, net, fire_source, clock, store
@@ -256,8 +278,15 @@ class Vehicle:
     def occupied_roads(self, home: bool = False) -> dict:
         """스스로 움직이지 않을 다른 차량이 차지한 도로 {도로: 차량}: 고장·위험(운영자 해제 전 정지) 또는 임무 없이 자기 거점 대기
         위치에 서 있는 차. 그 밖에 잠깐 서 있는 차는 피하지 않는다 (움직일 수 있다 — 주행 중 충돌은 ugv/traffic.py 가 막는다).
-        자기 출입 도로는 복귀 임무일 때 뺀다 (같은 거점 대기 위치 순서는 traffic 이 기다리게 한다)."""
+        자기 출입 도로는 복귀 임무일 때 뺀다 (같은 거점 대기 위치 순서는 traffic 이 기다리게 한다).
+        복귀 임무면 같은 거점 다른 차의 대기 도로도 뺀다 — 지금 비어 있어도 그 차가 돌아와 서면 길이 막힌다. 대기 도로는 막아도 도로망이
+        끊기지 않는 도로로 골랐다 (drive_graph.access_point). (2026-10-10 Gazebo 4대: 대기 방향 도착을 위해 블록을 도는 A-ugv1 복귀 경로가
+        A-fire1 대기 도로를 지났고, 먼저 돌아온 A-fire1 앞에서 시험 끝까지 기다림)"""
         out = {}
+        if home:
+            for p in self.peers():
+                if p.station.get("base_id") == self.station.get("base_id") and p.access.road_id != self.access.road_id:
+                    out[p.access.road_id] = f"{p.resource_id} (대기 도로)"
         for p in self.peers():
             t = p.driver.telemetry()
             if t is not None and p.fault and p.fault.startswith("TELEMETRY_LOST") and p.speed is not None:
@@ -581,7 +610,7 @@ class Vehicle:
         sp = self.speed
         prog = self.driver.progress()
         # 진행: 계획 선형 위 가장 가까운 점 (지난 위치 근처만 본다)
-        d, i = _dist_to_polyline(tel.x, tel.y, sp.pts, self._near_i - 20, self._near_i + 200)
+        d, i = _progress_index(tel.x, tel.y, sp.pts, sp.cum, self._near_i)
         if d > config.OFF_ROUTE_M:
             d, i = _dist_to_polyline(tel.x, tel.y, sp.pts)
         self._near_i = i
@@ -635,9 +664,15 @@ class Vehicle:
                 self.state = "FAULT"
             return
         # 차량 이상 (PX4): 주행 중 시동 꺼짐
-        if self.driver.kind == "px4" and not tel.armed and now - (self._drive_started_sim or now) > 5.0:
+        # (출발 시각 0.0 을 '없음' 으로 보지 않는다 — 전에는 `or now` 라 시각 0 에 출발한 차는 이 판정이 꺼져 있었다)
+        started = self._drive_started_sim if self._drive_started_sim is not None else now
+        if self.driver.kind == "px4" and not tel.armed and now - started > 5.0:
             async with self.lock:
                 self._fail("VEHICLE_FAULT", "주행 중 시동 꺼짐 (disarm)")
+                # 다른 고장처럼 미션을 정지로 바꾼다. 안 바꾸면 시동이 다시 걸릴 때 PX4 가 남은 미션을 감독 없이 달린다
+                # (2026-10-10 Gazebo: 오판된 VEHICLE_FAULT 뒤 FAULT 상태로 8 m/s 주행)
+                await self._safe_stop()
+                self.state = "FAULT"
             return
 
     # ------------------------------------------------------------------ 차량 간 충돌 방지 (ugv/traffic.py 가 부른다)
@@ -702,6 +737,10 @@ class Vehicle:
             except DriverError as e:
                 self._fail("RESUME_FAILED", str(e))
                 return
+            # 대기 지점에 서면 PX4 는 미션 끝 정차로 시동을 끈다 → 다시 출발할 때 시동 상태가 텔레메트리에 늦게 온다.
+            # 출발 시각을 지금으로 해 '주행 중 시동 꺼짐' 판정이 재출발 직후를 오판하지 않게 한다 (2026-10-10 Gazebo 마주 접근 시험)
+            self._drive_started_sim = self.clock.now()
+            self._move_ref = None
             self._event("YIELD_END", waited_s=round(self.clock.now() - info.get("since_sim", self.clock.now()), 1),
                         other=info.get("other"))
 

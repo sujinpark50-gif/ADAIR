@@ -56,7 +56,7 @@ def _tcum(sp):
 class TrafficManager:
     def __init__(self, vehicles: Dict[str, object], clock):
         self.vehicles, self.clock = vehicles, clock
-        self._tc = {}                            # id(speed plan) → 누적 시간
+        self._tc = {}                            # id(speed plan) → (speed plan, 누적 시간). 계획 자체를 함께 둬야 id 재사용을 가린다
         self._clear_ticks: Dict[str, int] = {}
         self.waits: Dict[str, dict] = {}         # 기다리는 차 → {other, kind, since_sim, ...}
         self.deadlocks: List[List[str]] = []
@@ -101,9 +101,11 @@ class TrafficManager:
             return _Pred(v, pts, True, 0.0, vel, committed)
         sp = v.speed
         key = id(sp)
-        if key not in self._tc:
-            self._tc = {key: _tcum(sp), **{k: x for k, x in list(self._tc.items())[-8:]}}
-        tc = self._tc[key]
+        # 옛 계획이 해제되면 새 계획이 같은 id 를 받을 수 있다 → 같은 객체인지 확인 (2026-10-10 회귀 시험에서 다른 길이의
+        # 옛 시간표를 써 IndexError. 길이가 같았다면 틀린 도착 시각으로 충돌 판단)
+        if key not in self._tc or self._tc[key][0] is not sp:
+            self._tc = {**{k: x for k, x in list(self._tc.items())[-8:] if k != key}, key: (sp, _tcum(sp))}
+        tc = self._tc[key][1]
         i0 = max(0, min(v._near_i, len(sp.pts) - 1))
         s_now = sp.cum[i0]
         hold_s = v.hold["s"] if getattr(v, "hold", None) and not own_view else None
