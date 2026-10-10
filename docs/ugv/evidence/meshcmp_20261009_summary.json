@@ -1,0 +1,41 @@
+{
+ "meshcmp_fix1_20261009_223516.json": {
+  "distance_m": 671.3,
+  "sim_duration_s": 138.54,
+  "max_speed_kmh_0p5s": 59.9,
+  "max_abs_roll_deg": 9.77,
+  "max_abs_pitch_deg": 6.57,
+  "z_range_m": [
+   64.549,
+   107.327
+  ],
+  "final_speed_mps": 0.0,
+  "rollover": false
+ },
+ "meshcmp_fix1b_20261009_223833.json": {
+  "distance_m": 671.2,
+  "sim_duration_s": 139.06,
+  "max_speed_kmh_0p5s": 59.9,
+  "max_abs_roll_deg": 25.6,
+  "max_abs_pitch_deg": 6.38,
+  "z_range_m": [
+   64.547,
+   107.33
+  ],
+  "final_speed_mps": 0.0,
+  "rollover": false
+ },
+ "meshcmp_orig_20261009_222747.json": {
+  "distance_m": 1833.7,
+  "sim_duration_s": 138.54,
+  "max_speed_kmh_0p5s": 60.1,
+  "max_abs_roll_deg": 173.11,
+  "max_abs_pitch_deg": 37.12,
+  "z_range_m": [
+   5.82,
+   120.659
+  ],
+  "final_speed_mps": 0.0,
+  "rollover": true
+ }
+}

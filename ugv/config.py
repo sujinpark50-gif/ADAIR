@@ -56,7 +56,7 @@ def load_station(base_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------- 주행 (확정)
-MAX_SPEED_MPS = 60.0 / 3.6                  # 최고속도 60 km/h
+MAX_SPEED_MPS = float(os.getenv("UGV_MAX_SPEED_KMH", "60")) / 3.6   # 최고속도 60 km/h (환경변수는 저속 시험용 — 운영 기본값 60)
 # 도로 등급 제한속도가 이보다 낮으면 이 값으로 본다 (총괄 브랜치 사용자 결정 2026-10-07, 이전 UGV 설정 승계).
 # 도로망의 시군도 30 km/h 를 그대로 쓰면 도로망 대부분(583/820)이 30 km/h 가 된다. 0 이면 도로 등급 무시
 MIN_ROAD_SPEED_KMH = float(os.getenv("UGV_MIN_ROAD_SPEED_KMH", "50"))

@@ -1,0 +1,140 @@
+{
+ "file": "logs/ugv/B4_A_compare_20261010_132716.json",
+ "tag": "B4_A_compare",
+ "start": "2026-10-10 13:27:19",
+ "end": "2026-10-10 13:30:33",
+ "distance_m": 1306.1,
+ "sim_s": 196.56,
+ "rtf": 1.0,
+ "rtf_min10s": 1.0,
+ "vmax_kmh": 50.2,
+ "v3s_kmh": 50.1,
+ "roll_max": 0.0,
+ "pitch_max": 0.0,
+ "rollover": false,
+ "offroad_events": 6,
+ "offroad_max_m": 0.39,
+ "offroad_longest_s": 1.1,
+ "offroad_by_cause": {
+  "PLAN_OUTSIDE": 0,
+  "PX4_TRACKING": 3,
+  "JUDGEMENT": 3
+ },
+ "pose_gap_max_s": 0.054,
+ "tel_age_max_s": 0.03,
+ "cmd_rtt_s": [
+  0.571,
+  0.934
+ ],
+ "cmd_timing": [
+  {
+   "plan_s": 0.406,
+   "driver_start_s": 0.172,
+   "total_s": 0.578,
+   "latency_assumed_s": 1.0,
+   "v0_mps": 0.0,
+   "projected_m": 0.0,
+   "trimmed_items_behind": 0
+  },
+  {
+   "plan_s": 0.64,
+   "driver_start_s": 0.281,
+   "total_s": 0.921,
+   "latency_assumed_s": 1.0,
+   "v0_mps": 0.01,
+   "projected_m": 0.0,
+   "trimmed_items_behind": 0
+  }
+ ],
+ "at_command": [
+  {
+   "position": {
+    "lat": 38.062322699999996,
+    "lon": 128.16971279999999
+   },
+   "speed_mps": 0.0,
+   "heading_deg": 29.3,
+   "mission_state": "IDLE"
+  },
+  {
+   "position": {
+    "lat": 38.0662515,
+    "lon": 128.1697542
+   },
+   "speed_mps": 0.01,
+   "heading_deg": 54.9,
+   "mission_state": "IDLE"
+  }
+ ],
+ "second_trigger": null,
+ "fire": null,
+ "tasks": {
+  "RT1-20261010_132716": [
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ],
+  "HOME-20261010_132716": [
+   "COMPLETED",
+   "ARRIVED",
+   null
+  ]
+ },
+ "runs": {
+  "RT1-20261010_132716": {
+   "length_m": 567.3,
+   "eta_s": 59,
+   "dur_s": 79.5,
+   "end_err_m": 0.07,
+   "end_v": 0.0,
+   "vmax": 13.94,
+   "curves": 3,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.57,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 1.73,
+    "p99": 2.54,
+    "max": 2.76,
+    "samples_over_plan+1": 15
+   },
+   "plan_body_check": {
+    "samples": 554,
+    "outside_samples": 0,
+    "max_excess_m": -0.13,
+    "worst_xy": [
+     4090.4,
+     6078.8
+    ]
+   }
+  },
+  "HOME-20261010_132716": {
+   "length_m": 744.3,
+   "eta_s": 88,
+   "dur_s": 114.0,
+   "end_err_m": 0.02,
+   "end_v": 0.0,
+   "vmax": 13.95,
+   "curves": 7,
+   "curves_over_1mps": 0,
+   "worst_over_mps": 0.7,
+   "lat_accel": {
+    "plan": 1.5,
+    "p95": 2.34,
+    "p99": 2.74,
+    "max": 2.95,
+    "samples_over_plan+1": 71
+   },
+   "plan_body_check": {
+    "samples": 716,
+    "outside_samples": 0,
+    "max_excess_m": -0.06,
+    "worst_xy": [
+     4079.7,
+     5683.0
+    ]
+   }
+  }
+ },
+ "key_events": []
+}

@@ -6,9 +6,10 @@
 
 방식 (2026-10-10): 구역 전체를 **하나의 연속 높이장(heightmap)** 으로 만든다. 도로마다 충돌 메시를 겹쳐 깔지 않으므로
 교차로에서 면이 겹치거나 틈·수직 턱이 생기지 않는다 (예전 지형 도로 월드의 전복 원인: 겹친 도로 면 턱 0.65~1.15 m).
-- 도로 노드 고도 = DEM 쌍선형 값. 한 노드에 붙은 모든 도로가 같은 고도를 쓴다 (평면교차로 연결).
-- 도로 종단 = 두 노드 고도를 잇는 직선 + DEM 잔차를 60 m 창으로 다듬은 것, 끝에서 0 으로 줄이고 최대 종단경사 12 % 로 제한.
-  90 m DEM 을 도로 위에서 그대로 따르면 골짜기 사면이 섞여 경사 20 % 넘는 곳이 7.5 % (도로망 전체)라 그대로 쓰지 않는다.
+- 도로면 고도 = DEM 을 가우스(σ 40 m)로 크게 다듬은 **하나의 연속 고도장**. 모든 도로·교차로가 같은 면에서 높이를 가져와
+  평면교차로가 같은 고도로 이어지고, 갈라지는 도로 사이에도 턱이 없다 (도로별 종단을 따로 쓰자 0.78 m 턱이 생겼다).
+  90 m DEM 을 도로 위에서 그대로 따르면 골짜기 사면이 섞여 경사 20 % 넘는 곳이 7.5 % (도로망 전체)라 다듬어 쓴다.
+  최대 종단경사는 정적 검사로 보고한다 (제한하지 않음 — 넘으면 보고서에 남기고 속도 계획에서 다룬다).
 - 횡단 = 평평 (편경사·횡단경사 없음). 도로 폭 = 차로 수 추정 (drive_graph.est_half_width).
 - 높이장 칸 값: 도로 띠 안 = 가까운 도로들의 종단 고도 (거리 가중, 교차로에서 연속), 띠 밖 BLEND_M 까지 = 도로 고도에서 DEM 으로
   선형 전이, 그 밖 = DEM. 그래서 도로 띠 안에서 지형이 도로 위로 튀어나오거나 도로가 지형에 묻히지 않는다.
@@ -39,8 +40,25 @@ EDGE_M = 25.0             # 구역 경계에서 이만큼 안쪽 도로만 (높�
 MAX_GRADE = 0.12          # 최대 종단경사
 SMOOTH_M = 60.0           # DEM 잔차 다듬기 창
 BLEND_M = 12.0            # 도로 띠 밖 지형 전이 폭
+ROAD_SURFACE_SIGMA_M = 40.0   # 도로면 고도장 = DEM 가우스 다듬기 (표준편차)
 PROFILE_STEP_M = 5.0
 WORLD_ORIGIN_ALT = 172.1  # kangwon_flat 과 같은 원점 고도 (DEM 원점 값과 같음)
+
+
+def write_png16(path, img):
+    """16 bit 회색조 PNG (zlib 만 사용 — 추가 패키지 없음). img: uint16 2차원."""
+    import struct
+    import zlib
+    h, w = img.shape
+    raw = b"".join(b"\x00" + img[i].astype(">u2").tobytes() for i in range(h))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 16, 0, 0, 0, 0)))
+        f.write(chunk(b"IDAT", zlib.compress(raw, 6)))
+        f.write(chunk(b"IEND", b""))
 
 
 def select_roads(net, cx, cy):
@@ -119,51 +137,50 @@ def build(cx, cy):
     for i, y in enumerate(ys):
         H[i] = [z_at(x, y) for x in xs]
     dem_grid = H.copy()
-    # 도로 띠: 도로마다 주변 칸까지의 거리·종단 고도(투영 위치)를 numpy 로 구한다
+    # 도로면 고도장: DEM 을 가우스로 크게 다듬은 하나의 연속 면 (모든 도로가 같은 면에서 높이를 가져온다 → 교차로·갈라지는
+    # 도로·겹치는 띠에서 구조상 턱이 없다. 도로별 종단을 따로 쓰자 갈라지는 두 도로 사이에 0.78 m 턱이 생겼다 — 2026-10-10)
+    from scipy.ndimage import gaussian_filter
     cell = xs[1] - xs[0]
-    wsum = np.zeros((N, N))
-    wz = np.zeros((N, N))
-    blend_d = np.full((N, N), np.inf)        # 띠 밖 전이: 가장 가까운 도로 가장자리까지 거리
-    blend_z = np.zeros((N, N))
+    sigma = ROAD_SURFACE_SIGMA_M / cell
+    Z = gaussian_filter(dem_grid, sigma=sigma, mode="nearest")
+    # 도로 띠 (어느 포함 도로든 중심선 ± 추정 반폭) 와 띠 밖 거리
+    edge = np.full((N, N), np.inf)          # 가장 가까운 도로 띠 가장자리까지 거리 (안이면 ≤ 0)
     for rid in rids:
-        s_, z_ = prof[rid]
         hw = half_w[rid]
-        pts = np.array([net.at(rid, v)[2:4] for v in s_])
+        pts = np.array(net.roads[rid].xy)
         reach = hw + BLEND_M + cell
         j0 = max(0, int((pts[:, 0].min() - reach - xs[0]) / cell))
         j1 = min(N - 1, int((pts[:, 0].max() + reach - xs[0]) / cell) + 1)
         i0 = max(0, int((ys[0] - (pts[:, 1].max() + reach)) / cell))
         i1 = min(N - 1, int((ys[0] - (pts[:, 1].min() - reach)) / cell) + 1)
         X, Y = np.meshgrid(xs[j0:j1 + 1], ys[i0:i1 + 1])
-        best_d = np.full(X.shape, np.inf)
-        best_z = np.zeros(X.shape)
+        best = np.full(X.shape, np.inf)
         for k in range(len(pts) - 1):
             ax, ay = pts[k]
             bx, by = pts[k + 1]
             dx_, dy_ = bx - ax, by - ay
             L2 = dx_ * dx_ + dy_ * dy_
             t = np.clip(((X - ax) * dx_ + (Y - ay) * dy_) / L2, 0.0, 1.0) if L2 > 0 else np.zeros(X.shape)
-            dd = np.hypot(X - ax - t * dx_, Y - ay - t * dy_)
-            zz = z_[k] + (z_[k + 1] - z_[k]) * t
-            m = dd < best_d
-            best_d[m] = dd[m]
-            best_z[m] = zz[m]
-        ins = best_d <= hw
-        w = 1.0 / (best_d + 0.5) ** 2
+            best = np.minimum(best, np.hypot(X - ax - t * dx_, Y - ay - t * dy_))
         sub = (slice(i0, i1 + 1), slice(j0, j1 + 1))
-        wsum[sub] += np.where(ins, w, 0.0)
-        wz[sub] += np.where(ins, w * best_z, 0.0)
-        edge = best_d - hw
-        m = (~ins) & (edge <= BLEND_M) & (edge < blend_d[sub])
-        bd, bz = blend_d[sub], blend_z[sub]
-        bd[m] = edge[m]
-        bz[m] = best_z[m]
-        blend_d[sub], blend_z[sub] = bd, bz
-    road_mask = wsum > 0
-    H[road_mask] = wz[road_mask] / wsum[road_mask]
-    bm = (~road_mask) & np.isfinite(blend_d)
-    t = blend_d[bm] / BLEND_M
-    H[bm] = blend_z[bm] * (1 - t) + dem_grid[bm] * t
+        edge[sub] = np.minimum(edge[sub], best - hw)
+    road_mask = edge <= 0
+    H = dem_grid.copy()
+    H[road_mask] = Z[road_mask]
+    bm = (~road_mask) & (edge <= BLEND_M)
+    t = edge[bm] / BLEND_M
+    H[bm] = Z[bm] * (1 - t) + dem_grid[bm] * t
+    # 보고용 종단: 같은 고도장을 도로 위에서 읽은 값
+    from scipy.ndimage import map_coordinates
+    for rid in rids:
+        s_, _ = prof[rid]
+        xy = np.array([net.at(rid, v)[2:4] for v in s_])
+        cols = (xy[:, 0] - xs[0]) / cell
+        rows = (ys[0] - xy[:, 1]) / cell
+        prof[rid] = (s_, map_coordinates(Z, [rows, cols], order=1, mode="nearest"))
+    for n in node_z:
+        x, y = net.nodes[n]
+        node_z[n] = float(map_coordinates(Z, [[(ys[0] - y) / cell], [(x - xs[0]) / cell]], order=1, mode="nearest")[0])
     return net, rids, excluded, prof, node_z, half_w, xs, ys, H, road_mask, dem_grid
 
 
@@ -207,14 +224,13 @@ def static_checks(net, rids, prof, node_z, half_w, xs, ys, H, road_mask, dem_gri
 
 
 def write(net, rids, excluded, prof, node_z, half_w, xs, ys, H, road_mask, dem_grid, cx, cy, acc):
-    from PIL import Image
     zmin, zmax = float(H.min()), float(H.max())
     span = max(zmax - zmin, 1.0)
     img = np.round((H - zmin) / span * 65535).astype(np.uint16)
     model_dir = MODELS / f"{NAME}_ground"
     model_dir.mkdir(parents=True, exist_ok=True)
     png = model_dir / "heightmap.png"
-    Image.fromarray(img, mode="I;16").save(png)
+    write_png16(png, img)
     size = 2 * HALF_M
     # 도로 표시 OBJ (도로면 위 3 cm, 충돌 없음)
     verts, faces = [], []
