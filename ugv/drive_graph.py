@@ -177,6 +177,66 @@ class DriveGraph:
             self._core = set(self.components()[0])
         return self._core
 
+    def road_is_spare(self, rid: str, keep: str, min_share: float = 0.97) -> bool:
+        """도로 rid 를 빼도 서로 오갈 수 있는 묶음(가장 큰 강연결 성분)이 거의 그대로(min_share 이상)이고 keep 도로가 그 안에
+        남는가 — 대기 차량이 그 도로를 막아도 다른 차의 길이 끊기지 않는지."""
+        cache = self.__dict__.setdefault("_spare", {})
+        key = (rid, keep)
+        if key in cache:
+            return cache[key]
+        core = self.core
+        succ = {s: [t.to for t in self.turns.get(s, ()) if t.to[0] != rid] for s in core if s[0] != rid}
+        start = next(((keep, n) for n in (self.net.roads[keep].a, self.net.roads[keep].b) if (keep, n) in succ), None)
+        if start is None:
+            cache[key] = False
+            return False
+        fwd, stack = {start}, [start]
+        while stack:
+            for t in succ.get(stack.pop(), ()):
+                if t in succ and t not in fwd:
+                    fwd.add(t)
+                    stack.append(t)
+        rev = {}
+        for s_, ts in succ.items():
+            for t in ts:
+                rev.setdefault(t, []).append(s_)
+        bwd, stack = {start}, [start]
+        while stack:
+            for t in rev.get(stack.pop(), ()):
+                if t in succ and t not in bwd:
+                    bwd.add(t)
+                    stack.append(t)
+        ok = len(fwd & bwd) >= min_share * (len(core) - sum(1 for s_ in core if s_[0] == rid))
+        cache[key] = ok
+        return ok
+
+    def detour_ok(self, rid: str, home: RoadPos, radius_m: float = 6000.0, mean_max: float = 1.10, worst_max: float = 1.5) -> bool:
+        """도로 rid 를 막아도 거점 출입 지점(home)에서 반경 안 도로들까지 걸리는 시간이 크게 늘지 않는가 (양 방향 출발 기준).
+        대기 차량이 그 도로에 서 있으면 다른 차는 그 도로로 계획하지 않으므로, 막힌 도로 때문에 크게 돌아가는 곳은 고르지 않는다
+        (2026-10-10: 거점 B 두 번째 도로를 막자 B-ugv1 복귀가 43 km 가 됨)."""
+        cache = self.__dict__.setdefault("_detour", {})
+        key = (rid, home.road_id, round(home.s, 1))
+        if key in cache:
+            return cache[key]
+        r = self.net.roads[home.road_id]
+        ratios = []
+        for to in (r.a, r.b):
+            if not self.allowed(home.road_id, self.other(home.road_id, to)):
+                continue
+            st = DirPos(home, to)
+            base = self.search(st, 0.0)["dist"]
+            cut = self.search(st, 0.0, road_ok=lambda x: x != rid)["dist"]
+            for s_, t0 in base.items():
+                if s_[0] == rid or t0 <= 0:
+                    continue
+                x, y = self.net.nodes[s_[1]]
+                if math.hypot(x - home.x, y - home.y) > radius_m:
+                    continue
+                ratios.append(cut.get(s_, math.inf) / t0)
+        ok = bool(ratios) and sum(min(q, 10.0) for q in ratios) / len(ratios) <= mean_max and max(ratios) <= worst_max
+        cache[key] = ok
+        return ok
+
     def oneway_ok(self, rid: str, frm: str) -> bool:
         r = self.net.roads[rid]
         ow = r.attrs.get("oneway", "BOTH")
@@ -870,46 +930,63 @@ def heading_of_yaw(yaw_enu_rad: float) -> float:
 
 
 STATION_SEARCH_M = 1000.0        # 소방서 좌표에서 출입 지점을 찾는 거리 (이보다 멀면 배치 불가 — 임의의 먼 도로에 두지 않는다)
-SLOT_GAP_M = 6.0                 # 같은 거점 대기 위치 사이 차체 간 간격
+SLOT_GAP_M = 6.0                 # 같은 거점 대기 위치 사이 차체 간 간격 (같은 도로 한 줄 대기일 때)
+SLOT_END_M = 35.0                # 대기 위치는 도로 끝(교차로)에서 이만큼 떨어진 곳 (15 m 일 때 교차로를 지나는 차가 서 있는 차에 막힘)
 
 
 def access_point(net: RoadNetwork, base_id: str, search_m: float = STATION_SEARCH_M, graph=None, slot: int = 0,
                  slot_lengths: Optional[List[float]] = None):
-    """소속 거점의 차량 출입 지점: 소방서 좌표(environment/config/fire_stations.json)에서 가장 가까운 도로 지점 중
+    """소속 거점의 차량 출입 지점(대기 위치): 소방서 좌표(environment/config/fire_stations.json)에서 가까운 도로 지점 중
     양방향 통행이고 두 방향 모두 가장 큰 강연결 성분(서로 오갈 수 있는 묶음)에 들며, 이 차량 특성(graph.p)으로 급커브가
     아닌 곳. 소방서 좌표와 따로 둔다 — 좌표에서 가장 가까운 도로가 막다른 길일 수 있다 (인제119: 약 44 m 떨어진 도로가 막다른 길).
     진행 방향은 그 도로의 a → b.
-    slot: 같은 거점의 k 번째 차량 대기 위치 — 출입 지점에서 진행 방향 뒤로 (앞 차량들 길이/2 + 간격 + 자기 길이/2) 만큼.
-    slot_lengths: 앞 슬롯 차량들의 차체 길이 (기본: 이 차량 길이). 도로가 짧아 겹치지 않게 둘 수 없으면 None.
+    slot: 같은 거점의 k 번째 차량 — 조건 맞는 **서로 다른 도로** 중 k 번째로 가까운 도로 (2026-10-10). 같은 도로에 한 줄로
+    세우면 중심선 주행이라 서로 비켜 갈 수 없어, 반대 방향으로 돌아온 앞 차가 뒤 차에 막혔다 (Gazebo 4대 시험).
+    다른 도로가 모자라면 0 번 도로에서 진행 방향 뒤로 (앞 차량들 길이 + 간격) 물린 자리 (slot_lengths: 앞 차량 길이).
     (RoadPos, 방위°, 설명) 또는 None (search_m 안에 조건 맞는 도로 없음 — 배치 불가)"""
     st = config.load_station(base_id)
     from .geo import FRAME
     sx, sy = FRAME.to_xy(st["lat"], st["lon"])
     g = graph or net.graph
-    best = None
+    best = {}                                       # 도로 → (거리, 지점)
     for p in net.samples() + [net.snap(sx, sy)]:
         d = math.hypot(p.x - sx, p.y - sy)
-        if d > search_m or (best is not None and d >= best[0]):
+        if d > search_m:
             continue
         r = net.roads[p.road_id]
-        if r.attrs.get("oneway", "BOTH") != "BOTH" or p.road_id in g.sharp_roads:
+        if r.attrs.get("oneway", "BOTH") != "BOTH" or p.road_id in g.sharp_roads or r.length < 2 * SLOT_END_M:
             continue
-        if (p.road_id, r.a) in g.core and (p.road_id, r.b) in g.core:
-            best = (d, p)
-    if best is None:
+        if not ((p.road_id, r.a) in g.core and (p.road_id, r.b) in g.core):
+            continue
+        if p.road_id not in best or d < best[p.road_id][0]:
+            best[p.road_id] = (d, p)
+    if not best:
         return None
-    d, p = best
-    r = net.roads[p.road_id]
-    note = ""
+    ranked = sorted(best.values(), key=lambda v: v[0])
     if slot > 0:
+        # 두 번째부터는 그 도로를 막아도(차가 서 있으면 다른 차는 그 도로로 계획하지 않는다) 도로망이 끊기지 않는 도로만
+        first = ranked[0][1]
+        ranked = [ranked[0]] + [v for v in ranked[1:] if g.road_is_spare(v[1].road_id, keep=first.road_id)
+                                and g.detour_ok(v[1].road_id, first)]
+    note = ""
+    if slot < len(ranked):
+        d, p = ranked[slot]
+        r = net.roads[p.road_id]
+        s_ = min(max(p.s, SLOT_END_M), r.length - SLOT_END_M)          # 교차로 원호 구간을 피해 도로 끝에서 떨어진 곳
+        p = net.at(p.road_id, s_)
+        if slot:
+            note = f", 대기 위치 {slot} (같은 거점 {slot + 1}번째 도로)"
+    else:
+        d, p = ranked[0]
         own = g.p.body_length_m
-        lens = list(slot_lengths or [own] * slot)
-        back = lens[0] / 2 + sum(lens[1:slot]) + SLOT_GAP_M * slot + own / 2
-        s_new = p.s - back
-        if s_new < 5.0:
+        k = slot - len(ranked) + 1
+        lens = list(slot_lengths or [own] * k)
+        back = lens[0] / 2 + sum(lens[1:k]) + SLOT_GAP_M * k + own / 2
+        if p.s - back < 5.0:
             return None
-        p = net.at(p.road_id, s_new)
-        note = f", 대기 위치 {slot} (출입 지점 뒤 {back:.1f} m)"
+        p = net.at(p.road_id, p.s - back)
+        note = f", 대기 위치 {slot} (다른 도로 부족 — 첫 도로 출입 지점 뒤 {back:.1f} m, 한 줄 대기)"
+    r = net.roads[p.road_id]
     q0 = net.at(p.road_id, max(0.0, p.s - 2.0))[2:4]
     q1 = net.at(p.road_id, min(r.length, p.s + 2.0))[2:4]
     return p, bearing_deg(q1[0] - q0[0], q1[1] - q0[1]),         f"소방서 {st['base_id']} 좌표에서 {d:.0f} m, 서로 오갈 수 있는 도로 {p.road_id} (a→b 방향){note}"

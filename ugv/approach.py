@@ -122,6 +122,8 @@ def _direction_report(start: DirPos, v0: float, route: Optional[Route], ret_ok, 
 
 
 ROUTE_CHECK_TRIES = 12
+ARRIVE_DIR_SLACK_S = 120.0      # 복귀 도착 방향을 대기 방향으로 맞추려고 더 써도 되는 시간 (또는 비율 중 큰 쪽)
+ARRIVE_DIR_SLACK_RATIO = 0.3
 
 
 def verify_route(net: RoadNetwork, route: Route, graph=None) -> dict:
@@ -176,19 +178,22 @@ def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: f
                   v0: float = 0.0, access: Optional[RoadPos] = None,
                   standoff: float = config.FIRE_STANDOFF_M, search_m: float = config.APPROACH_SEARCH_M,
                   snap_limit: float = config.TARGET_SNAP_M, fixed_dest: Optional[RoadPos] = None,
-                  graph=None, avoid_roads: Optional[dict] = None) -> ApproachPlan:
+                  graph=None, avoid_roads: Optional[dict] = None, arrive_toward: Optional[str] = None) -> ApproachPlan:
     """start: 진행 방향을 포함한 출발 위치 (명령 교체 지연만큼 앞으로 옮긴 것). access: 소속 거점 출입 지점 (복귀 검사).
     고른 경로는 verify_route 로 다시 검사한다 (최소 회전반경·차체 둘레의 도로 포함, 출발 도로 포함, PX4 미션 선).
     통과하지 못하면 원인 회전(또는 도로)을 빼고 다시 고른다. 뺀 회전·도로는 복귀 가능성 판단에도 쓰지 않는다.
     ROUTE_CHECK_TRIES 번 안에 못 찾으면 NO_DRIVABLE_ROUTE. graph: 차량 특성별 그래프 (기본 UGV).
     avoid_roads {도로: 사유}: 멈춰 있는 다른 차량이 차지한 도로 — 들어가지 않고 목적지로도 고르지 않는다 (출발 도로를 계속
-    달리는 것은 막지 않는다). 다중 차량 (ugv/traffic.py 는 주행 중 충돌을 막고, 이것은 막힌 길로 계획하지 않게 한다)."""
+    달리는 것은 막지 않는다). 다중 차량 (ugv/traffic.py 는 주행 중 충돌을 막고, 이것은 막힌 길로 계획하지 않게 한다).
+    arrive_toward: 도착 방향(향하는 노드)을 이것으로 — 거점 복귀 때 대기 방향을 맞춘다. 그 방향 경로가 없으면 다른 방향으로
+    (결과 detail.arrive_direction 에 남긴다)."""
     g = graph or net.graph
     banned_turns, banned_roads, tried = set(), set(), []
     for _ in range(ROUTE_CHECK_TRIES):
         plan = _plan_once(net, fire, start, target_lat, target_lon, v0=v0, access=access, standoff=standoff,
                           search_m=search_m, snap_limit=snap_limit, fixed_dest=fixed_dest,
-                          banned_turns=banned_turns, banned_roads=banned_roads, g=g, avoid=avoid_roads or {})
+                          banned_turns=banned_turns, banned_roads=banned_roads, g=g, avoid=avoid_roads or {},
+                          arrive_toward=arrive_toward)
         if plan.status != "OK":
             if tried:
                 plan.detail["route_check_rejected"] = tried
@@ -208,7 +213,8 @@ def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: f
 
 
 def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: float, target_lon: float, *,
-               v0, access, standoff, search_m, snap_limit, fixed_dest, banned_turns, banned_roads, g, avoid) -> ApproachPlan:
+               v0, access, standoff, search_m, snap_limit, fixed_dest, banned_turns, banned_roads, g, avoid,
+               arrive_toward=None) -> ApproachPlan:
     tx, ty = FRAME.to_xy(target_lat, target_lon)
     near = net.snap(tx, ty, max_m=snap_limit)
     if near is None:
@@ -245,6 +251,15 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
             if not arrs:
                 no_return += 1
                 continue
+        if arrive_toward is not None:
+            same = [a for a in arrs if a.toward == arrive_toward]
+            best = min(arrs, key=lambda a: a.time_s)
+            if same and min(a.time_s for a in same) <= best.time_s + max(ARRIVE_DIR_SLACK_S, ARRIVE_DIR_SLACK_RATIO * best.time_s):
+                arrs, arr_note = same, "AS_REQUESTED"
+            else:
+                # 대기 방향으로 오려면 크게 돌아야 한다 (거점 B: 44~74 km) → 반대 방향으로 도착하고 보고
+                arr_note = "OTHER_DIRECTION (" + ("요청 방향 경로 없음" if not same else
+                                                  f"요청 방향은 {min(a.time_s for a in same) - best.time_s:.0f} s 더 걸림") + ")"
         a = min(arrs, key=lambda a: a.time_s)
         ok.append((p, math.hypot(p.x - tx, p.y - ty), c, a.time_s, a))
     counts = {"candidates_no_directed_route": no_route, "candidates_no_return_path": no_return}
@@ -286,6 +301,8 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
                         detail={"nearest_road_fire_clearance_m": _r(near_clear), "unsafe_roads": len(safety.unsafe_roads),
                                 "fire_cells_known": len(fire), "fire_source": fire.source, **counts, **sel,
                                 **({"avoided_roads_occupied_by_vehicles": avoid} if avoid else {}),
+                                **({"arrive_direction": {"requested_toward": arrive_toward, "result": arr_note,
+                                                         "toward": arr.toward}} if arrive_toward is not None else {}),
                                 "direction": _direction_report(start, v0, route, True if rs is not None else None, access)})
 
 

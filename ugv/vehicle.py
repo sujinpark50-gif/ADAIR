@@ -104,6 +104,8 @@ class Vehicle:
                                  f"(양방향·서로 오갈 수 있는 도로·차량 {self.profile.name} 급커브 아님 조건) 또는 대기 위치 "
                                  f"{cfg.get('station_slot', 0)} 를 겹치지 않게 둘 도로 길이 없음")
         self.access: RoadPos = acc[0]
+        # 대기 방향: 출입 지점 도로의 a → b (access_point). 복귀할 때 이 방향으로 도착해야 같은 거점 차들의 대기 순서가 유지된다
+        self.access_toward = net.roads[acc[0].road_id].b
         self.access_heading = acc[1] if acc[1] is not None else 0.0
         self.station = {"base_id": st["base_id"], "name": st.get("name"), "lat": st["lat"], "lon": st["lon"],
                         "coordinate_status": st.get("coordinate_status"), "source_file": st.get("source_file"),
@@ -246,9 +248,10 @@ class Vehicle:
             if fixed is None:
                 raise HttpError(422, "target(lat, lon) 또는 target_node 필요")
             tgt = dict(zip(("lat", "lon"), fixed.ll()))
+        home = fixed is not None and fixed.road_id == self.access.road_id and abs(fixed.s - self.access.s) < 1.0
         return plan_approach(self.net, fire, start, float(tgt["lat"]), float(tgt["lon"]), v0=v0, access=self.access,
-                             fixed_dest=fixed, graph=self.graph, avoid_roads=self.occupied_roads(
-                                 home=fixed is not None and fixed.road_id == self.access.road_id and abs(fixed.s - self.access.s) < 1.0))
+                             fixed_dest=fixed, graph=self.graph, avoid_roads=self.occupied_roads(home=home),
+                             arrive_toward=self.access_toward if home else None)
 
     def occupied_roads(self, home: bool = False) -> dict:
         """스스로 움직이지 않을 다른 차량이 차지한 도로 {도로: 차량}: 고장·위험(운영자 해제 전 정지) 또는 임무 없이 자기 거점 대기
@@ -765,7 +768,7 @@ class Vehicle:
             return
         plan = None if here is None else await asyncio.to_thread(
             plan_approach, self.net, self.fire_source.area(), here, *acc.ll(), v0=v0, access=acc, fixed_dest=acc,
-            graph=self.graph)
+            graph=self.graph, arrive_toward=self.access_toward)
         if plan is None or plan.status != "OK":
             why = err or f"{plan.status}: {plan.reason}"
             self.fault = f"COMM_LOSS_NO_RETURN_ROUTE: 총괄 연락 {lost:.0f} s 없음, 소속 거점 {self.station['base_id']} 복귀 경로 없음 ({why})"

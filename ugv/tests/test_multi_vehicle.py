@@ -123,11 +123,12 @@ def test_four_vehicles_two_stations_separate_settings(tmp_path):
     assert AF.resource_type == BF.resource_type == "FIRE_ENGINE" and AF.profile.name == "adair_firetruck"
     assert A.profile.r_min < AF.profile.r_min and AF.profile.max_speed_mps < A.profile.max_speed_mps
     assert A.graph is not AF.graph and len(AF.graph.blocked_turns) > len(A.graph.blocked_turns)
-    # 같은 거점 두 차는 겹치지 않는 대기 위치, 다른 거점 차는 각자 거점 출입 지점
+    # 같은 거점 두 차는 서로 다른 도로의 대기 위치 (한 줄 대기는 서로 막는다), 다른 거점 차는 각자 거점
     for x, y in ((A, AF), (B, BF)):
-        assert x.access.road_id == y.access.road_id
-        assert abs(x.access.s - y.access.s) >= (x.profile.body_length_m + y.profile.body_length_m) / 2 + 4.0
+        assert x.access.road_id != y.access.road_id
+        assert math.hypot(x.access.x - y.access.x, x.access.y - y.access.y) > (x.profile.body_length_m + y.profile.body_length_m) / 2 + 4.0
         assert not overlap(corners(x), corners(y))
+        assert "대기 위치 1" in y.station["access_point"]["source"]
     assert math.hypot(A.access.x - B.access.x, A.access.y - B.access.y) > 5000
     # PX4 연결 정보가 차량마다 다르다
     ports = {c["px4"]["address"] for c in FLEET_CFG}
@@ -146,7 +147,8 @@ def test_separate_routes_concurrent_and_each_returns_home(tmp_path):
         f, clock = make_fleet(tmp_path)
         A, B = f.vehicles["A-ugv1"], f.vehicles["B-ugv1"]
         ta = FRAME.to_ll(A.access.x - 900, A.access.y - 700)
-        tb = FRAME.to_ll(B.access.x + 600, B.access.y + 900)
+        # B 주변은 도로가 적고 U턴이 없어, 오프셋 목표는 출발 도로 먼 끝으로 잡혀 복귀가 43 km 가 된다 → Gazebo 시험과 같은 목표
+        tb = (37.951004, 128.337462)
         ra = await A.execute(body("A1", *ta))
         rb = await B.execute(body("B1", *tb))
         assert ra["status"] == rb["status"] == "STARTED"
@@ -215,8 +217,7 @@ def test_same_station_follow_keeps_gap(tmp_path):
         ok, w = await run(f, clock, 1500, until=done(f, "F1", "U1"), watch=["A-ugv1", "A-fire1"])
         assert ok
         assert w["overlaps"] == 0 and w["min_gap_m"] > 1.0, w
-        evs = [e["event"] for e in AF.events] + [e["event"] for e in A.events]
-        assert "YIELD" in evs                                   # 누군가 기다렸다 (출입 도로 공유 → 순서 조정)
+        # (대기 위치가 서로 다른 도로라 출발 순서 대기는 없을 수 있다. 같은 길을 앞뒤로 갈 때 간격·겹침만 본다)
     asyncio.run(go())
 
 

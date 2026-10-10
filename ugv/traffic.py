@@ -107,6 +107,10 @@ class TrafficManager:
             d = math.dist(a, b) or 1.0
             out.append((b[0], b[1], t, s, (b[0] - a[0]) / d, (b[1] - a[1]) / d))
             last_s = s
+        if len(out) > 1:
+            # 지금 위치 표본의 진행 방향 = 계획 경로 방향 (PX4 방위 추정은 'no heading reference' 상태에서 틀릴 수 있다 —
+            # 2026-10-10 Gazebo F4: 틀린 방위 때문에 뒤에 선 소방차를 앞차로 보고 '피할 수 없음' 판정)
+            out[0] = (out[0][0], out[0][1], 0.0, s_now, out[1][4], out[1][5])
         static_tail = hold_s is not None or (len(sp.pts) and last_s >= sp.cum[-1] - 1e-6)
         return _Pred(v, out, False, s_now, vel, committed) if not static_tail else \
             _Pred(v, out, False, s_now, vel, committed)._with_tail()
