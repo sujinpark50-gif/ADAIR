@@ -230,3 +230,23 @@ def test_waiting_slots_of_same_station_use_different_roads_across_profiles(tmp_p
     assert len(set(roads)) == 3, roads
     f4, _ = make_fleet(tmp_path / "four", [{**c, "driver": "sim"} for c in FLEET_CFG])
     assert f4.vehicles["A-fire1"].access.road_id == "682500724" and f4.vehicles["B-fire1"].access.road_id == "683400570"
+
+
+def test_rejection_reason_is_specific_and_recorded(tmp_path):
+    """거절 사유를 응답에만 싣고 버리지 않는다: 사건 기록·ugv_rejections.jsonl 에 남긴다. 진행 방향 경로는 있었는데 최종 경로 검사가
+    회전을 빼서 끊긴 경우는 NO_DIRECTED_ROUTE 가 아니라 NO_DRIVABLE_ROUTE_AFTER_CHECK (2026-10-10: B 거점 → A 지역 목표)."""
+    import asyncio
+    import json
+    from ugv.tests.test_multi_vehicle import make_fleet
+
+    async def go():
+        f, _ = make_fleet(tmp_path, [{**FLEET_CFG[2], "driver": "sim"}])
+        B = f.vehicles["B-ugv1"]
+        ev = await B.evaluate({"task_id": "R1", "decision_id": "D-R1", "target": {"lat": 38.0281751, "lon": 128.1280267}})
+        assert ev["verdict"] == "REJECT" and "NO_DRIVABLE_ROUTE_AFTER_CHECK" in ev["detail"]
+        assert ev["approach"]["route_check_rejected"]
+        assert B.events[-1]["event"] == "EVALUATE_REJECTED" and B.events[-1]["route_check_rejected"]
+        rec = json.loads((tmp_path / "ugv_rejections.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        assert rec["task_id"] == "R1" and rec["decision_id"] == "D-R1" and rec["route_check_rejected"]
+        assert rec["counts"]["candidates_checked"] > 0
+    asyncio.run(go())

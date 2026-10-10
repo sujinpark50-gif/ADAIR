@@ -27,10 +27,13 @@ FAULT·DANGER 해제: 운영자 /stop. 차량이 멈췄고(0.2 m/s 미만) 텔�
 """
 
 import asyncio
+import json
+import logging
 import math
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from interfaces.exec_store import ExecStore
@@ -80,6 +83,7 @@ def _dist_to_polyline(x, y, pts, lo=0, hi=None):
     return best, bi
 
 
+_log = logging.getLogger("ugv.vehicle")
 BLOCK_REPLAN_MAX = 3      # 한 임무에서 서 있는 차에 막혀 다시 계획하는 최대 횟수
 
 
@@ -208,6 +212,30 @@ class Vehicle:
             t.setdefault("events", []).append(e)
             t["events"] = t["events"][-50:]
         return e
+
+    def _record_rejection(self, kind: str, body: dict, reason: str, detail: str, approach: Optional[dict],
+                          keep_event: bool = True):
+        """거절(평가·실행)을 남긴다 — 응답에만 싣고 버리면 개발·분석 때 사유를 다시 계산해야 했다 (2026-10-10).
+        사건 기록(/ugv/{id}/events), 서버 로그, 상태 폴더의 ugv_rejections.jsonl (재시작해도 남음, 한 줄 한 건)."""
+        ap = approach or {}
+        rec = {"timestamp": _now_iso(), "sim_time_s": round(self.clock.now(), 2), "kind": kind, "resource_id": self.resource_id,
+               "task_id": body.get("task_id"), "decision_id": body.get("decision_id"),
+               "target": body.get("target"), "target_node": body.get("target_node"), "reason": reason, "detail": detail,
+               "start": (ap.get("direction") or {}).get("start_road"),
+               "counts": {k: ap.get(k) for k in ("candidates_checked", "candidates_no_directed_route",
+                                                  "candidates_no_return_path", "unsafe_roads") if k in ap},
+               "route_check_rejected": ap.get("route_check_rejected"),
+               "avoided_roads_occupied_by_vehicles": ap.get("avoided_roads_occupied_by_vehicles")}
+        if keep_event:
+            self._event(kind, rejected_task_id=body.get("task_id"), reason=reason, detail=detail,
+                        route_check_rejected=rec["route_check_rejected"])
+        _log.info("%s %s task=%s: %s", kind, self.resource_id, body.get("task_id"), detail)
+        try:
+            path = Path(self.store.path).parent / "ugv_rejections.jsonl"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        except OSError as e:                     # 기록 실패가 응답을 막지 않는다
+            _log.warning("거절 기록 저장 실패: %s", e)
 
     def here(self) -> Optional[RoadPos]:
         t = self.driver.telemetry()
@@ -338,9 +366,11 @@ class Vehicle:
                     "detail": err, "target_node": None, "path": None}
         plan = await asyncio.to_thread(self._approach, body, start, v0)       # 계획 계산은 이벤트 루프 밖에서
         if plan.status != "OK":
-            return {**base, "verdict": "REJECT", "eta_sec": None, "reason": "TARGET_UNREACHABLE",
-                    "detail": f"{plan.status}: {plan.reason}", "target_node": None, "path": None,
-                    "approach": plan.report()}
+            out = {**base, "verdict": "REJECT", "eta_sec": None, "reason": "TARGET_UNREACHABLE",
+                   "detail": f"{plan.status}: {plan.reason}", "target_node": None, "path": None,
+                   "approach": plan.report()}
+            self._record_rejection("EVALUATE_REJECTED", body, out["reason"], out["detail"], plan.report())
+            return out
         sp = plan_speeds(plan.route, v0, profile=self.profile)
         out = {**base, "verdict": "ACCEPT", "eta_sec": int(round(sp.eta_s)), "reason": None, "detail": None,
                "target_node": self._target_node(plan), "path": plan.route.road_ids, "approach": plan.report()}
@@ -381,6 +411,8 @@ class Vehicle:
                                  physical_state="STOPPING")
                     await self._safe_stop()
                     action = "STOPPING_ALONG_ROAD"
+                self._record_rejection("EXECUTE_REJECTED", body, "TARGET_UNREACHABLE", err or f"{plan.status}: {plan.reason}",
+                                       plan.report() if plan else None, keep_event=False)
                 self._event("NEW_TARGET_REJECTED", rejected_task_id=key, detail=err or plan.reason,
                             cancelled_task_id=cancelled, vehicle_action=action)
                 raise HttpError(409, {"reason": "TARGET_UNREACHABLE",

@@ -197,6 +197,12 @@ def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: f
         if plan.status != "OK":
             if tried:
                 plan.detail["route_check_rejected"] = tried
+                if plan.reason.startswith("NO_DIRECTED_ROUTE"):
+                    # 진행 방향 경로는 있었는데 최종 형상 검사(차체 도로 포함·조향 한계)가 회전·도로를 빼자 끊겼다 — 사유를 그대로 밝힌다
+                    # (2026-10-10: B 거점 → A 지역 목표가 'NO_DIRECTED_ROUTE' 로 보고됐지만 실제로는 회전 3곳 제외 뒤 끊김)
+                    kinds = sorted({t["issue"]["kind"] for t in tried})
+                    plan.reason = (f"NO_DRIVABLE_ROUTE_AFTER_CHECK (진행 방향 경로는 있으나 최종 경로 검사에서 회전·도로 {len(tried)}곳"
+                                   f"({', '.join(kinds)})을 뺀 뒤 경로 없음 — detail.route_check_rejected)")
             return plan
         v = verify_route(net, plan.route, g)
         plan.detail["route_check"] = _check_report(v)
