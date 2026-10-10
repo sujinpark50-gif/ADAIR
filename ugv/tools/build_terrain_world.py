@@ -2,7 +2,7 @@
 """ugv/tools/build_terrain_world.py — B 월드(지형을 반영한 연속 도로면)의 제한 검증 구역 생성.
 
     python -m ugv.tools.build_terrain_world                 # 거점 A 중심 1.2 km 구역 → ugv/gazebo/worlds/kangwon_terrain_a.sdf
-    python -m ugv.tools.build_terrain_world --check-only    # 생성물 정적 검사만
+    python -m ugv.tools.build_terrain_world --name kangwon_terrain_b1 --half-m 1000 --grid 2049   # 반폭 1 km (10 % 경사 도로 왕복 구역)
 
 방식 (2026-10-10): 구역 전체를 **하나의 연속 높이장(heightmap)** 으로 만든다. 도로마다 충돌 메시를 겹쳐 깔지 않으므로
 교차로에서 면이 겹치거나 틈·수직 턱이 생기지 않는다 (예전 지형 도로 월드의 전복 원인: 겹친 도로 면 턱 0.65~1.15 m).
@@ -337,9 +337,14 @@ def write(net, rids, excluded, prof, node_z, half_w, xs, ys, H, road_mask, dem_g
 
 
 def main():
+    global NAME, HALF_M, N
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="A")
+    ap.add_argument("--name", default=NAME, help="월드 이름 (기본 kangwon_terrain_a — 1.2 km 구역)")
+    ap.add_argument("--half-m", type=float, default=HALF_M, help="구역 반폭 m (정사각형)")
+    ap.add_argument("--grid", type=int, default=N, help="높이장 격자 2^n+1")
     a = ap.parse_args()
+    NAME, HALF_M, N = a.name, a.half_m, a.grid
     net = RoadNetwork()
     acc = access_point(net, a.base)[0]
     cx, cy = round(acc.x), round(acc.y)

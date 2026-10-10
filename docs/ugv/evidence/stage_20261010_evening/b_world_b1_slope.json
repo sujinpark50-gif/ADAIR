@@ -1,0 +1,1225 @@
+{
+ "world": {
+  "name": "kangwon_terrain_b1",
+  "center_xy": [
+   3992,
+   5606
+  ],
+  "half_m": 1000.0,
+  "grid": 2049,
+  "cell_m": 0.9766,
+  "road_length_km": 19.68,
+  "roads_excluded": {
+   "682501165": "FACIL_KIND_1 (교량·터널 추정, 입체 정보 없음)",
+   "682501580": "ZONE_BOUNDARY",
+   "682501581": "ZONE_BOUNDARY",
+   "682501747": "ZONE_BOUNDARY",
+   "682501214": "ZONE_BOUNDARY",
+   "682501299": "ZONE_BOUNDARY",
+   "682501349": "FACIL_KIND_1 (교량·터널 추정, 입체 정보 없음)",
+   "682501800": "ZONE_BOUNDARY",
+   "682501839": "ZONE_BOUNDARY",
+   "682501943": "FACIL_KIND_1 (교량·터널 추정, 입체 정보 없음)",
+   "682502672": "FACIL_KIND_1 (교량·터널 추정, 입체 정보 없음)",
+   "682503109": "ZONE_BOUNDARY",
+   "682503123": "ZONE_BOUNDARY",
+   "682503136": "ZONE_BOUNDARY"
+  },
+  "static_checks": {
+   "road_cell_step_m": {
+    "max": 0.189,
+    "p99": 0.149,
+    "limit": 0.196,
+    "cell_m": 0.977,
+    "over_limit_pairs": 0
+   },
+   "profile_max_grade": 0.17,
+   "junction_end_z_spread_max_m": 0.0,
+   "dem_minus_road_in_road_m": {
+    "max_cut": 1.06,
+    "max_fill": 3.13,
+    "p95_abs": 1.06
+   },
+   "surface": "단일 높이장 (도로·지형 같은 면) — 충돌면 겹침·틈 구조상 없음",
+   "road_cells": 166273
+  }
+ },
+ "route_check": {
+  "target": "RP:682502011:41.5",
+  "go_route_m": 993.8,
+  "facility_roads_excluded": true
+ },
+ "built_surface_grade": {
+  "682502011": {
+   "mean_pct": 8.8,
+   "max_20m_pct": 10.2
+  },
+  "682500163": {
+   "mean_pct": 8.8,
+   "max_20m_pct": 10.6
+  }
+ },
+ "low_20kmh": {
+  "log": "logs/ugv\\B1x_slope_low_20261010_184532.json",
+  "distance_m": 2129.8,
+  "sim_duration_s": 436.21,
+  "max_speed_kmh_0p5s": 21.1,
+  "max_abs_roll_deg": 6.41,
+  "max_abs_pitch_deg": 6.28,
+  "rtf": {
+   "overall": 0.982,
+   "min_10s": 0.913,
+   "sim_s": 436.2,
+   "wall_s": 444.1,
+   "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"
+  },
+  "rollover": false,
+  "stopped_at_end": true,
+  "offroad_samples": 42,
+  "offroad_max_m": 0.28,
+  "tasks": {
+   "RT1-20261010_184532": {
+    "task_id": "RT1-20261010_184532",
+    "decision_id": "D-RT1-20261010_184532",
+    "resource_id": "A-ugv1",
+    "status": "COMPLETED",
+    "target": null,
+    "target_node": "RP:682502011:41.5",
+    "approach": {
+     "status": "OK",
+     "reason": null,
+     "mode": "NEAREST_ROAD",
+     "nearest_road_m": 0.0,
+     "dist_to_target_m": 0.0,
+     "fire_clearance_m": null,
+     "route_min_clearance_m": null,
+     "standoff_m": 100.0,
+     "candidates_checked": 1,
+     "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+     "selection_rule": {
+      "type": "PROVISIONAL_ETA_SLACK",
+      "status": "PROVISIONAL",
+      "slack_ratio": 0.25,
+      "slack_min_s": 60.0,
+      "near_m": 1000.0,
+      "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+      "ref_eta_s": 184.4,
+      "limit_eta_s": 244.4,
+      "chosen_eta_s": 184.4
+     },
+     "nearest_road_fire_clearance_m": null,
+     "unsafe_roads": 0,
+     "fire_cells_known": 0,
+     "fire_source": "NONE (UGV_ENV_URL 미설정)",
+     "candidates_no_directed_route": 0,
+     "candidates_no_return_path": 0,
+     "direction": {
+      "start_road": "682500816",
+      "start_toward_node": "494893",
+      "v0_mps": 0.01,
+      "arrive_toward_node": "494906",
+      "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+      "return_path_at_plan_time": true,
+      "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+     },
+     "route_check": {
+      "ok": true,
+      "label": "ROUTE",
+      "length_m": 993.9,
+      "min_radius_m": 9.88,
+      "steering_violations": 0,
+      "radius_violations": 0,
+      "body_violations": 0,
+      "worst_excess_m": -0.0,
+      "min_curve_speed_mps": 3.85,
+      "initial_pose": {
+       "excess_m": -0.185,
+       "exempt_samples": 0,
+       "exempt_until_m": null,
+       "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+      },
+      "sampling": {
+       "step_m": 1.0,
+       "fine_step_m": 0.25,
+       "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+       "body_sample_spacing_m": 0.45,
+       "body_samples": 27,
+       "profile": "adair_ugv"
+      },
+      "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+      "mission_items": {
+       "ok": true,
+       "label": "MISSION_ITEMS",
+       "length_m": 993.7,
+       "min_radius_m": 9.18,
+       "steering_violations": 0,
+       "radius_violations": 0,
+       "body_violations": 0,
+       "worst_excess_m": -0.0,
+       "min_curve_speed_mps": 3.71,
+       "initial_pose": {
+        "excess_m": -0.185,
+        "exempt_samples": 0,
+        "exempt_until_m": null,
+        "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+       },
+       "items": 69,
+       "max_chord_dev_m": 0.118
+      }
+     },
+     "point": {
+      "lat": 38.0689643,
+      "lon": 128.1711426,
+      "road_id": "682502011",
+      "s_m": 41.5
+     },
+     "route_length_m": 993.9
+    },
+    "mission_result": "ARRIVED",
+    "physical_state": "STOPPED_ON_STATION",
+    "progress": {
+     "phase": "ARRIVED",
+     "waypoint": 70,
+     "total": 70,
+     "remaining_m": 0.6,
+     "eta_remaining_sec": 0,
+     "speed_mps": 0.4,
+     "sim_time_s": 213.88,
+     "off_route_m": 0.0
+    },
+    "observation": {
+     "observation_type": "ROAD_STATUS",
+     "arrived_node": "RP:682502011:41.5",
+     "position": {
+      "lat": 38.068958099999996,
+      "lon": 128.1711453
+     },
+     "fuel_pct": null,
+     "note": "도로 지점 도착 기록. 화재 관측이 아니다 (화재 관측은 4단계 관측 보고)"
+    },
+    "error": null,
+    "replans": [],
+    "events": [
+     {
+      "sim_time_s": 19.17,
+      "timestamp": "2026-10-10T09:45:47.929612+00:00",
+      "event": "TASK_STARTED",
+      "resource_id": "A-ugv1",
+      "task_id": "RT1-20261010_184532",
+      "approach": {
+       "status": "OK",
+       "reason": null,
+       "mode": "NEAREST_ROAD",
+       "nearest_road_m": 0.0,
+       "dist_to_target_m": 0.0,
+       "fire_clearance_m": null,
+       "route_min_clearance_m": null,
+       "standoff_m": 100.0,
+       "candidates_checked": 1,
+       "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+       "selection_rule": {
+        "type": "PROVISIONAL_ETA_SLACK",
+        "status": "PROVISIONAL",
+        "slack_ratio": 0.25,
+        "slack_min_s": 60.0,
+        "near_m": 1000.0,
+        "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+        "ref_eta_s": 184.4,
+        "limit_eta_s": 244.4,
+        "chosen_eta_s": 184.4
+       },
+       "nearest_road_fire_clearance_m": null,
+       "unsafe_roads": 0,
+       "fire_cells_known": 0,
+       "fire_source": "NONE (UGV_ENV_URL 미설정)",
+       "candidates_no_directed_route": 0,
+       "candidates_no_return_path": 0,
+       "direction": {
+        "start_road": "682500816",
+        "start_toward_node": "494893",
+        "v0_mps": 0.01,
+        "arrive_toward_node": "494906",
+        "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+        "return_path_at_plan_time": true,
+        "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+       },
+       "route_check": {
+        "ok": true,
+        "label": "ROUTE",
+        "length_m": 993.9,
+        "min_radius_m": 9.88,
+        "steering_violations": 0,
+        "radius_violations": 0,
+        "body_violations": 0,
+        "worst_excess_m": -0.0,
+        "min_curve_speed_mps": 3.85,
+        "initial_pose": {
+         "excess_m": -0.185,
+         "exempt_samples": 0,
+         "exempt_until_m": null,
+         "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+        },
+        "sampling": {
+         "step_m": 1.0,
+         "fine_step_m": 0.25,
+         "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+         "body_sample_spacing_m": 0.45,
+         "body_samples": 27,
+         "profile": "adair_ugv"
+        },
+        "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+        "mission_items": {
+         "ok": true,
+         "label": "MISSION_ITEMS",
+         "length_m": 993.7,
+         "min_radius_m": 9.18,
+         "steering_violations": 0,
+         "radius_violations": 0,
+         "body_violations": 0,
+         "worst_excess_m": -0.0,
+         "min_curve_speed_mps": 3.71,
+         "initial_pose": {
+          "excess_m": -0.185,
+          "exempt_samples": 0,
+          "exempt_until_m": null,
+          "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+         },
+         "items": 69,
+         "max_chord_dev_m": 0.118
+        }
+       },
+       "point": {
+        "lat": 38.0689643,
+        "lon": 128.1711426,
+        "road_id": "682502011",
+        "s_m": 41.5
+       },
+       "route_length_m": 993.9
+      },
+      "eta_sec": 186,
+      "superseded": null
+     },
+     {
+      "sim_time_s": 213.88,
+      "timestamp": "2026-10-10T09:49:02.640916+00:00",
+      "event": "ARRIVED",
+      "resource_id": "A-ugv1",
+      "task_id": "RT1-20261010_184532",
+      "to_dest_m": 0.6,
+      "position": {
+       "lat": 38.068958099999996,
+       "lon": 128.1711453
+      }
+     },
+     {
+      "sim_time_s": 213.88,
+      "timestamp": "2026-10-10T09:49:02.641436+00:00",
+      "event": "TASK_COMPLETED",
+      "resource_id": "A-ugv1",
+      "task_id": "RT1-20261010_184532",
+      "detail": null
+     }
+    ],
+    "timing": {
+     "start_sim_s": 19.16,
+     "start_wall": "2026-10-10T09:45:47.928612+00:00",
+     "eta_sec": 186,
+     "end_sim_s": 213.88,
+     "end_wall": "2026-10-10T09:49:02.641436+00:00"
+    },
+    "superseded_task_id": null,
+    "mission_seq": 1
+   },
+   "HOME-20261010_184532": {
+    "task_id": "HOME-20261010_184532",
+    "decision_id": "D-HOME-20261010_184532",
+    "resource_id": "A-ugv1",
+    "status": "COMPLETED",
+    "target": null,
+    "target_node": "RP:682500816:35.0",
+    "approach": {
+     "status": "OK",
+     "reason": null,
+     "mode": "NEAREST_ROAD",
+     "nearest_road_m": 0.0,
+     "dist_to_target_m": 0.0,
+     "fire_clearance_m": null,
+     "route_min_clearance_m": null,
+     "standoff_m": 100.0,
+     "candidates_checked": 1,
+     "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+     "selection_rule": {
+      "type": "PROVISIONAL_ETA_SLACK",
+      "status": "PROVISIONAL",
+      "slack_ratio": 0.25,
+      "slack_min_s": 60.0,
+      "near_m": 1000.0,
+      "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+      "ref_eta_s": 213.0,
+      "limit_eta_s": 273.0,
+      "chosen_eta_s": 213.0
+     },
+     "nearest_road_fire_clearance_m": null,
+     "unsafe_roads": 0,
+     "fire_cells_known": 0,
+     "fire_source": "NONE (UGV_ENV_URL 미설정)",
+     "candidates_no_directed_route": 0,
+     "candidates_no_return_path": 0,
+     "arrive_direction": {
+      "requested_toward": "494893",
+      "result": "AS_REQUESTED",
+      "toward": "494893"
+     },
+     "direction": {
+      "start_road": "682502011",
+      "start_toward_node": "494906",
+      "v0_mps": 0.05,
+      "arrive_toward_node": "494893",
+      "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+      "return_path_at_plan_time": true,
+      "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+     },
+     "route_check": {
+      "ok": true,
+      "label": "ROUTE",
+      "length_m": 1145.6,
+      "min_radius_m": 9.87,
+      "steering_violations": 0,
+      "radius_violations": 0,
+      "body_violations": 0,
+      "worst_excess_m": -0.0,
+      "min_curve_speed_mps": 3.85,
+      "initial_pose": {
+       "excess_m": -0.185,
+       "exempt_samples": 0,
+       "exempt_until_m": null,
+       "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+      },
+      "sampling": {
+       "step_m": 1.0,
+       "fine_step_m": 0.25,
+       "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+       "body_sample_spacing_m": 0.45,
+       "body_samples": 27,
+       "profile": "adair_ugv"
+      },
+      "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+      "mission_items": {
+       "ok": true,
+       "label": "MISSION_ITEMS",
+       "length_m": 1145.4,
+       "min_radius_m": 8.81,
+       "steering_violations": 0,
+       "radius_violations": 0,
+       "body_violations": 0,
+       "worst_excess_m": -0.004,
+       "min_curve_speed_mps": 3.64,
+       "initial_pose": {
+        "excess_m": -0.185,
+        "exempt_samples": 0,
+        "exempt_until_m": null,
+        "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+       },
+       "items": 83,
+       "max_chord_dev_m": 0.146
+      }
+     },
+     "route_check_rejected": [
+      {
+       "issue": {
+        "kind": "BODY",
+        "s_m": 218.8,
+        "x": 4081.8,
+        "y": 6348.9,
+        "value": 0.03,
+        "stage": "MISSION_ITEMS"
+       },
+       "removed": [
+        "TURN",
+        [
+         "682501749",
+         "622559"
+        ],
+        [
+         "682501750",
+         "494885"
+        ]
+       ]
+      }
+     ],
+     "point": {
+      "lat": 38.0623241,
+      "lon": 128.1697143,
+      "road_id": "682500816",
+      "s_m": 35.0
+     },
+     "route_length_m": 1145.6
+    },
+    "mission_result": "ARRIVED",
+    "physical_state": "STOPPED_ON_STATION",
+    "progress": {
+     "phase": "ARRIVED",
+     "waypoint": 84,
+     "total": 84,
+     "remaining_m": 0.8,
+     "eta_remaining_sec": 0,
+     "speed_mps": 0.45,
+     "sim_time_s": 442.91,
+     "off_route_m": 0.0
+    },
+    "observation": {
+     "observation_type": "ROAD_STATUS",
+     "arrived_node": "RP:682500816:35.0",
+     "position": {
+      "lat": 38.0623179,
+      "lon": 128.1697064
+     },
+     "fuel_pct": null,
+     "note": "도로 지점 도착 기록. 화재 관측이 아니다 (화재 관측은 4단계 관측 보고)"
+    },
+    "error": null,
+    "replans": [],
+    "events": [
+     {
+      "sim_time_s": 218.06,
+      "timestamp": "2026-10-10T09:49:06.840201+00:00",
+      "event": "TASK_STARTED",
+      "resource_id": "A-ugv1",
+      "task_id": "HOME-20261010_184532",
+      "approach": {
+       "status": "OK",
+       "reason": null,
+       "mode": "NEAREST_ROAD",
+       "nearest_road_m": 0.0,
+       "dist_to_target_m": 0.0,
+       "fire_clearance_m": null,
+       "route_min_clearance_m": null,
+       "standoff_m": 100.0,
+       "candidates_checked": 1,
+       "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+       "selection_rule": {
+        "type": "PROVISIONAL_ETA_SLACK",
+        "status": "PROVISIONAL",
+        "slack_ratio": 0.25,
+        "slack_min_s": 60.0,
+        "near_m": 1000.0,
+        "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+        "ref_eta_s": 213.0,
+        "limit_eta_s": 273.0,
+        "chosen_eta_s": 213.0
+       },
+       "nearest_road_fire_clearance_m": null,
+       "unsafe_roads": 0,
+       "fire_cells_known": 0,
+       "fire_source": "NONE (UGV_ENV_URL 미설정)",
+       "candidates_no_directed_route": 0,
+       "candidates_no_return_path": 0,
+       "arrive_direction": {
+        "requested_toward": "494893",
+        "result": "AS_REQUESTED",
+        "toward": "494893"
+       },
+       "direction": {
+        "start_road": "682502011",
+        "start_toward_node": "494906",
+        "v0_mps": 0.05,
+        "arrive_toward_node": "494893",
+        "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+        "return_path_at_plan_time": true,
+        "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+       },
+       "route_check": {
+        "ok": true,
+        "label": "ROUTE",
+        "length_m": 1145.6,
+        "min_radius_m": 9.87,
+        "steering_violations": 0,
+        "radius_violations": 0,
+        "body_violations": 0,
+        "worst_excess_m": -0.0,
+        "min_curve_speed_mps": 3.85,
+        "initial_pose": {
+         "excess_m": -0.185,
+         "exempt_samples": 0,
+         "exempt_until_m": null,
+         "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+        },
+        "sampling": {
+         "step_m": 1.0,
+         "fine_step_m": 0.25,
+         "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+         "body_sample_spacing_m": 0.45,
+         "body_samples": 27,
+         "profile": "adair_ugv"
+        },
+        "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+        "mission_items": {
+         "ok": true,
+         "label": "MISSION_ITEMS",
+         "length_m": 1145.4,
+         "min_radius_m": 8.81,
+         "steering_violations": 0,
+         "radius_violations": 0,
+         "body_violations": 0,
+         "worst_excess_m": -0.004,
+         "min_curve_speed_mps": 3.64,
+         "initial_pose": {
+          "excess_m": -0.185,
+          "exempt_samples": 0,
+          "exempt_until_m": null,
+          "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+         },
+         "items": 83,
+         "max_chord_dev_m": 0.146
+        }
+       },
+       "route_check_rejected": [
+        {
+         "issue": {
+          "kind": "BODY",
+          "s_m": 218.8,
+          "x": 4081.8,
+          "y": 6348.9,
+          "value": 0.03,
+          "stage": "MISSION_ITEMS"
+         },
+         "removed": [
+          "TURN",
+          [
+           "682501749",
+           "622559"
+          ],
+          [
+           "682501750",
+           "494885"
+          ]
+         ]
+        }
+       ],
+       "point": {
+        "lat": 38.0623241,
+        "lon": 128.1697143,
+        "road_id": "682500816",
+        "s_m": 35.0
+       },
+       "route_length_m": 1145.6
+      },
+      "eta_sec": 214,
+      "superseded": null
+     },
+     {
+      "sim_time_s": 442.91,
+      "timestamp": "2026-10-10T09:52:51.690611+00:00",
+      "event": "ARRIVED",
+      "resource_id": "A-ugv1",
+      "task_id": "HOME-20261010_184532",
+      "to_dest_m": 0.8,
+      "position": {
+       "lat": 38.0623179,
+       "lon": 128.1697064
+      }
+     },
+     {
+      "sim_time_s": 442.91,
+      "timestamp": "2026-10-10T09:52:51.690611+00:00",
+      "event": "TASK_COMPLETED",
+      "resource_id": "A-ugv1",
+      "task_id": "HOME-20261010_184532",
+      "detail": null
+     }
+    ],
+    "timing": {
+     "start_sim_s": 218.06,
+     "start_wall": "2026-10-10T09:49:06.839101+00:00",
+     "eta_sec": 214,
+     "end_sim_s": 442.91,
+     "end_wall": "2026-10-10T09:52:51.690611+00:00"
+    },
+    "superseded_task_id": null,
+    "mission_seq": 2
+   }
+  }
+ },
+ "normal": {
+  "log": "logs/ugv\\B1x_slope_normal_20261010_185413.json",
+  "distance_m": 2129.4,
+  "sim_duration_s": 335.66,
+  "max_speed_kmh_0p5s": 50.4,
+  "max_abs_roll_deg": 6.41,
+  "max_abs_pitch_deg": 6.28,
+  "rtf": {
+   "overall": 0.983,
+   "min_10s": 0.939,
+   "sim_s": 335.7,
+   "wall_s": 341.6,
+   "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"
+  },
+  "rollover": false,
+  "stopped_at_end": true,
+  "offroad_samples": 37,
+  "offroad_max_m": 0.3,
+  "tasks": {
+   "RT1-20261010_185413": {
+    "task_id": "RT1-20261010_185413",
+    "decision_id": "D-RT1-20261010_185413",
+    "resource_id": "A-ugv1",
+    "status": "COMPLETED",
+    "target": null,
+    "target_node": "RP:682502011:41.5",
+    "approach": {
+     "status": "OK",
+     "reason": null,
+     "mode": "NEAREST_ROAD",
+     "nearest_road_m": 0.0,
+     "dist_to_target_m": 0.0,
+     "fire_clearance_m": null,
+     "route_min_clearance_m": null,
+     "standoff_m": 100.0,
+     "candidates_checked": 1,
+     "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+     "selection_rule": {
+      "type": "PROVISIONAL_ETA_SLACK",
+      "status": "PROVISIONAL",
+      "slack_ratio": 0.25,
+      "slack_min_s": 60.0,
+      "near_m": 1000.0,
+      "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+      "ref_eta_s": 73.8,
+      "limit_eta_s": 133.8,
+      "chosen_eta_s": 73.8
+     },
+     "nearest_road_fire_clearance_m": null,
+     "unsafe_roads": 0,
+     "fire_cells_known": 0,
+     "fire_source": "NONE (UGV_ENV_URL 미설정)",
+     "candidates_no_directed_route": 0,
+     "candidates_no_return_path": 0,
+     "direction": {
+      "start_road": "682500816",
+      "start_toward_node": "494893",
+      "v0_mps": 0.01,
+      "arrive_toward_node": "494906",
+      "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+      "return_path_at_plan_time": true,
+      "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+     },
+     "route_check": {
+      "ok": true,
+      "label": "ROUTE",
+      "length_m": 993.9,
+      "min_radius_m": 9.88,
+      "steering_violations": 0,
+      "radius_violations": 0,
+      "body_violations": 0,
+      "worst_excess_m": -0.0,
+      "min_curve_speed_mps": 3.85,
+      "initial_pose": {
+       "excess_m": -0.185,
+       "exempt_samples": 0,
+       "exempt_until_m": null,
+       "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+      },
+      "sampling": {
+       "step_m": 1.0,
+       "fine_step_m": 0.25,
+       "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+       "body_sample_spacing_m": 0.45,
+       "body_samples": 27,
+       "profile": "adair_ugv"
+      },
+      "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+      "mission_items": {
+       "ok": true,
+       "label": "MISSION_ITEMS",
+       "length_m": 993.7,
+       "min_radius_m": 9.17,
+       "steering_violations": 0,
+       "radius_violations": 0,
+       "body_violations": 0,
+       "worst_excess_m": -0.001,
+       "min_curve_speed_mps": 3.71,
+       "initial_pose": {
+        "excess_m": -0.185,
+        "exempt_samples": 0,
+        "exempt_until_m": null,
+        "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+       },
+       "items": 69,
+       "max_chord_dev_m": 0.118
+      }
+     },
+     "point": {
+      "lat": 38.0689643,
+      "lon": 128.1711426,
+      "road_id": "682502011",
+      "s_m": 41.5
+     },
+     "route_length_m": 993.9
+    },
+    "mission_result": "ARRIVED",
+    "physical_state": "STOPPED_ON_STATION",
+    "progress": {
+     "phase": "ARRIVED",
+     "waypoint": 70,
+     "total": 70,
+     "remaining_m": 0.9,
+     "eta_remaining_sec": 0,
+     "speed_mps": 0.47,
+     "sim_time_s": 167.91,
+     "off_route_m": 0.0
+    },
+    "observation": {
+     "observation_type": "ROAD_STATUS",
+     "arrived_node": "RP:682502011:41.5",
+     "position": {
+      "lat": 38.068956,
+      "lon": 128.1711468
+     },
+     "fuel_pct": null,
+     "note": "도로 지점 도착 기록. 화재 관측이 아니다 (화재 관측은 4단계 관측 보고)"
+    },
+    "error": null,
+    "replans": [],
+    "events": [
+     {
+      "sim_time_s": 19.14,
+      "timestamp": "2026-10-10T09:54:29.326258+00:00",
+      "event": "TASK_STARTED",
+      "resource_id": "A-ugv1",
+      "task_id": "RT1-20261010_185413",
+      "approach": {
+       "status": "OK",
+       "reason": null,
+       "mode": "NEAREST_ROAD",
+       "nearest_road_m": 0.0,
+       "dist_to_target_m": 0.0,
+       "fire_clearance_m": null,
+       "route_min_clearance_m": null,
+       "standoff_m": 100.0,
+       "candidates_checked": 1,
+       "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+       "selection_rule": {
+        "type": "PROVISIONAL_ETA_SLACK",
+        "status": "PROVISIONAL",
+        "slack_ratio": 0.25,
+        "slack_min_s": 60.0,
+        "near_m": 1000.0,
+        "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+        "ref_eta_s": 73.8,
+        "limit_eta_s": 133.8,
+        "chosen_eta_s": 73.8
+       },
+       "nearest_road_fire_clearance_m": null,
+       "unsafe_roads": 0,
+       "fire_cells_known": 0,
+       "fire_source": "NONE (UGV_ENV_URL 미설정)",
+       "candidates_no_directed_route": 0,
+       "candidates_no_return_path": 0,
+       "direction": {
+        "start_road": "682500816",
+        "start_toward_node": "494893",
+        "v0_mps": 0.01,
+        "arrive_toward_node": "494906",
+        "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+        "return_path_at_plan_time": true,
+        "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+       },
+       "route_check": {
+        "ok": true,
+        "label": "ROUTE",
+        "length_m": 993.9,
+        "min_radius_m": 9.88,
+        "steering_violations": 0,
+        "radius_violations": 0,
+        "body_violations": 0,
+        "worst_excess_m": -0.0,
+        "min_curve_speed_mps": 3.85,
+        "initial_pose": {
+         "excess_m": -0.185,
+         "exempt_samples": 0,
+         "exempt_until_m": null,
+         "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+        },
+        "sampling": {
+         "step_m": 1.0,
+         "fine_step_m": 0.25,
+         "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+         "body_sample_spacing_m": 0.45,
+         "body_samples": 27,
+         "profile": "adair_ugv"
+        },
+        "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+        "mission_items": {
+         "ok": true,
+         "label": "MISSION_ITEMS",
+         "length_m": 993.7,
+         "min_radius_m": 9.17,
+         "steering_violations": 0,
+         "radius_violations": 0,
+         "body_violations": 0,
+         "worst_excess_m": -0.001,
+         "min_curve_speed_mps": 3.71,
+         "initial_pose": {
+          "excess_m": -0.185,
+          "exempt_samples": 0,
+          "exempt_until_m": null,
+          "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+         },
+         "items": 69,
+         "max_chord_dev_m": 0.118
+        }
+       },
+       "point": {
+        "lat": 38.0689643,
+        "lon": 128.1711426,
+        "road_id": "682502011",
+        "s_m": 41.5
+       },
+       "route_length_m": 993.9
+      },
+      "eta_sec": 115,
+      "superseded": null
+     },
+     {
+      "sim_time_s": 167.91,
+      "timestamp": "2026-10-10T09:56:58.091864+00:00",
+      "event": "ARRIVED",
+      "resource_id": "A-ugv1",
+      "task_id": "RT1-20261010_185413",
+      "to_dest_m": 0.9,
+      "position": {
+       "lat": 38.068956,
+       "lon": 128.1711468
+      }
+     },
+     {
+      "sim_time_s": 167.91,
+      "timestamp": "2026-10-10T09:56:58.091864+00:00",
+      "event": "TASK_COMPLETED",
+      "resource_id": "A-ugv1",
+      "task_id": "RT1-20261010_185413",
+      "detail": null
+     }
+    ],
+    "timing": {
+     "start_sim_s": 19.14,
+     "start_wall": "2026-10-10T09:54:29.325254+00:00",
+     "eta_sec": 115,
+     "end_sim_s": 167.91,
+     "end_wall": "2026-10-10T09:56:58.091864+00:00"
+    },
+    "superseded_task_id": null,
+    "mission_seq": 1
+   },
+   "HOME-20261010_185413": {
+    "task_id": "HOME-20261010_185413",
+    "decision_id": "D-HOME-20261010_185413",
+    "resource_id": "A-ugv1",
+    "status": "COMPLETED",
+    "target": null,
+    "target_node": "RP:682500816:35.0",
+    "approach": {
+     "status": "OK",
+     "reason": null,
+     "mode": "NEAREST_ROAD",
+     "nearest_road_m": 0.0,
+     "dist_to_target_m": 0.0,
+     "fire_clearance_m": null,
+     "route_min_clearance_m": null,
+     "standoff_m": 100.0,
+     "candidates_checked": 1,
+     "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+     "selection_rule": {
+      "type": "PROVISIONAL_ETA_SLACK",
+      "status": "PROVISIONAL",
+      "slack_ratio": 0.25,
+      "slack_min_s": 60.0,
+      "near_m": 1000.0,
+      "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+      "ref_eta_s": 85.2,
+      "limit_eta_s": 145.2,
+      "chosen_eta_s": 85.2
+     },
+     "nearest_road_fire_clearance_m": null,
+     "unsafe_roads": 0,
+     "fire_cells_known": 0,
+     "fire_source": "NONE (UGV_ENV_URL 미설정)",
+     "candidates_no_directed_route": 0,
+     "candidates_no_return_path": 0,
+     "arrive_direction": {
+      "requested_toward": "494893",
+      "result": "AS_REQUESTED",
+      "toward": "494893"
+     },
+     "direction": {
+      "start_road": "682502011",
+      "start_toward_node": "494906",
+      "v0_mps": 0.08,
+      "arrive_toward_node": "494893",
+      "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+      "return_path_at_plan_time": true,
+      "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+     },
+     "route_check": {
+      "ok": true,
+      "label": "ROUTE",
+      "length_m": 1145.4,
+      "min_radius_m": 9.87,
+      "steering_violations": 0,
+      "radius_violations": 0,
+      "body_violations": 0,
+      "worst_excess_m": -0.009,
+      "min_curve_speed_mps": 3.85,
+      "initial_pose": {
+       "excess_m": -0.185,
+       "exempt_samples": 0,
+       "exempt_until_m": null,
+       "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+      },
+      "sampling": {
+       "step_m": 1.0,
+       "fine_step_m": 0.25,
+       "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+       "body_sample_spacing_m": 0.45,
+       "body_samples": 27,
+       "profile": "adair_ugv"
+      },
+      "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+      "mission_items": {
+       "ok": true,
+       "label": "MISSION_ITEMS",
+       "length_m": 1145.2,
+       "min_radius_m": 8.85,
+       "steering_violations": 0,
+       "radius_violations": 0,
+       "body_violations": 0,
+       "worst_excess_m": 0.002,
+       "min_curve_speed_mps": 3.64,
+       "initial_pose": {
+        "excess_m": -0.185,
+        "exempt_samples": 0,
+        "exempt_until_m": null,
+        "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+       },
+       "items": 83,
+       "max_chord_dev_m": 0.146
+      }
+     },
+     "route_check_rejected": [
+      {
+       "issue": {
+        "kind": "BODY",
+        "s_m": 219.5,
+        "x": 4081.5,
+        "y": 6348.1,
+        "value": 0.02,
+        "stage": "MISSION_ITEMS"
+       },
+       "removed": [
+        "TURN",
+        [
+         "682501749",
+         "622559"
+        ],
+        [
+         "682501750",
+         "494885"
+        ]
+       ]
+      }
+     ],
+     "point": {
+      "lat": 38.0623241,
+      "lon": 128.1697143,
+      "road_id": "682500816",
+      "s_m": 35.0
+     },
+     "route_length_m": 1145.4
+    },
+    "mission_result": "ARRIVED",
+    "physical_state": "STOPPED_ON_STATION",
+    "progress": {
+     "phase": "ARRIVED",
+     "waypoint": 84,
+     "total": 84,
+     "remaining_m": 0.6,
+     "eta_remaining_sec": 0,
+     "speed_mps": 0.43,
+     "sim_time_s": 339.95,
+     "off_route_m": 0.0
+    },
+    "observation": {
+     "observation_type": "ROAD_STATUS",
+     "arrived_node": "RP:682500816:35.0",
+     "position": {
+      "lat": 38.062318999999995,
+      "lon": 128.16970799999999
+     },
+     "fuel_pct": null,
+     "note": "도로 지점 도착 기록. 화재 관측이 아니다 (화재 관측은 4단계 관측 보고)"
+    },
+    "error": null,
+    "replans": [],
+    "events": [
+     {
+      "sim_time_s": 172.94,
+      "timestamp": "2026-10-10T09:57:03.126707+00:00",
+      "event": "TASK_STARTED",
+      "resource_id": "A-ugv1",
+      "task_id": "HOME-20261010_185413",
+      "approach": {
+       "status": "OK",
+       "reason": null,
+       "mode": "NEAREST_ROAD",
+       "nearest_road_m": 0.0,
+       "dist_to_target_m": 0.0,
+       "fire_clearance_m": null,
+       "route_min_clearance_m": null,
+       "standoff_m": 100.0,
+       "candidates_checked": 1,
+       "selection_basis": "CLOSEST_TO_TARGET_WITHIN_ETA_SLACK (지형 가시성 미반영)",
+       "selection_rule": {
+        "type": "PROVISIONAL_ETA_SLACK",
+        "status": "PROVISIONAL",
+        "slack_ratio": 0.25,
+        "slack_min_s": 60.0,
+        "near_m": 1000.0,
+        "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
+        "ref_eta_s": 85.2,
+        "limit_eta_s": 145.2,
+        "chosen_eta_s": 85.2
+       },
+       "nearest_road_fire_clearance_m": null,
+       "unsafe_roads": 0,
+       "fire_cells_known": 0,
+       "fire_source": "NONE (UGV_ENV_URL 미설정)",
+       "candidates_no_directed_route": 0,
+       "candidates_no_return_path": 0,
+       "arrive_direction": {
+        "requested_toward": "494893",
+        "result": "AS_REQUESTED",
+        "toward": "494893"
+       },
+       "direction": {
+        "start_road": "682502011",
+        "start_toward_node": "494906",
+        "v0_mps": 0.08,
+        "arrive_toward_node": "494893",
+        "u_turn": "FORBIDDEN (같은 도로 즉시 되짚기·후진·3점 회전 없음)",
+        "return_path_at_plan_time": true,
+        "return_basis": "계획 시점 화재 기준 출입 지점까지 경로 있음 여부 — 이후 화재로 끊길 수 있어 복귀를 보장하지 않는다"
+       },
+       "route_check": {
+        "ok": true,
+        "label": "ROUTE",
+        "length_m": 1145.4,
+        "min_radius_m": 9.87,
+        "steering_violations": 0,
+        "radius_violations": 0,
+        "body_violations": 0,
+        "worst_excess_m": -0.009,
+        "min_curve_speed_mps": 3.85,
+        "initial_pose": {
+         "excess_m": -0.185,
+         "exempt_samples": 0,
+         "exempt_until_m": null,
+         "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+        },
+        "sampling": {
+         "step_m": 1.0,
+         "fine_step_m": 0.25,
+         "fine_when": "곡률반경 < 25 m 또는 차체가 도로 띠 경계 0.5 m 안",
+         "body_sample_spacing_m": 0.45,
+         "body_samples": 27,
+         "profile": "adair_ugv"
+        },
+        "basis": "뒤축이 선 위, 차체 둘레 표본 vs 추정 도로 띠 합집합(차로 수 추정 폭), 최소 회전반경 — 근사 표본 검사",
+        "mission_items": {
+         "ok": true,
+         "label": "MISSION_ITEMS",
+         "length_m": 1145.2,
+         "min_radius_m": 8.85,
+         "steering_violations": 0,
+         "radius_violations": 0,
+         "body_violations": 0,
+         "worst_excess_m": 0.002,
+         "min_curve_speed_mps": 3.64,
+         "initial_pose": {
+          "excess_m": -0.185,
+          "exempt_samples": 0,
+          "exempt_until_m": null,
+          "rule": "출발 자세 차체가 이미 도로 띠 밖일 때만, 출발 4.2 m 안, 그 초과량 이하 차체 표본만. 회전반경 예외 없음"
+         },
+         "items": 83,
+         "max_chord_dev_m": 0.146
+        }
+       },
+       "route_check_rejected": [
+        {
+         "issue": {
+          "kind": "BODY",
+          "s_m": 219.5,
+          "x": 4081.5,
+          "y": 6348.1,
+          "value": 0.02,
+          "stage": "MISSION_ITEMS"
+         },
+         "removed": [
+          "TURN",
+          [
+           "682501749",
+           "622559"
+          ],
+          [
+           "682501750",
+           "494885"
+          ]
+         ]
+        }
+       ],
+       "point": {
+        "lat": 38.0623241,
+        "lon": 128.1697143,
+        "road_id": "682500816",
+        "s_m": 35.0
+       },
+       "route_length_m": 1145.4
+      },
+      "eta_sec": 132,
+      "superseded": null
+     },
+     {
+      "sim_time_s": 339.95,
+      "timestamp": "2026-10-10T09:59:50.150225+00:00",
+      "event": "ARRIVED",
+      "resource_id": "A-ugv1",
+      "task_id": "HOME-20261010_185413",
+      "to_dest_m": 0.6,
+      "position": {
+       "lat": 38.062318999999995,
+       "lon": 128.16970799999999
+      }
+     },
+     {
+      "sim_time_s": 339.95,
+      "timestamp": "2026-10-10T09:59:50.150225+00:00",
+      "event": "TASK_COMPLETED",
+      "resource_id": "A-ugv1",
+      "task_id": "HOME-20261010_185413",
+      "detail": null
+     }
+    ],
+    "timing": {
+     "start_sim_s": 172.94,
+     "start_wall": "2026-10-10T09:57:03.126707+00:00",
+     "eta_sec": 132,
+     "end_sim_s": 339.95,
+     "end_wall": "2026-10-10T09:59:50.150225+00:00"
+    },
+    "superseded_task_id": null,
+    "mission_seq": 2
+   }
+  }
+ },
+ "roll_note": "최대 roll 6.41° 는 두 실행 모두 도로 682501053 의 같은 자리 (높이장 옆 기울기, 주행 동작 아님)"
+}

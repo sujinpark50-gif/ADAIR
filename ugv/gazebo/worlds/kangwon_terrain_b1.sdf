@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  kangwon_terrain_b1 — B 월드 제한 검증 구역 (지형을 반영한 연속 도로면). 생성: python -m ugv.tools.build_terrain_world
+  구역: 거점 A 출입 지점 중심 2000 m 정사각형, 지역 평면 중심 (3992.0, 5606.0). 충돌 = 단일 높이장 2049×2049 (0.98 m 간격),
+  높이 186.00~508.33 m (원점 고도 172.1 m 기준 z 오프셋 13.90). 도로 표시 OBJ 는 충돌 없음.
+  구역 밖·제외 도로(교량·터널 코드)는 없다. 자세한 기준: kangwon_terrain_b1.json
+-->
+<sdf version="1.9">
+  <world name="kangwon_terrain_b1">
+    <physics type="ode">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>500</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+    <scene><grid>false</grid><ambient>0.4 0.4 0.4 1</ambient><background>0.62 0.78 0.92 1</background><shadows>false</shadows></scene>
+    <model name="terrain">
+      <static>true</static>
+      <pose>3992.000 5606.000 13.904 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><heightmap><uri>model://kangwon_terrain_b1_ground/heightmap.png</uri><size>2000.000 2000.000 322.3295</size><pos>0 0 0</pos></heightmap></geometry>
+          <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><heightmap><uri>model://kangwon_terrain_b1_ground/heightmap.png</uri><size>2000.000 2000.000 322.3295</size><pos>0 0 0</pos></heightmap></geometry>
+        </visual>
+      </link>
+    </model>
+    <model name="road_marks">
+      <static>true</static>
+      <pose>3992.000 5606.000 13.904 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><mesh><uri>model://kangwon_terrain_b1_ground/roads.obj</uri></mesh></geometry>
+          <material><ambient>0.25 0.25 0.27 1</ambient><diffuse>0.33 0.33 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <light name="sun" type="directional">
+      <pose>0 0 500 0 0 0</pose><cast_shadows>false</cast_shadows><intensity>1</intensity>
+      <direction>0.001 0.625 -0.78</direction><diffuse>0.904 0.904 0.904 1</diffuse><specular>0.271 0.271 0.271 1</specular>
+    </light>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model><world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>38.0112</latitude_deg><longitude_deg>128.122643</longitude_deg><elevation>172.1</elevation>
+    </spherical_coordinates>
+  </world>
+</sdf>

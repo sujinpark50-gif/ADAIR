@@ -1,0 +1,19 @@
+{
+ "measured": {
+  "gazebo_xy": [
+   16829.98,
+   -7262.3
+  ],
+  "px4_latlon_to_TM": [
+   16829.495,
+   -7262.1
+  ],
+  "offset_m": 0.52
+ },
+ "model": "Gazebo navsat = datum ECEF 접평면 ENU (geo.GzEnuFrame) — 1 mm 안에서 재현",
+ "offset_by_distance_m": {
+  "A (약 7 km)": 0.19,
+  "B (18.6 km)": 0.52
+ },
+ "fix": "Gazebo SITL 차량(px4.gz_world 있음)의 PX4 드라이버만 GZ_FRAME 사용. 실차는 FRAME(TM)"
+}

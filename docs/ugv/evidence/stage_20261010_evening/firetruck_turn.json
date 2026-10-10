@@ -1,0 +1,91 @@
+{
+ "condition": "A 평탄 월드, A-fire1 단독, 좁은 도로 마주 접근 배치(pair_head_on) 같은 회전 2곳 (반경 약 9.7 m, 약 4 m/s)",
+ "runs": {
+  "base": {
+   "log": "logs/ugv/fleet_pair_head_on_20261010_174342.json",
+   "offroad_events": 2,
+   "offroad_max_m": 0.56,
+   "offroad_list": [
+    {
+     "first": 46.932,
+     "last": 48.444,
+     "max": 0.56,
+     "x": 16773.7,
+     "y": -7229.9,
+     "speed": 3.89
+    },
+    {
+     "first": 71.124,
+     "last": 72.204,
+     "max": 0.36,
+     "x": 16845.1,
+     "y": -7096.2,
+     "speed": 3.9
+    }
+   ]
+  },
+  "acc15": {
+   "log": "logs/ugv/fleet_pair_head_on_20261010_174533.json",
+   "offroad_events": 2,
+   "offroad_max_m": 0.47,
+   "offroad_list": [
+    {
+     "first": 43.056,
+     "last": 44.568,
+     "max": 0.47,
+     "x": 16773.7,
+     "y": -7229.9,
+     "speed": 3.84
+    },
+    {
+     "first": 67.248,
+     "last": 68.544,
+     "max": 0.42,
+     "x": 16845.1,
+     "y": -7096.2,
+     "speed": 3.87
+    }
+   ]
+  },
+  "gzframe": {
+   "log": "logs/ugv/fleet_pair_head_on_20261010_175057.json",
+   "offroad_events": 2,
+   "offroad_max_m": 0.22,
+   "offroad_list": [
+    {
+     "first": 43.312,
+     "last": 44.392,
+     "max": 0.22,
+     "x": 16773.0,
+     "y": -7229.1,
+     "speed": 3.93
+    },
+    {
+     "first": 67.504,
+     "last": 68.368,
+     "max": 0.21,
+     "x": 16845.6,
+     "y": -7095.7,
+     "speed": 3.98
+    }
+   ]
+  }
+ },
+ "notes": {
+  "base": "NAV_ACC_RAD 3 (기본)",
+  "acc15": "도착 반경 1.5 m — 가설 기각 (0.56→0.47, 실행 차 수준)",
+  "gzframe": "Gazebo 좌표 변환 수정 뒤 — 0.56/0.36 → 0.22/0.21 m"
+ },
+ "rear_axle_inside_cross_track_max_m": {
+  "base_acc15": 0.84,
+  "gzframe": 0.44
+ },
+ "px4_estimate_vs_truth_center_cross_track_m": {
+  "est": -0.2,
+  "truth": -0.27,
+  "mean_abs_est_minus_truth_m": 0.61,
+  "note": "추정과 실제의 옆 방향 차이는 작고 차이는 주로 진행 방향 시간차 (ulog)"
+ },
+ "remaining_breakdown": "중심 안쪽 약 0.3 m (pure pursuit 앞보기 2 m → L²/2R ≈ 0.2 m + 지연) + 뒤축·중심 기준점 0.13 m, 계획 여유 0.06~0.13 m",
+ "rejected": "미션 점 최소 간격 3.5 m: 소방차 좁은 회전의 미션 점 직선이 차체 검사를 통과 못 해 다른 긴 경로로 바뀜 → 쓰지 않음"
+}

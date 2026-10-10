@@ -1,0 +1,528 @@
+{
+ "separate": {
+  "log": "logs/ugv\\fleet_separate_20261010_180708.json",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 6449.9,
+    "offroad_events": 5,
+    "offroad_max_m": 0.31,
+    "max_speed_kmh": 60.5,
+    "rtf": 0.982,
+    "rollover": false,
+    "final_speed_mps": 0.16
+   },
+   "A-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 2293.0,
+    "offroad_events": 9,
+    "offroad_max_m": 0.25,
+    "max_speed_kmh": 51.0,
+    "rtf": 0.982,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   },
+   "B-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 2208.0,
+    "offroad_events": 4,
+    "offroad_max_m": 0.36,
+    "max_speed_kmh": 60.2,
+    "rtf": 0.982,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   },
+   "B-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 1076.4,
+    "offroad_events": 3,
+    "offroad_max_m": 0.23,
+    "max_speed_kmh": 51.0,
+    "rtf": 0.982,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   }
+  },
+  "pairs": {
+   "A-ugv1~A-fire1": {
+    "min_center_gap_minus_half_lengths_m": 29.95,
+    "body_overlap_samples": 0
+   },
+   "B-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 211.36,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "S-A-U": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-B-U": [
+    "B-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-A-F": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "S-B-F": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-A-U": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-B-U": [
+    "B-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-A-F": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "H-S-B-F": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [],
+   "A-fire1": [],
+   "B-ugv1": [],
+   "B-fire1": []
+  },
+  "command_rtt_s": {
+   "max": 10.89,
+   "mean": 2.694
+  }
+ },
+ "fault_block": {
+  "log": "logs/ugv\\fleet_fault_block_20261010_182947.json",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 953.5,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "max_speed_kmh": 50.3,
+    "rtf": 0.985,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   },
+   "A-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 0.0,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "max_speed_kmh": 0.0,
+    "rtf": 0.985,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   },
+   "B-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 288.7,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "max_speed_kmh": 50.4,
+    "rtf": 0.985,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   },
+   "B-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 373.4,
+    "offroad_events": 1,
+    "offroad_max_m": 0.2,
+    "max_speed_kmh": 46.1,
+    "rtf": 0.985,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   }
+  },
+  "pairs": {
+   "A-ugv1~A-fire1": {
+    "min_center_gap_minus_half_lengths_m": 142.13,
+    "body_overlap_samples": 0
+   },
+   "B-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 448.66,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "FB-BU": [
+    "B-ugv1",
+    "FAILED",
+    "NOT_ARRIVED",
+    "TELEMETRY_LOST: 위치 수신 5.2 s 없음"
+   ],
+   "FB-AU": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "FB-BF": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [],
+   "A-fire1": [],
+   "B-ugv1": [
+    {
+     "event": "FAULT",
+     "sim_time_s": 56.58,
+     "other": null,
+     "kind": null,
+     "why": null,
+     "waited_s": null,
+     "code": "TELEMETRY_LOST"
+    },
+    {
+     "event": "STOP_PATH",
+     "sim_time_s": 163.76,
+     "other": null,
+     "kind": null,
+     "why": null,
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "STOP_PATH",
+     "sim_time_s": 173.76,
+     "other": null,
+     "kind": null,
+     "why": null,
+     "waited_s": null,
+     "code": null
+    }
+   ],
+   "B-fire1": []
+  },
+  "command_rtt_s": {
+   "max": 1.236,
+   "mean": 1.01
+  },
+  "link_cut_method": "mavsdk",
+  "B_ugv1_stop": {
+   "cut_speed_mps": 9.52,
+   "lock_after_cut_s": 11.88,
+   "speed_at_lock_mps": 13.71,
+   "skid_m": 9.5,
+   "travel_after_cut_m": 160.2,
+   "max_abs_steer_after_lock_deg": 0.0,
+   "px4_log": "Connection to ground station lost → Failsafe activated → Disarmed by failsafe"
+  }
+ },
+ "pair_junction": {
+  "log": "logs/ugv\\fleet_pair_junction_20261010_183319.json",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 274.1,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "max_speed_kmh": 49.5,
+    "rtf": 0.99,
+    "rollover": false,
+    "final_speed_mps": 0.26
+   },
+   "B-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 170.0,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "max_speed_kmh": 22.2,
+    "rtf": 0.99,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   }
+  },
+  "pairs": {
+   "A-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 25.31,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "P-JU-A-ugv1": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "P-JU-B-fire1": [
+    "B-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [],
+   "B-fire1": [
+    {
+     "event": "YIELD",
+     "sim_time_s": 20.0,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 38.5,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 39.52,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD_END",
+     "sim_time_s": 41.55,
+     "other": "A-ugv1",
+     "kind": null,
+     "why": null,
+     "waited_s": 2.0,
+     "code": null
+    }
+   ]
+  },
+  "command_rtt_s": {
+   "max": 0.191,
+   "mean": 0.13
+  }
+ },
+ "pair_head_on": {
+  "log": "logs/ugv\\fleet_pair_head_on_20261010_183510.json",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 281.5,
+    "offroad_events": 1,
+    "offroad_max_m": 0.03,
+    "max_speed_kmh": 49.6,
+    "rtf": 0.98,
+    "rollover": false,
+    "final_speed_mps": 0.71
+   },
+   "A-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 278.2,
+    "offroad_events": 2,
+    "offroad_max_m": 0.29,
+    "max_speed_kmh": 42.5,
+    "rtf": 0.98,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   }
+  },
+  "pairs": {
+   "A-ugv1~A-fire1": {
+    "min_center_gap_minus_half_lengths_m": 8.71,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "P-HE-A-ugv1": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "P-HE-A-fire1": [
+    "A-fire1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [
+    {
+     "event": "YIELD",
+     "sim_time_s": 22.5,
+     "other": "A-fire1",
+     "kind": "HEAD_ON",
+     "why": "HEAD_ON_PRIORITY",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD_END",
+     "sim_time_s": 64.56,
+     "other": "A-fire1",
+     "kind": null,
+     "why": null,
+     "waited_s": 42.1,
+     "code": null
+    }
+   ],
+   "A-fire1": []
+  },
+  "command_rtt_s": {
+   "max": 0.335,
+   "mean": 0.28
+  }
+ },
+ "pair_block": {
+  "log": "logs/ugv\\fleet_pair_block_20261010_183934.json",
+  "vehicles": {
+   "A-ugv1": {
+    "profile": "adair_ugv",
+    "distance_m": 164.5,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "max_speed_kmh": 30.5,
+    "rtf": 0.977,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   },
+   "B-fire1": {
+    "profile": "adair_firetruck",
+    "distance_m": 176.4,
+    "offroad_events": 0,
+    "offroad_max_m": 0.0,
+    "max_speed_kmh": 32.0,
+    "rtf": 0.977,
+    "rollover": false,
+    "final_speed_mps": 0.0
+   }
+  },
+  "pairs": {
+   "A-ugv1~B-fire1": {
+    "min_center_gap_minus_half_lengths_m": 2.88,
+    "body_overlap_samples": 0
+   }
+  },
+  "tasks": {
+   "P-BL-A-ugv1": [
+    "A-ugv1",
+    "COMPLETED",
+    "ARRIVED",
+    null
+   ],
+   "P-BL-B-fire1": [
+    "B-fire1",
+    "FAILED",
+    "NOT_ARRIVED",
+    "BLOCKED_BY_VEHICLE: A-ugv1 가 선 도로 682501929 에 막힘, 우회 경로 없음 (DETOUR_STILL_USES_BLOCKED_ROAD), 33 s 대기"
+   ]
+  },
+  "traffic_events": {
+   "A-ugv1": [],
+   "B-fire1": [
+    {
+     "event": "YIELD",
+     "sim_time_s": 20.0,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 38.5,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 40.52,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 43.03,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 45.53,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 47.53,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "YIELD",
+     "sim_time_s": 50.05,
+     "other": "A-ugv1",
+     "kind": "FOLLOW",
+     "why": "FOLLOWING",
+     "waited_s": null,
+     "code": null
+    },
+    {
+     "event": "TRAFFIC_BLOCKED_BY_VEHICLE",
+     "sim_time_s": 52.55,
+     "other": "A-ugv1",
+     "kind": null,
+     "why": null,
+     "waited_s": 32.6,
+     "code": null
+    }
+   ]
+  },
+  "command_rtt_s": {
+   "max": 0.154,
+   "mean": 0.13
+  }
+ }
+}

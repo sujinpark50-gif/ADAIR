@@ -1,0 +1,595 @@
+{
+ "condition": "A 평탄 월드, B-ugv1 단독, B 출입 지점 → 37.951004, 128.337462. (17087.8, -5214.6) 에서 링크 끊음 (약 9.8 m/s), 곡선 시험은 (17268.1, -5386.3) 에서. 도구 ugv/tools/link_loss_compare.py",
+ "cut_methods": {
+  "suspend": "UGV 서버 프로세스 일시 정지 (실제 무선 단절과 같음)",
+  "hook": "서버의 그 차량 MAVSDK 인스턴스만 닫음 (UGV_TEST_HOOKS=1, 다중 차량용, suspend 와 같은 결과)",
+  "mavlink": "PX4 안 MAVLink 인스턴스 정지 (F7 방식) — dataman 시간 초과로 미션 추종이 흔들려 결과를 바꿈"
+ },
+ "runs": {
+  "cont_20261010_170511.json": {
+   "tag": "cont",
+   "params_set": "NAV_DLL_ACT 0",
+   "px4_params_read_back": [
+    "x *   NAV_DLL_ACT [428,1162] : 0",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "NAV_DLL_ACT 0",
+    "cut_method": "suspend",
+    "response_after_cut_s": 26.3,
+    "cut_sim_t": 41.6,
+    "cut_xy": [
+     17082.0,
+     -5207.0
+    ],
+    "speed_at_cut_mps": 8.25,
+    "response_start_xy": [
+     17329.0,
+     -5445.7
+    ],
+    "speed_at_response_mps": 11.08,
+    "stopped": true,
+    "stop_time_from_response_s": 64.9,
+    "stop_dist_from_response_m": 538.6,
+    "travel_after_cut_until_stop_m": 882.3,
+    "rest_xy": [
+     17297.5,
+     -5888.0
+    ],
+    "moved_after_rest_m": 48.3,
+    "observed_after_cut_s": 145.4,
+    "max_body_offroad_m": 14.39,
+    "offroad_at_or_after_rest_m": 14.39,
+    "max_cross_track_from_plan_m": 46.32,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 572.51,
+    "occupancy_reach_old_m": 119.2,
+    "max_outside_old_corridor_m": 636.4,
+    "max_yaw_from_plan_after_response_deg": 14.3,
+    "max_abs_steer_after_response_deg": 21.5,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "curve_disarm_20261010_170924.json": {
+   "tag": "curve_disarm",
+   "params_set": "",
+   "px4_params_read_back": [
+    "x     NAV_DLL_ACT [428,1162] : 6",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "",
+    "cut_method": "suspend",
+    "response_after_cut_s": 9.56,
+    "cut_sim_t": 60.89,
+    "cut_xy": [
+     17262.5,
+     -5380.8
+    ],
+    "speed_at_cut_mps": 13.87,
+    "response_start_xy": [
+     17348.1,
+     -5463.9
+    ],
+    "speed_at_response_mps": 7.73,
+    "stopped": true,
+    "stop_time_from_response_s": 3.1,
+    "stop_dist_from_response_m": 14.3,
+    "travel_after_cut_until_stop_m": 133.7,
+    "rest_xy": [
+     17359.1,
+     -5473.1
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 58.4,
+    "max_body_offroad_m": -0.0,
+    "offroad_at_or_after_rest_m": -0.09,
+    "max_cross_track_from_plan_m": 0.26,
+    "occupancy_reach_m": 210.7,
+    "max_outside_occupied_corridor_m": 0.49,
+    "occupancy_reach_old_m": 168.7,
+    "max_outside_old_corridor_m": 0.49,
+    "max_yaw_from_plan_after_response_deg": 1.7,
+    "max_abs_steer_after_response_deg": 1.2,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "disarm_20261010_164814.json": {
+   "tag": "disarm",
+   "params_set": "",
+   "px4_params_read_back": [
+    "x     NAV_DLL_ACT [428,1162] : 6",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "mavlink",
+   "analysis": {
+    "params": "",
+    "cut_method": "mavlink",
+    "response_after_cut_s": 9.61,
+    "cut_sim_t": 41.4,
+    "cut_xy": [
+     17082.9,
+     -5208.4
+    ],
+    "speed_at_cut_mps": 8.47,
+    "response_start_xy": [
+     17166.2,
+     -5288.1
+    ],
+    "speed_at_response_mps": 13.59,
+    "stopped": true,
+    "stop_time_from_response_s": 1.6,
+    "stop_dist_from_response_m": 10.9,
+    "travel_after_cut_until_stop_m": 126.3,
+    "rest_xy": [
+     17173.3,
+     -5296.3
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 58.9,
+    "max_body_offroad_m": -0.0,
+    "offroad_at_or_after_rest_m": -1.77,
+    "max_cross_track_from_plan_m": 0.77,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 0.09,
+    "occupancy_reach_old_m": 118.9,
+    "max_outside_old_corridor_m": 4.12,
+    "max_yaw_from_plan_after_response_deg": 5.3,
+    "max_abs_steer_after_response_deg": 9.3,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "disarm_hook2_20261010_180122.json": {
+   "tag": "disarm_hook2",
+   "params_set": "",
+   "px4_params_read_back": [
+    "x     NAV_DLL_ACT [428,1162] : 6",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "hook",
+   "analysis": {
+    "params": "",
+    "cut_method": "hook",
+    "response_after_cut_s": 12.04,
+    "cut_sim_t": 42.2,
+    "cut_xy": [
+     17083.7,
+     -5210.0
+    ],
+    "speed_at_cut_mps": 8.87,
+    "response_start_xy": [
+     17193.2,
+     -5313.9
+    ],
+    "speed_at_response_mps": 13.12,
+    "stopped": true,
+    "stop_time_from_response_s": 1.6,
+    "stop_dist_from_response_m": 9.6,
+    "travel_after_cut_until_stop_m": 160.5,
+    "rest_xy": [
+     17200.1,
+     -5320.5
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 58.7,
+    "max_body_offroad_m": -0.01,
+    "offroad_at_or_after_rest_m": -0.1,
+    "max_cross_track_from_plan_m": 0.26,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 0.0,
+    "occupancy_reach_old_m": 119.7,
+    "max_outside_old_corridor_m": 40.13,
+    "max_yaw_from_plan_after_response_deg": 0.3,
+    "max_abs_steer_after_response_deg": 0.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "disarm_hook_20261010_175849.json": {
+   "tag": "disarm_hook",
+   "params_set": "",
+   "px4_params_read_back": [
+    "x     NAV_DLL_ACT [428,1162] : 6",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "hook",
+   "analysis": {
+    "params": "",
+    "cut_method": "hook",
+    "response_after_cut_s": 25.49,
+    "cut_sim_t": 42.58,
+    "cut_xy": [
+     17085.5,
+     -5212.2
+    ],
+    "speed_at_cut_mps": 9.29,
+    "response_start_xy": [
+     17328.7,
+     -5445.3
+    ],
+    "speed_at_response_mps": 10.88,
+    "stopped": false,
+    "stop_time_from_response_s": null,
+    "stop_dist_from_response_m": null,
+    "travel_after_cut_until_stop_m": 701.2,
+    "rest_xy": null,
+    "moved_after_rest_m": null,
+    "observed_after_cut_s": 58.4,
+    "max_body_offroad_m": -0.0,
+    "offroad_at_or_after_rest_m": null,
+    "max_cross_track_from_plan_m": 0.52,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 409.02,
+    "occupancy_reach_old_m": 123.1,
+    "max_outside_old_corridor_m": 467.46,
+    "max_yaw_from_plan_after_response_deg": 11.6,
+    "max_abs_steer_after_response_deg": 19.5,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "disarm_s_20261010_165226.json": {
+   "tag": "disarm_s",
+   "params_set": "",
+   "px4_params_read_back": [
+    "x     NAV_DLL_ACT [428,1162] : 6",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "",
+    "cut_method": "suspend",
+    "response_after_cut_s": 12.15,
+    "cut_sim_t": 41.46,
+    "cut_xy": [
+     17081.7,
+     -5206.7
+    ],
+    "speed_at_cut_mps": 8.16,
+    "response_start_xy": [
+     17189.2,
+     -5310.2
+    ],
+    "speed_at_response_mps": 13.06,
+    "stopped": true,
+    "stop_time_from_response_s": 1.5,
+    "stop_dist_from_response_m": 9.4,
+    "travel_after_cut_until_stop_m": 158.8,
+    "rest_xy": [
+     17196.0,
+     -5316.7
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 58.8,
+    "max_body_offroad_m": -0.03,
+    "offroad_at_or_after_rest_m": -0.16,
+    "max_cross_track_from_plan_m": 0.45,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 2.44,
+    "occupancy_reach_old_m": 120.2,
+    "max_outside_old_corridor_m": 34.57,
+    "max_yaw_from_plan_after_response_deg": 0.2,
+    "max_abs_steer_after_response_deg": 0.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "dl3_20261010_171142.json": {
+   "tag": "dl3",
+   "params_set": "COM_DL_LOSS_T 3",
+   "px4_params_read_back": [
+    "x     NAV_DLL_ACT [428,1162] : 6",
+    "x *   COM_DL_LOSS_T [148,489] : 3",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "COM_DL_LOSS_T 3",
+    "cut_method": "suspend",
+    "response_after_cut_s": 5.13,
+    "cut_sim_t": 41.42,
+    "cut_xy": [
+     17081.5,
+     -5206.4
+    ],
+    "speed_at_cut_mps": 8.07,
+    "response_start_xy": [
+     17118.4,
+     -5244.0
+    ],
+    "speed_at_response_mps": 10.55,
+    "stopped": true,
+    "stop_time_from_response_s": 1.3,
+    "stop_dist_from_response_m": 6.3,
+    "travel_after_cut_until_stop_m": 59.1,
+    "rest_xy": [
+     17123.1,
+     -5248.2
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 58.5,
+    "max_body_offroad_m": -0.0,
+    "offroad_at_or_after_rest_m": -0.13,
+    "max_cross_track_from_plan_m": 0.5,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 2.4,
+    "occupancy_reach_old_m": 119.5,
+    "max_outside_old_corridor_m": 2.4,
+    "max_yaw_from_plan_after_response_deg": 2.1,
+    "max_abs_steer_after_response_deg": 0.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "hold_20261010_165508.json": {
+   "tag": "hold",
+   "params_set": "NAV_DLL_ACT 1",
+   "px4_params_read_back": [
+    "x *   NAV_DLL_ACT [428,1162] : 1",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "NAV_DLL_ACT 1",
+    "cut_method": "suspend",
+    "response_after_cut_s": 12.42,
+    "cut_sim_t": 41.38,
+    "cut_xy": [
+     17081.5,
+     -5206.2
+    ],
+    "speed_at_cut_mps": 8.08,
+    "response_start_xy": [
+     17191.1,
+     -5311.9
+    ],
+    "speed_at_response_mps": 13.22,
+    "stopped": true,
+    "stop_time_from_response_s": 12.7,
+    "stop_dist_from_response_m": 53.4,
+    "travel_after_cut_until_stop_m": 205.9,
+    "rest_xy": [
+     17190.5,
+     -5311.0
+    ],
+    "moved_after_rest_m": 110.9,
+    "observed_after_cut_s": 88.1,
+    "max_body_offroad_m": 14.37,
+    "offroad_at_or_after_rest_m": 5.88,
+    "max_cross_track_from_plan_m": 16.37,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 14.44,
+    "occupancy_reach_old_m": 119.9,
+    "max_outside_old_corridor_m": 46.47,
+    "max_yaw_from_plan_after_response_deg": 180.0,
+    "max_abs_steer_after_response_deg": 30.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "horizon_20261010_171340.json": {
+   "tag": "horizon",
+   "params_set": "",
+   "px4_params_read_back": [
+    "x     NAV_DLL_ACT [428,1162] : 6",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "",
+    "cut_method": "suspend",
+    "response_after_cut_s": 11.56,
+    "cut_sim_t": 40.61,
+    "cut_xy": [
+     17084.0,
+     -5209.9
+    ],
+    "speed_at_cut_mps": 8.74,
+    "response_start_xy": [
+     17150.4,
+     -5272.8
+    ],
+    "speed_at_response_mps": 3.02,
+    "stopped": true,
+    "stop_time_from_response_s": 0.5,
+    "stop_dist_from_response_m": 0.7,
+    "travel_after_cut_until_stop_m": 92.3,
+    "rest_xy": [
+     17150.9,
+     -5273.3
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 58.2,
+    "max_body_offroad_m": -0.01,
+    "offroad_at_or_after_rest_m": -2.63,
+    "max_cross_track_from_plan_m": 0.52,
+    "occupancy_reach_m": 114.3,
+    "max_outside_occupied_corridor_m": 0.0,
+    "occupancy_reach_old_m": 120.8,
+    "max_outside_old_corridor_m": 0.0,
+    "max_yaw_from_plan_after_response_deg": 0.0,
+    "max_abs_steer_after_response_deg": 0.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "land_20261010_170045.json": {
+   "tag": "land",
+   "params_set": "NAV_DLL_ACT 3",
+   "px4_params_read_back": [
+    "x *   NAV_DLL_ACT [428,1162] : 3",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "NAV_DLL_ACT 3",
+    "cut_method": "suspend",
+    "response_after_cut_s": 12.26,
+    "cut_sim_t": 41.58,
+    "cut_xy": [
+     17081.9,
+     -5206.8
+    ],
+    "speed_at_cut_mps": 8.23,
+    "response_start_xy": [
+     17190.5,
+     -5311.3
+    ],
+    "speed_at_response_mps": 13.12,
+    "stopped": true,
+    "stop_time_from_response_s": 7.5,
+    "stop_dist_from_response_m": 44.4,
+    "travel_after_cut_until_stop_m": 195.2,
+    "rest_xy": [
+     17187.0,
+     -5319.1
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 88.4,
+    "max_body_offroad_m": 14.53,
+    "offroad_at_or_after_rest_m": 6.49,
+    "max_cross_track_from_plan_m": 16.5,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 14.56,
+    "occupancy_reach_old_m": 119.7,
+    "max_outside_old_corridor_m": 45.64,
+    "max_yaw_from_plan_after_response_deg": 179.3,
+    "max_abs_steer_after_response_deg": 30.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "rtl_20261010_165736.json": {
+   "tag": "rtl",
+   "params_set": "NAV_DLL_ACT 2",
+   "px4_params_read_back": [
+    "x *   NAV_DLL_ACT [428,1162] : 2",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "NAV_DLL_ACT 2",
+    "cut_method": "suspend",
+    "response_after_cut_s": 11.88,
+    "cut_sim_t": 41.83,
+    "cut_xy": [
+     17083.3,
+     -5209.2
+    ],
+    "speed_at_cut_mps": 8.58,
+    "response_start_xy": [
+     17190.0,
+     -5310.7
+    ],
+    "speed_at_response_mps": 13.27,
+    "stopped": true,
+    "stop_time_from_response_s": 25.4,
+    "stop_dist_from_response_m": 254.8,
+    "travel_after_cut_until_stop_m": 402.1,
+    "rest_xy": [
+     17125.7,
+     -5101.6
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 117.1,
+    "max_body_offroad_m": 69.05,
+    "offroad_at_or_after_rest_m": -0.92,
+    "max_cross_track_from_plan_m": 72.03,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 114.75,
+    "occupancy_reach_old_m": 120.3,
+    "max_outside_old_corridor_m": 114.75,
+    "max_yaw_from_plan_after_response_deg": 179.8,
+    "max_abs_steer_after_response_deg": 30.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  },
+  "term_20261010_170313.json": {
+   "tag": "term",
+   "params_set": "NAV_DLL_ACT 5",
+   "px4_params_read_back": [
+    "x *   NAV_DLL_ACT [428,1162] : 5",
+    "x     COM_DL_LOSS_T [148,489] : 10",
+    "x     COM_FAIL_ACT_T [149,490] : 5.0000",
+    "x     NAV_LTR_LAST_DL [433,1167] : 0",
+    "x     RTL_TYPE [614,1378] : 0",
+    ""
+   ],
+   "cut_method": "suspend",
+   "analysis": {
+    "params": "NAV_DLL_ACT 5",
+    "cut_method": "suspend",
+    "response_after_cut_s": 11.66,
+    "cut_sim_t": 42.05,
+    "cut_xy": [
+     17083.8,
+     -5209.7
+    ],
+    "speed_at_cut_mps": 8.8,
+    "response_start_xy": [
+     17189.0,
+     -5309.9
+    ],
+    "speed_at_response_mps": 12.93,
+    "stopped": true,
+    "stop_time_from_response_s": 1.5,
+    "stop_dist_from_response_m": 9.1,
+    "travel_after_cut_until_stop_m": 154.5,
+    "rest_xy": [
+     17195.6,
+     -5316.2
+    ],
+    "moved_after_rest_m": 0.0,
+    "observed_after_cut_s": 58.4,
+    "max_body_offroad_m": -0.01,
+    "offroad_at_or_after_rest_m": -0.13,
+    "max_cross_track_from_plan_m": 0.51,
+    "occupancy_reach_m": 203.9,
+    "max_outside_occupied_corridor_m": 0.0,
+    "occupancy_reach_old_m": 119.2,
+    "max_outside_old_corridor_m": 33.93,
+    "max_yaw_from_plan_after_response_deg": 0.1,
+    "max_abs_steer_after_response_deg": 0.0,
+    "basis": "Gazebo 자세. 차체 4.2x1.8 m 둘레 표본 vs 추정 도로 띠 (판정 기준 그대로). 대응 시작 = 끊고 9 s 이후 바퀴 속도 20 % 감소 또는 조향 5° 변화"
+   }
+  }
+ }
+}

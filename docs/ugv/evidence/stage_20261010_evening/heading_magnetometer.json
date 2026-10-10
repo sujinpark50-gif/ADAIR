@@ -1,0 +1,152 @@
+{
+ "measurement_flat_world_parked": {
+  "gazebo_true_heading_deg": 133.7,
+  "mag_raw_heading_deg": 125.4,
+  "gazebo_field_declination_deg": 8.3,
+  "wmm_declination_deg": -9.14,
+  "note": "Gazebo 자력계 편각이 실제와 부호 반대. EKF2_DECL_TYPE 0 은 PX4 에서 편각 0° (getMagDeclination)"
+ },
+ "boot_error_deg": {
+  "default_WMM": -15.3,
+  "DECL_TYPE0_6.17": "-6.4 ~ -9.0",
+  "sensor_mag_sim": -0.3
+ },
+ "park_restart_10min": {
+  "before (default)": {
+   "params": "EKF2_DECL_TYPE 기본(WMM)",
+   "parked_heading": {
+    "file": "logs/ugv/park_restart_before_20261010_143551.json",
+    "first": {
+     "t_s": 0,
+     "px4_deg": 46.7,
+     "gazebo_deg": 47.3,
+     "err_deg": -0.6,
+     "speed": 0.01
+    },
+    "last": {
+     "t_s": 574,
+     "px4_deg": 35.9,
+     "gazebo_deg": 47.3,
+     "err_deg": -11.4,
+     "speed": 0.0
+    }
+   },
+   "leg2": {
+    "log": "logs/ugv/PR_before_leg2_20261010_143445",
+    "offroad_samples": 15,
+    "offroad_max_m": 2.3,
+    "worst": {
+     "sim_t": 873.118,
+     "x": 4191.4,
+     "y": 5754.1,
+     "body_m": 6.05,
+     "excess_m": 2.3,
+     "speed_mps": 4.8
+    },
+    "rtf": {
+     "overall": 1.0,
+     "min_10s": 1.0,
+     "sim_s": 59.0,
+     "wall_s": 59.0,
+     "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"
+    }
+   },
+   "cause": {
+    "file": "logs/ugv/retest_20261010/PR_before_leg2_cause.json",
+    "events": [
+     {
+      "first": 871.17,
+      "duration_s": 3.2,
+      "cause": "PX4_TRACKING",
+      "sim_t": 873.12,
+      "x": 4192.22,
+      "y": 5753.01,
+      "body_excess_actual": 2.298,
+      "cross_track_m": 4.663,
+      "plan_excess_m": -0.184,
+      "heading_err_deg": -8.4
+     }
+    ],
+    "max_cross_track_m": 4.745,
+    "min_plan_margin_m": -2.049
+   }
+  },
+  "previous_fix (DECL_TYPE 0)": {
+   "params": "EKF2_DECL_TYPE 0, EKF2_MAG_DECL 6.17",
+   "parked_heading": {
+    "file": "logs/ugv/park_restart_after_20261010_145706.json",
+    "first": {
+     "t_s": 0,
+     "px4_deg": 47.0,
+     "gazebo_deg": 47.2,
+     "err_deg": -0.2,
+     "speed": 0.0
+    },
+    "last": {
+     "t_s": 574,
+     "px4_deg": 42.7,
+     "gazebo_deg": 47.2,
+     "err_deg": -4.5,
+     "speed": 0.01
+    }
+   },
+   "leg2": {
+    "log": "logs/ugv/PR_after_leg2_20261010_145602",
+    "offroad_samples": 13,
+    "offroad_max_m": 1.26,
+    "worst": {
+     "sim_t": 872.096,
+     "x": 4191.3,
+     "y": 5752.7,
+     "body_m": 5.01,
+     "excess_m": 1.26,
+     "speed_mps": 4.92
+    },
+    "rtf": {
+     "overall": 0.984,
+     "min_10s": 0.952,
+     "sim_s": 56.5,
+     "wall_s": 57.4,
+     "basis": "Gazebo 자세 메시지 시뮬레이션 시각 / 기록기 벽시계"
+    }
+   },
+   "cause": {
+    "file": "logs/ugv/retest_20261010/PR_after_leg2_cause.json",
+    "events": [
+     {
+      "first": 870.8,
+      "duration_s": 2.8,
+      "cause": "PX4_TRACKING",
+      "sim_t": 872.1,
+      "x": 4192.12,
+      "y": 5751.67,
+      "body_excess_actual": 1.259,
+      "cross_track_m": 3.602,
+      "plan_excess_m": -0.183,
+      "heading_err_deg": -8.7
+     }
+    ],
+    "max_cross_track_m": 3.804,
+    "min_plan_margin_m": -2.361
+   }
+  },
+  "sensor_mag_sim": {
+   "parked_heading": {
+    "file": "logs/ugv/park_restart_magsim_*.json",
+    "first_err_deg": -0.8,
+    "last_err_deg": -0.5
+   },
+   "leg2_cause": {
+    "track": "logs\\ugv\\PR_magsim_leg2_20261010_173729.csv",
+    "profile": "adair_ugv",
+    "samples": 267,
+    "events": [],
+    "max_cross_track_m": 1.112,
+    "min_plan_margin_m": -2.383
+   },
+   "corner_max_cross_track_m": 0.77,
+   "corner_max_body_excess_m": -0.161
+  }
+ },
+ "fix": "airframe 51100·51101: SIM_GZ_EN_MAG 0, SENS_EN_MAGSIM 1 (PX4 sensor_mag_sim: Gazebo 실제 자세·위치 + WMM)"
+}
