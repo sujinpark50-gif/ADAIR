@@ -259,8 +259,9 @@ class Vehicle:
             t = p.driver.telemetry()
             if t is None or t.speed_mps >= 0.3 or p.state in ("DRIVING", "EVADING"):
                 continue
-            parked_home = p.current_task() is None and math.hypot(t.x - p.access.x, t.y - p.access.y) <= config.ARRIVE_M
-            if p.state not in ("FAULT", "DANGER") and not parked_home:
+            # 임무 없이 서 있는 차(도착 뒤 대기·거점 대기)와 고장·위험 차는 지시 없이는 움직이지 않는다 → 그 도로로 계획하지 않는다.
+            # (2026-10-10 Gazebo: 목적지에 서 있던 B-fire1 을 지나야 하는 B-ugv1 복귀 경로를 골라 길이 막혔다)
+            if p.current_task() is not None and p.state not in ("FAULT", "DANGER"):
                 continue
             rid = self.net.snap(t.x, t.y).road_id
             if home and rid == self.access.road_id:
@@ -689,9 +690,29 @@ class Vehicle:
                         other=info.get("other"))
 
     async def traffic_emergency_stop(self, info: dict):
+        """차량 간 충돌을 피할 수 없다고 판단될 때: 계획 경로를 따라 최대 감속으로 가장 짧게 선다.
+        평소 정지(_safe_stop, 계획 감속)처럼 길게 가면 상대 쪽으로 더 다가간다 (2026-10-10 Gazebo 4대 시험: 마주 선 두 차가
+        각자 경로를 따라 정지하며 13 m → 접촉). 이미 대기 지점이 더 가까우면 그 앞에서 선다."""
         async with self.lock:
             self.gen += 1
-            await self._safe_stop()
+            tel = self.driver.telemetry()
+            if self.speed is not None and tel is not None and self.state in ("DRIVING", "EVADING") and tel.speed_mps >= 0.3:
+                v = tel.speed_mps
+                d = v * v / (2 * self.profile.emergency_decel_mps2) + 1.0
+                s_stop = self._s_now() + d
+                if self.hold is not None:
+                    s_stop = min(s_stop, max(self.hold["s"], self._s_now()))
+                try:
+                    self.seq = await self.driver.follow(self._items_between(s_stop))
+                    self._event("STOP_PATH", basis="TRAFFIC_EMERGENCY", length_m=round(s_stop - self._s_now(), 1),
+                                speed_mps=round(v, 2), decel_mps2=self.profile.emergency_decel_mps2)
+                except DriverError as e:
+                    self._event("STOP_FAILED", detail=str(e))
+                self.hold = None
+                self.state = "STOPPING"
+            elif self.state in ("DRIVING", "EVADING"):
+                self.hold = None
+                self.state = "STOPPING"                 # 이미 멈춰 있음 — 더 보내지 않는다
             if self.current_task():
                 self._finish(self.task_key, "FAILED", error=f"TRAFFIC_CONFLICT_UNAVOIDABLE: {info}",
                              physical_state="STOPPING")

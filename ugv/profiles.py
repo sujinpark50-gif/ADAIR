@@ -35,6 +35,7 @@ class VehicleProfile:
     basis: str
     gz_model: str                      # Gazebo 모델 (ugv/gazebo/models/<gz_model>)
     px4_airframe: int
+    emergency_decel_mps2: float = 3.5  # 비상 정지 계산용 감속 (PX4 RO_DECEL_LIM 보다 낮게: UGV 4, 소방차 2.5)
     body_samples: Tuple[Tuple[float, float], ...] = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -98,7 +99,7 @@ PROFILES: Dict[str, VehicleProfile] = {
     "adair_firetruck": VehicleProfile(
         "adair_firetruck", "FIRE_ENGINE", 3.8, 35.0, 7.0, 2.3, 1.6, 50.0 / 3.6, 1.2, 1.2, 1.5,
         mass_kg=10000.0, basis="시뮬레이션용 가정값 — 국내 중형 펌프차 규모 참고 (실차 제원 아님, 2026-10-10)",
-        gz_model="adair_firetruck", px4_airframe=51101),
+        gz_model="adair_firetruck", px4_airframe=51101, emergency_decel_mps2=2.2),
 }
 DEFAULT_PROFILE = PROFILES["adair_ugv"]
 

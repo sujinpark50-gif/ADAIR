@@ -349,3 +349,29 @@ def test_mutual_wait_is_reported_as_deadlock(tmp_path):
         assert any(e["event"] == "TRAFFIC_DEADLOCK" and e["operator_action_required"] for e in A.events)
         assert A.hold and B.hold
     asyncio.run(go())
+
+
+def test_gazebo_b_station_return_sequence_no_contact(tmp_path):
+    """2026-10-10 Gazebo 4대 시험 재현: B-fire1 이 B-ugv1 복귀 길 위 목적지에 서 있고, B-ugv1 복귀 뒤 B-fire1 도 복귀.
+    수정 전: 마주 선 두 차가 '피할 수 없음' 으로 각자 경로를 따라 정지하며 접촉 (차체 겹침 1,597 표본).
+    수정 후: 서 있는 차는 그 자리에서 기다리고(교착이면 보고), 계획은 서 있는 차가 있는 도로를 피한다. 접촉 없음."""
+    async def go():
+        f, clock = make_fleet(tmp_path, [FLEET_CFG[2], FLEET_CFG[3]])
+        U, F = f.vehicles["B-ugv1"], f.vehicles["B-fire1"]
+        await U.execute(body("S-B-U", 37.951004, 128.337462))
+        await F.execute(body("S-B-F", 37.955735, 128.317915))
+        ok, w1 = await run(f, clock, 900, until=done(f, "S-B-U", "S-B-F"))
+        assert ok and w1["overlaps"] == 0
+        from ugv.approach import node_id_of
+        rU = await U.execute({"task_id": "H-U", "decision_id": "D", "target_node": node_id_of(U.access)})
+        await run(f, clock, 60)
+        try:
+            await F.execute({"task_id": "H-F", "decision_id": "D", "target_node": node_id_of(F.access)})
+        except Exception as e:                                           # 길이 막혀 거절될 수 있다 (정상 응답)
+            assert "TARGET_UNREACHABLE" in str(e)
+        ok, w2 = await run(f, clock, 1200, until=done(f, "H-U") if "H-F" not in f.store.tasks else done(f, "H-U", "H-F"))
+        assert w2["overlaps"] == 0 and w2["min_gap_m"] > 1.0, w2
+        st = {k: f.store.tasks[k]["status"] for k in ("H-U", "H-F") if k in f.store.tasks}
+        dead = any(e["event"] == "TRAFFIC_DEADLOCK" for v in (U, F) for e in v.events)
+        assert all(s == "COMPLETED" for s in st.values()) or dead or f.traffic.waits, st
+    asyncio.run(go())

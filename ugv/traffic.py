@@ -267,7 +267,12 @@ class TrafficManager:
             if prefer is not None and prefer == Q.v.resource_id:
                 P, smp, Q = Q, (b if Q is B else a), P
             return P, Q, max(simple_wait(P, smp), P.s_now + P.committed_m), "FOLLOWING"
-        opts = {A.v.resource_id: (A, B, clear_wait(A, a, B)), B.v.resource_id: (B, A, clear_wait(B, b, A))}
+        def wait_point(P, smp, Q):
+            ws = clear_wait(P, smp, Q)
+            if ws is None and P.v_now < 0.3:
+                ws = P.s_now          # 멈춰 있는 차는 그 자리에서 기다린다 (비킬 곳이 없어도 움직이지 않는 것이 안전 — 교착은 보고)
+            return ws
+        opts = {A.v.resource_id: (A, B, wait_point(A, a, B)), B.v.resource_id: (B, A, wait_point(B, b, A))}
         if prefer in opts and stoppable(opts[prefer][0], opts[prefer][2]):
             P, Q, ws = opts[prefer]
             return P, Q, ws, f"{kind}_KEEP_YIELDING"
