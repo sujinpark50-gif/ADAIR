@@ -285,7 +285,7 @@ class Vehicle:
         if start is None:
             return {**base, "verdict": "REJECT", "eta_sec": None, "reason": err.split(":")[0],
                     "detail": err, "target_node": None, "path": None}
-        plan = self._approach(body, start, v0)
+        plan = await asyncio.to_thread(self._approach, body, start, v0)       # 계획 계산은 이벤트 루프 밖에서
         if plan.status != "OK":
             return {**base, "verdict": "REJECT", "eta_sec": None, "reason": "TARGET_UNREACHABLE",
                     "detail": f"{plan.status}: {plan.reason}", "target_node": None, "path": None,
@@ -318,7 +318,7 @@ class Vehicle:
             w0 = time.monotonic()
             lat_used = self.latency_s()
             start, v0, err = self.here_state()
-            plan = self._approach(body, start, v0) if start is not None else None
+            plan = await asyncio.to_thread(self._approach, body, start, v0) if start is not None else None
             if plan is None or plan.status != "OK":
                 # 진행 방향을 지키는 경로가 없다 → 새 목표를 수행하지 않는다. 주행 중이던 임무는 취소하고 도로를 따라 멈춘다
                 cancelled, action = None, None
@@ -742,8 +742,9 @@ class Vehicle:
             self.comm = {**self.comm, "phase": "RETURNED"}
             self._event("COMM_LOSS_AT_STATION", lost_s=round(lost, 1))
             return
-        plan = None if here is None else plan_approach(
-            self.net, self.fire_source.area(), here, *acc.ll(), v0=v0, access=acc, fixed_dest=acc, graph=self.graph)
+        plan = None if here is None else await asyncio.to_thread(
+            plan_approach, self.net, self.fire_source.area(), here, *acc.ll(), v0=v0, access=acc, fixed_dest=acc,
+            graph=self.graph)
         if plan is None or plan.status != "OK":
             why = err or f"{plan.status}: {plan.reason}"
             self.fault = f"COMM_LOSS_NO_RETURN_ROUTE: 총괄 연락 {lost:.0f} s 없음, 소속 거점 {self.station['base_id']} 복귀 경로 없음 ({why})"
@@ -786,9 +787,9 @@ class Vehicle:
 
     async def _replan_task(self, t, why):
         here, v0, err = self.here_state()
-        plan = None if here is None else plan_approach(
-            self.net, self.fire_source.area(), here, float(self.target_ll["lat"]), float(self.target_ll["lon"]),
-            v0=v0, access=self.access, graph=self.graph)
+        plan = None if here is None else await asyncio.to_thread(
+            plan_approach, self.net, self.fire_source.area(), here, float(self.target_ll["lat"]),
+            float(self.target_ll["lon"]), v0=v0, access=self.access, graph=self.graph)
         rec = {"sim_time_s": round(self.clock.now(), 2), "why": why, "result": plan.status if plan else "NO_START_STATE",
                "approach": plan.report() if plan else {"reason": err}}
         t.setdefault("replans", []).append(rec)
@@ -814,14 +815,15 @@ class Vehicle:
         if not len(fire):
             self.last_clearance_m = None
             return
-        here_c = fire.distance(tel.x, tel.y)
+        here_c = fire.distance(tel.x, tel.y, max_m=2000.0)        # 2 km 넘으면 inf (칸이 많을 때 매 초 전체 탐색 방지)
         self.last_clearance_m = here_c
         if self.state in ("FAULT", "DANGER", "EVADING"):
             return
         async with self.lock:
             if here_c < config.FIRE_STANDOFF_M:
                 here, v0, err = self.here_state()
-                ev = plan_evasion(self.net, fire, here, v0=v0, access=self.access, graph=self.graph) if here is not None else None
+                ev = await asyncio.to_thread(plan_evasion, self.net, fire, here, v0=v0, access=self.access,
+                                             graph=self.graph) if here is not None else None
                 if ev is None or ev.status != "OK":
                     # 자동 이탈 불가 — 안전 확보가 아니다. 도로를 따라 제동하고 운영자 개입을 요청한다 (자동 재출발 없음)
                     await self._enter_danger(here_c, ev, err)

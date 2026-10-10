@@ -289,3 +289,36 @@ def test_return_feasibility_does_not_use_overlapping_turn_arcs():
         r = NET.roads[s[0]]
         assert any((t.to, s) in rs["labels"] and G.tan[(pin, s)] + t.tangent_m <= r.length + 1e-6
                    for t in G.turns.get(s, ())), (pin, s)
+
+
+def test_evasion_route_never_crosses_fire_cell_on_straight_segment():
+    """이탈 경로가 화재 칸을 가로지르면 안 된다 — 꼭짓점 사이 긴 직선 선분도 본다 (2026-10-10 Gazebo G5: 꼭짓점만 봐서 놓침)."""
+    from ugv.fire import densify
+    rnd = random.Random(21)
+    from ugv.tests.test_stage3_drive import fire_block
+    hit = 0
+    for _ in range(25):
+        rid = rnd.choice([r for r, x in NET.roads.items() if x.length > 400 and x.attrs["oneway"] == "BOTH"])
+        r = NET.roads[rid]
+        here = DirPos(NET.at(rid, 60.0), r.b)
+        ahead = NET.at(rid, 180.0)
+        # 진행 방향 앞 도로 옆에 칸 (칸 사각형이 도로를 덮을 수 있다)
+        cells = []
+        for off in (50.0, -50.0):
+            q = NET.at(rid, 185.0)
+            tx, ty = ahead.x - q.x, ahead.y - q.y
+            n = math.hypot(tx, ty) or 1.0
+            cells += fire_block(*FRAME.to_ll(ahead.x - ty / n * off, ahead.y + tx / n * off), n=0)
+        if not cells:
+            continue
+        fire = FireArea(cells, source="T")
+        if fire.distance(here.pos.x, here.pos.y) >= 100:
+            continue
+        ev = plan_evasion(NET, fire, here, access=ACC[0])
+        if ev.status == "OK":
+            pts = densify(ev.route.pts)
+            inside = [fire.distance(x, y, max_m=1.0) < 0.5 for x, y in pts]
+            k = next((i for i, v in enumerate(inside) if not v), len(inside))
+            assert not any(inside[k:]), "이탈 경로가 화재 칸을 지난다"
+            hit += 1
+    assert hit >= 3

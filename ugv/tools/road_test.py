@@ -349,7 +349,7 @@ def main():
     ap.add_argument("--target-node", default=None, help="목표를 도로 지점 id(RP:road:s)로")
     ap.add_argument("--return-home", action="store_true", help="도착 뒤 소속 거점 출입 지점으로 복귀 임무")
     ap.add_argument("--fire-url", default=None, help="화재 시험 입력 서버 (ugv/tools/fire_fixture_server.py)")
-    ap.add_argument("--fire", choices=("near", "surround"), help="near: 차량 옆 칸(이탈 성공), surround: 사방(이탈 불가)")
+    ap.add_argument("--fire", choices=("near", "behind", "surround", "clear"), help="near: 차량 옆 칸(이탈 성공), surround: 사방(이탈 불가)")
     ap.add_argument("--fire-at", type=float, default=20.0, help="첫 출발 뒤 몇 초(벽시계)에 화재 입력")
     ap.add_argument("--stay-s", type=float, default=0.0, help="목표 없이 이 시간 동안 관찰 (정차 상태 화재 시험)")
     a = ap.parse_args()
@@ -399,9 +399,10 @@ def main():
 
     def put_fire(kind):
         st = c.get(f"/ugv/{a.rid}/state").json()
-        from ugv.tools.fire_cells import near_cells, surround_cells
+        from ugv.tools.fire_cells import behind_cells, near_cells, surround_cells
         lat, lon = st["position"]["lat"], st["position"]["lon"]
-        cells = near_cells(lat, lon) if kind == "near" else surround_cells(lat, lon)
+        cells = {"near": lambda: near_cells(lat, lon), "behind": lambda: behind_cells(lat, lon, st["heading_deg"]),
+                 "surround": lambda: surround_cells(lat, lon), "clear": lambda: []}[kind]()
         res = fc.post("/set", json={"label": f"{a.tag}:{kind}", "cells": cells}).json()
         log["fire"] = {"kind": kind, "set_wall": time.time(), "sim_t": last_sim_t(out_csv), "cells": len(cells),
                        "saved": res.get("saved"), "vehicle_at": st["position"], "speed_mps": st.get("speed_mps")}

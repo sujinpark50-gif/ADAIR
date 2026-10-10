@@ -21,7 +21,7 @@ from typing import Optional
 
 from . import config
 from .drive_graph import DirPos
-from .fire import FireArea
+from .fire import FireArea, densify
 from .geo import FRAME
 from .roads import RoadNetwork, RoadPos, Route
 
@@ -232,7 +232,7 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
     for p in cands:
         if p.road_id in banned_roads or (p.road_id in avoid and fixed_dest is None):
             continue
-        c = safety.clearance(p.x, p.y)
+        c = safety.clearance(p.x, p.y, max_m=standoff + 1.0)   # 거르기는 안전거리 안팎만 본다 (5 km 탐색은 칸이 많으면 느림)
         if c < standoff:
             continue
         checked += 1
@@ -271,6 +271,7 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
     t_ref = min(o[3] for o in near_set)
     limit = t_ref + max(config.APPROACH_ETA_SLACK_S, config.APPROACH_ETA_SLACK_RATIO * t_ref)
     dest, d, c, t, arr = min((o for o in ok if o[3] <= limit), key=lambda o: (round(o[1] / 25.0), o[3]))
+    c = safety.clearance(dest.x, dest.y)                     # 고른 지점만 정확한 이격 (보고용)
     sel = {"_ref_eta_s": t_ref, "_limit_eta_s": limit, "_chosen_eta_s": t}
     route = g.build_route(tree, dest, arr)
     # 출발 도로에서 벗어나기 전 구간은 검사에서 뺀다 (이미 있는 곳). 그 뒤 구간의 최소 이격을 기록한다
@@ -289,6 +290,7 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
 
 
 EVADE_CHECK_MAX = 40            # 이탈 후보를 최종 검사할 최대 수 (빠른 순서로)
+EVADE_BUILD_MAX = 400           # 이탈 후보 경로를 만들어 볼 최대 수 (전체 탐색 합계) — 계획 시간 상한 (그동안 차는 움직인다)
 
 
 def plan_evasion(net: RoadNetwork, fire: FireArea, here: DirPos, *, v0: float = 0.0, access: Optional[RoadPos] = None,
@@ -304,7 +306,8 @@ def plan_evasion(net: RoadNetwork, fire: FireArea, here: DirPos, *, v0: float = 
     burning_free = SafetyIndex(net, fire, standoff=0.5)        # 칸 안(경계 0.5 m 이내)만 막는다
     safe_idx = SafetyIndex(net, fire, standoff)
     banned_turns, banned_roads, tried = set(), set(), []
-    stats = {"candidates_in_range": 0, "rejected_reenter_fire": 0, "rejected_route_check": 0, "searches": 0}
+    stats = {"candidates_in_range": 0, "rejected_reenter_fire": 0, "rejected_route_check": 0, "searches": 0,
+             "routes_built": 0, "build_cap_hit": False}
     here_c = fire.distance(here.pos.x, here.pos.y)
     for _ in range(ROUTE_CHECK_TRIES):
         stats["searches"] += 1
@@ -318,7 +321,7 @@ def plan_evasion(net: RoadNetwork, fire: FireArea, here: DirPos, *, v0: float = 
         for p in net.samples():
             if p.road_id in banned_roads or math.hypot(p.x - here.pos.x, p.y - here.pos.y) > search_m:
                 continue
-            c = fire.distance(p.x, p.y)
+            c = fire.distance(p.x, p.y, max_m=standoff + 1.0)    # 안전거리 안팎만 (정확한 값은 고른 지점만)
             if c < standoff:
                 continue
             for a in g.arrivals(tree, p):
@@ -332,10 +335,14 @@ def plan_evasion(net: RoadNetwork, fire: FireArea, here: DirPos, *, v0: float = 
         for key, p, a, c, ret in cands:
             if checked >= EVADE_CHECK_MAX:
                 break
+            if stats["routes_built"] >= EVADE_BUILD_MAX:
+                stats["build_cap_hit"] = True
+                break
+            stats["routes_built"] += 1
             r = g.build_route(tree, p, a)
             sig = (tuple(r.road_ids), a.toward)
             # 이미 불 칸 안이면 빠져나가는 첫 구간은 허용한다. 한 번 나온 뒤 다시 불 칸에 들어가는 경로는 버린다
-            inside = [fire.distance(x, y, max_m=1.0) < 0.5 for x, y in r.pts]
+            inside = [fire.distance(x, y, max_m=1.0) < 0.5 for x, y in densify(r.pts)]   # 선분 위도 (꼭짓점만 X)
             k = next((i for i, v in enumerate(inside) if not v), len(inside))
             if any(inside[k:]):
                 stats["rejected_reenter_fire"] += 1
@@ -345,6 +352,7 @@ def plan_evasion(net: RoadNetwork, fire: FireArea, here: DirPos, *, v0: float = 
             checked += 1
             v = verify_route(net, r, g)
             if v["ok"]:
+                c = fire.distance(p.x, p.y)
                 return ApproachPlan("OK", None, "EVADE", p, r, None, None, None, c, fire.clearance_along(r.pts), checked,
                                     detail={"here_clearance_m": _r(here_c),
                                             "direction": _direction_report(here, v0, r, ret, access),
@@ -354,11 +362,13 @@ def plan_evasion(net: RoadNetwork, fire: FireArea, here: DirPos, *, v0: float = 
             seen_routes[sig] = min(seen_routes.get(sig, math.inf), v["issue"]["s_m"])
             if first_fail is None:
                 first_fail = (r, v["issue"])
-        if first_fail is None or not _ban(g, first_fail[0], first_fail[1], here, banned_turns, banned_roads, tried):
+        if stats["build_cap_hit"] or first_fail is None or                 not _ban(g, first_fail[0], first_fail[1], here, banned_turns, banned_roads, tried):
             break
     reason = "NO_SAFE_EVASION_ROUTE"
     if stats["rejected_route_check"]:
         reason += " (후보 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함)"
+    elif stats["build_cap_hit"]:
+        reason += f" (후보 {EVADE_BUILD_MAX} 개를 만들어 봤으나 모두 화재 칸을 지남 — 계획 시간 상한)"
     elif not stats["candidates_in_range"]:
         reason += " (진행 방향을 지키며 불 칸을 지나지 않고 갈 수 있는 안전 지점 없음)"
     return ApproachPlan("NO_SAFE_APPROACH", reason,

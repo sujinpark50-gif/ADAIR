@@ -19,6 +19,8 @@ STATIONS_JSON = Path(os.getenv("UGV_STATIONS_JSON", ROOT / "environment" / "conf
 # 트윈 환경 설정 scenario_whatif_2019_legacy.yaml 의 도로 격자(data/processed/roads_raster.tif)를 만든 벡터 원본.
 # 링크 901개를 모두 도로망에 넣는다 (환경과 같은 도로 수). 자동차전용 도로는 넣되 UGV 는 다니지 않는다
 ROAD_GPKG = Path(os.getenv("UGV_ROAD_GPKG", ROOT / "environment" / "data" / "processed" / "roads_clipped.gpkg"))
+# 도로 부분집합 (B 월드 제한 구역 등): JSON {"roads": [...]} 의 링크만 쓴다. 비우면 전체
+ROAD_SUBSET = os.getenv("UGV_ROAD_SUBSET", "")
 UGV_ON_MOTORWAY = os.getenv("UGV_ON_MOTORWAY", "0") == "1"   # 자동차전용 도로(AUTO_EXCLU=1) 통행 (기본 안 함)
 # 제한속도가 원자료에 없을 때 도로 등급(ROAD_RANK)별 값 (km/h). 실제 경로 속도는 MIN_ROAD_SPEED_KMH~MAX_SPEED 로 묶인다
 ROAD_RANK_SPEED_KMH = {101: 100, 102: 80, 103: 80, 104: 60, 105: 60, 106: 60, 107: 50, 108: 30}
@@ -66,6 +68,7 @@ DECEL_MPS2 = 1.5                            # 감속 계획 (PX4 도착 감속 �
 CURVE_WINDOW_M = 15.0                       # 곡률을 볼 앞뒤 거리
 ITEM_SPACING_M = 40.0                       # PX4 미션 지점 간격 상한
 ITEM_TURN_DEG = 8.0                         # 이보다 꺾이는 곳은 반드시 미션 지점으로
+ITEM_FIRST_MIN_M = 6.0                      # 출발점에서 이 거리 안에는 미션 지점을 두지 않는다 (마지막 지점 제외)
 ITEM_CHORD_TOL_M = 0.15                     # 미션 지점을 이은 직선이 계획 선형에서 이보다 벗어나지 않게 지점을 넣는다
 STOP_MARGIN_M = 5.0                         # 정지점 = 제동거리 + 여유
 

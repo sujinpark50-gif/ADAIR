@@ -24,3 +24,14 @@ def test_no_lead_point_when_first_item_is_close():
 def test_single_stop_point():
     out = mavsdk_plan([(0.0, 75.0, 16.0)], (0.0, 0.0), 16.0)
     assert out[-1] == (0.0, 75.0, 16.0, False) and out[0][2] == 16.0 and out[0][1] < 75.0
+
+
+def test_first_mission_item_is_not_glued_to_start():
+    """첫 미션 지점이 출발점에 붙어 출발 램프 속도(1 m/s)를 싣지 않는다 (2026-10-10 Gazebo G5b 기어감)."""
+    import math
+    from ugv import config
+    from ugv.roads import Route, plan_speeds
+    pts = [(0.0, 0.0), (0.3, 0.0), (40.0, 8.0), (120.0, 8.0)]
+    sp = plan_speeds(Route(pts, [16.7] * 4, [], None, None, 0.0), 0.0)
+    assert math.hypot(*sp.items[0][:2]) >= config.ITEM_FIRST_MIN_M - 1e-6
+    assert sp.items[0][2] > 1.5

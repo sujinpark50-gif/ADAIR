@@ -22,7 +22,7 @@ from typing import Dict, List, Tuple
 from . import config
 
 COLUMNS = ("LINK_ID", "UP_FROM_NO", "UP_TO_NODE", "ONEWAY", "LANES", "UP_LANES", "DOWN_LANES", "BARRIER", "WIDTH",
-           "ROAD_RANK", "ROAD_NAME", "MAX_SPD", "AUTO_EXCLU", "geom")
+           "ROAD_RANK", "ROAD_NAME", "MAX_SPD", "AUTO_EXCLU", "FACIL_KIND", "geom")
 END_MATCH_M = 1.0        # 같은 노드 번호의 끝점끼리 이 거리 안이면 같은 점
 CLIP_EDGE_M = 1.0        # 범위 경계에서 이 거리 안이면 잘린 끝
 
@@ -133,7 +133,10 @@ def load(path=None) -> dict:
                                 "lanes": _int(rec["LANES"]), "up_lanes": _int(rec["UP_LANES"]),
                                 "down_lanes": _int(rec["DOWN_LANES"]), "road_rank": rank,
                                 "barrier_code": rec["BARRIER"], "width_code": rec["WIDTH"],
-                                "motorway": str(rec["AUTO_EXCLU"]) == "1"}})
+                                "motorway": str(rec["AUTO_EXCLU"]) == "1",
+                                # 시설 종류 코드 (0 일반, 1·2 시설 — 이름 칸 ROAD_FAC_N 이 변환 중 '?' 로 깨져 교량·터널 구분을
+                                # 이름으로 확인하지 못함. 1 = 교량, 2 = 터널로 보이나 미확인 → B 월드에서는 둘 다 제외 구역)
+                                "facil_kind": str(rec["FACIL_KIND"]) if rec["FACIL_KIND"] is not None else None}})
 
     # 좌표 변환 한 번에
     flat = [p for r in roads for p in r["xy5186"]] + list(node_xy.values())

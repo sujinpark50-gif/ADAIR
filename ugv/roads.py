@@ -81,7 +81,16 @@ class RoadNetwork:
         self.nodes: Dict[str, Tuple[float, float]] = {n: FRAME.to_xy(*ll) for n, ll in doc["nodes"].items()}
         self.roads: Dict[str, Road] = {}
         self.adj: Dict[str, List[Tuple[str, str]]] = {}
+        subset = None
+        if config.ROAD_SUBSET:
+            import json
+            from pathlib import Path
+            subset = set(json.loads(Path(config.ROAD_SUBSET).read_text(encoding="utf-8"))["roads"])
+            self.source = {**(self.source if isinstance(self.source, dict) else {"path": self.source}),
+                           "subset": config.ROAD_SUBSET, "subset_roads": len(subset)}
         for r in doc["roads"]:
+            if subset is not None and r["road_id"] not in subset:
+                continue
             xy = [FRAME.to_xy(la, lo) for la, lo in r["geometry"]]
             cum = [0.0]
             for p, q in zip(xy, xy[1:]):
@@ -282,9 +291,15 @@ def plan_speeds(route: Route, v0: float = 0.0, *, profile=None, lat_accel=None, 
         hd = bearing_deg(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) if math.dist(pts[i], pts[i - 1]) > 0 else last_hd
         turn = 0.0 if last_hd is None or hd is None else abs((hd - last_hd + 180) % 360 - 180)
         bulge = i + 1 < len(pts) and chord_dev(last, i + 1) > config.ITEM_CHORD_TOL_M
-        if i == len(pts) - 1 or cum[i] - cum[last] >= spacing or turn >= turn_deg or bulge:
+        # 출발 직후 ITEM_FIRST_MIN_M 안에는 지점을 두지 않는다 (아주 가까운 첫 지점이 출발 램프의 1 m/s 를 싣고 PX4 가 그
+        # 속도로 다음 지점까지 25 m 를 기어갔다 — 2026-10-10 Gazebo G5b). 그 사이 현 오차는 6 m 안이라 작다
+        early = cum[i] < config.ITEM_FIRST_MIN_M and i != len(pts) - 1
+        if not early and (i == len(pts) - 1 or cum[i] - cum[last] >= spacing or turn >= turn_deg or bulge):
             max_dev = max(max_dev, chord_dev(last, i))
-            seg_v = min(v[last + 1:i + 1]) if i > last else v[i]
+            # 구간 속도 = 그 구간 계획 속도의 최소. 단 출발 램프(첫 ITEM_FIRST_MIN_M)는 빼고 본다 — 램프 최솟값을 실으면
+            # PX4 가 구간 전체를 그 속도로 달린다
+            seg = [v[k] for k in range(last + 1, i + 1) if cum[k] >= config.ITEM_FIRST_MIN_M] or v[last + 1:i + 1]
+            seg_v = min(seg) if i > last else v[i]
             if i == len(pts) - 1:
                 seg_v = min(v[last + 1:i]) if i - 1 > last else 1.0
             items.append((pts[i][0], pts[i][1], max(math.floor(seg_v * 100) / 100, 1.0)))

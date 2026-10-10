@@ -42,3 +42,18 @@ def surround_cells(lat, lon, radius_m=3500.0, cell_m=30.0):
                 la, lo = FRAME.to_ll(x, y)
                 out.append({"cell_id": f"S{i}_{j}", "lat": la, "lon": lo, "fire_state": "BURNING", "cell_size_m": cell_m})
     return out
+
+
+def behind_cells(lat, lon, heading_deg, rings=(60, 75, 90)):
+    """차량 진행 방향 뒤쪽(±60°) 도로 밖 90 m 칸 하나 — 앞으로 이탈할 길이 있는 경우."""
+    net = _net()
+    x0, y0 = FRAME.to_xy(lat, lon)
+    back = math.radians((heading_deg + 180.0) % 360.0)
+    for r in rings:
+        for da in (0, 20, -20, 40, -40, 60, -60):
+            b = back + math.radians(da)
+            x, y = x0 + r * math.sin(b), y0 + r * math.cos(b)
+            if net.snap(x, y, max_m=45.0) is None:
+                la, lo = FRAME.to_ll(x, y)
+                return [{"cell_id": f"B{r}_{da}", "lat": la, "lon": lo, "fire_state": "BURNING", "cell_size_m": 90}]
+    return []
