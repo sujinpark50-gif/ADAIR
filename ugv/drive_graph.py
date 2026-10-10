@@ -670,7 +670,22 @@ class DriveGraph:
         if margin >= reach:                              # 차체가 어느 방향으로 돌아도 그 띠 안 → 상한값 (≤ 0)
             return reach - margin
         ch, sh = math.cos(yaw), math.sin(yaw)
-        return max(self.outside_m(x + fx * ch - fy * sh, y + fx * sh + fy * ch) for fx, fy in self.p.body_samples)
+        # 둘레 표본 전부를 한 번에: 근처 도로 선분을 한 번 모아 numpy 로 (표본마다 격자를 다시 훑지 않는다 — 소방차처럼
+        # 표본이 많으면 최종 검사가 수십 초 걸렸다). 결과는 outside_m 을 표본마다 부른 것과 같다
+        rids, A, B = self.net.segments_near(x, y, 15.0 + reach)
+        if not rids:
+            return max(self.outside_m(x + fx * ch - fy * sh, y + fx * sh + fy * ch) for fx, fy in self.p.body_samples)
+        import numpy as np
+        S = np.asarray(self.p.body_samples)
+        P = np.stack([x + S[:, 0] * ch - S[:, 1] * sh, y + S[:, 0] * sh + S[:, 1] * ch], axis=1)
+        A_, B_ = np.asarray(A), np.asarray(B)
+        HW = np.asarray([self.half_w[r] for r in rids])
+        D = B_ - A_
+        L2 = np.maximum((D ** 2).sum(1), 1e-12)
+        T = np.clip(((P[:, None, :] - A_[None]) * D[None]).sum(2) / L2[None], 0.0, 1.0)
+        Q = A_[None] + T[..., None] * D[None]
+        dist = np.hypot(P[:, None, 0] - Q[..., 0], P[:, None, 1] - Q[..., 1])
+        return float((dist - HW[None]).min(axis=1).max())
 
     def check_route(self, route, *, check_radius: bool = True, label: str = "ROUTE") -> dict:
         """최종 주행 선형(다듬은 경로, 또는 PX4 미션 지점을 이은 선)을 차가 따라갈 때(뒤축이 선 위) 주행 가능한지.

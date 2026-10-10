@@ -185,6 +185,23 @@ class RoadNetwork:
                         out[rid] = d
         return out
 
+    def segments_near(self, x: float, y: float, max_m: float):
+        """(x, y) 에서 max_m 안 격자 칸의 도로 선분들 — (road_id 목록, 시작점 배열, 끝점 배열). 차체 둘레 일괄 검사용."""
+        k = int(max_m // self._CELL) + 1
+        ci, cj = int(x // self._CELL), int(y // self._CELL)
+        seen, rids, A, B = set(), [], [], []
+        for i in range(ci - k, ci + k + 1):
+            for j in range(cj - k, cj + k + 1):
+                for rid, si in self._seg_index.get((i, j), ()):
+                    if (rid, si) in seen:
+                        continue
+                    seen.add((rid, si))
+                    road = self.roads[rid]
+                    rids.append(rid)
+                    A.append(road.xy[si])
+                    B.append(road.xy[si + 1])
+        return rids, A, B
+
     def on_road(self, rid: str, x: float, y: float) -> RoadPos:
         """(x, y) 를 도로 rid 위로 내린 지점."""
         road = self.roads[rid]
