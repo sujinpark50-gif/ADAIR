@@ -51,6 +51,20 @@ X0, Y0 = -620.0, -10631.0    # 타일 원점 (DEM 범위의 지역 평면 최소
 NX, NY = 28, 22              # 28 km × 22 km (DEM 회전 범위를 덮음)
 
 
+def build_params():
+    """생성 설정 (tiles.json params) — 같은 결과를 다시 만들 수 있게 (예전 tiles_level 은 모드·σ 기록이 없어 재현 불가)."""
+    import subprocess
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip()
+        dirty = bool(subprocess.run(["git", "status", "--porcelain", "ugv"], cwd=ROOT, capture_output=True, text=True,
+                                    timeout=10).stdout.strip())
+    except Exception:  # noqa: BLE001
+        head, dirty = None, None
+    from ugv import config
+    return {"junction_mode": JUNCTION_MODE, "junc_level_sigma_m": JUNC_LEVEL_SIGMA_M, "road_surface_sigma_m": SIGMA_M,
+            "blend_m": BLEND_M, "git_head": head, "git_dirty_ugv": dirty, "extra_roads": config.EXTRA_ROADS or None}
+
+
 def tile_name(i, j):
     return f"T{i:02d}_{j:02d}"
 
@@ -351,6 +365,9 @@ def write_tile(name, zmin, span, img, i, j):
 
 def build_all(only=None):
     net = RoadNetwork()
+    test_roads = sorted(rid for rid, r in net.roads.items() if r.attrs.get("test_only"))
+    if test_roads and os.getenv("ADAIR_ALLOW_TEST_ROADS") != "1":
+        raise SystemExit(f"시험 전용 도로가 섞인 트윈 타일 생성 거부 ({len(test_roads)}개) — 시험 월드면 ADAIR_ALLOW_TEST_ROADS=1")
     t0 = time.time()
     F = Fields()
     inc, exc = road_sets(net, F)
@@ -359,6 +376,8 @@ def build_all(only=None):
     OUT.mkdir(parents=True, exist_ok=True)
     meta_p = OUT / "tiles.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {"tiles": {}}
+    meta["params"] = build_params()
+    meta["test_only_roads"] = test_roads
     meta.update({"tile_m": TILE_M, "grid": N, "cell_m": round(TILE_M / (N - 1), 4), "q_m": Q, "origin_xy": [X0, Y0],
                  "nx": NX, "ny": NY, "blend_m": BLEND_M, "road_surface_sigma_m": SIGMA_M,
                  "world_origin_alt_m": WORLD_ORIGIN_ALT, "roads_included": len(inc), "roads_excluded": exc,
@@ -522,11 +541,20 @@ def static_checks():
         g_cross_j = g_cross_all[dj <= JUNC_OUT_M] if (dj <= JUNC_OUT_M).any() else np.zeros(1)
         # 표면 급변: 2 m 간격 높이 2차 차분 (턱)
         jump = np.abs(np.diff(zc, 2)) if len(zc) > 2 else np.zeros(1)
-        per_road[rid] = {"len_m": round(L, 1), "max_long_grade": round(float(g_long.max()), 4) if g_long.size else 0.0,
+        # 정보 필드 (판정 기준 불변): 300 m 창 지속 경사 — 도로가 300 m 미만이면 양 끝 평균 경사
+        k3 = 150
+        g300 = (float(np.abs(zc[k3:] - zc[:-k3]).max() / 300.0) if len(zc) > k3
+                else float(abs(zc[-1] - zc[0]) / max(L, 1e-6)))
+        g10 = round(float(g_long.max()), 4) if g_long.size else 0.0
+        per_road[rid] = {"len_m": round(L, 1), "max_long_grade": g10,
                          "max_cross_slope": round(float(g_cross.max()), 4),
                          "max_cross_slope_junction_zone": round(float(g_cross_j.max()), 4),
                          "max_second_diff_m": round(float(jump.max()), 3),
-                         "z_range_m": round(float(zc.max() - zc.min()), 1)}
+                         "z_range_m": round(float(zc.max() - zc.min()), 1),
+                         "max_long_grade_300m": round(g300, 4),
+                         "grade_fail_kind": (None if g10 <= 0.10 else ("SUSTAINED" if g300 > 0.10 else "LOCAL"))}
+        if rid in meta.get("roads_assumed", {}):
+            per_road[rid]["assumed"] = meta["roads_assumed"][rid].get("kind")
     vals = [v for v in per_road.values() if "error" not in v]
     out["roads_checked"] = len(vals)
     out["roads_missing_tile"] = [r for r, v in per_road.items() if "error" in v]
@@ -557,6 +585,9 @@ def static_checks():
     out["junction_2m_dz"] = {"nodes": len(spread), "max_m": round(spread[0][0], 3) if spread else None,
                              "p95_m": round(float(np.percentile([s for s, _ in spread], 95)), 3) if spread else None,
                              "worst": [[round(s, 3), n] for s, n in spread[:10]]}
+    out["grade_over_10"] = {"sustained_300m": sum(1 for v in vals if v.get("grade_fail_kind") == "SUSTAINED"),
+                            "local_only": sum(1 for v in vals if v.get("grade_fail_kind") == "LOCAL")}
+    out["params"] = meta.get("params")
     out["per_road"] = per_road
     (OUT / "static_checks.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     return out
