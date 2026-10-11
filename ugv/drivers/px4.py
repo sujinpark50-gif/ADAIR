@@ -126,6 +126,7 @@ PASS_MAX_OFF_M = 15.0       # 미션 선에서 이보다 멀면 판단하지 않
 PASS_EVERY_S = 0.2
 PASS_HOLDOFF_S = 1.0        # 건너뛰기 명령 뒤 다음 판단까지
 PASS_TIE_M = 0.1            # 가장 가까운 구간이 여럿이면 이 차 안에서 경로 순서상 앞 (옆으로 밀린 차에는 1 m 면 앞 구간 끝점이 뽑힌다)
+PASS_HEAD_MAX_DEG = 60.0    # 건너뛸 항목이 차 진행 방향 이 각도 안(앞)일 때만 — 아니면 보류(차량이 정체로 판단해 정지)
 PASS_SKIP = os.getenv("UGV_PX4_PASS_SKIP", "0") == "1"   # 지나침 감시 (1 = 켜기. 시험 검증 전 기본 끔)
 
 
@@ -169,6 +170,14 @@ def passed_item(sent, here, cur: int, pos, v_mps: float = 0.0):
     return None                                     # 창 안에 없으면 다음 판단으로 (멀리 건너뛰지 않는다)
 
 
+def pass_allowed(target_xy, pos, heading_deg: float, body_inside: bool):
+    """지나친 항목을 건너뛰어도 되는가 → (가부, 진행 방향과 목표 방위 차 °). 목표가 차 앞(±PASS_HEAD_MAX_DEG)이고 차체가 도로 띠 안일 때만.
+    아니면 건너뛰지 않는다 (무조건 넘기지 않음 — 차량이 정체로 보고 정지한다)."""
+    brg = math.degrees(math.atan2(target_xy[0] - pos[0], target_xy[1] - pos[1])) % 360.0
+    dh = abs((brg - heading_deg + 180.0) % 360.0 - 180.0)
+    return (dh <= PASS_HEAD_MAX_DEG and body_inside), dh
+
+
 def _mission_item(lat, lon, speed, through):
     from mavsdk.plugins.mission.mission import MissionItem
     return MissionItem(latitude_deg=lat, longitude_deg=lon, relative_altitude_m=0.0, speed_m_s=speed,
@@ -203,7 +212,9 @@ class Px4Driver(Driver):
         self.last_error: Optional[str] = None
         self.parked_seq = None                  # 정차 유지(시동 끔)한 미션 번호
         self._sent = None                       # (미션 번호, 보낸 항목, 계획 시점 위치) — 지나침 감시용
-        self.pass_skips: List[dict] = []        # 지나침 감시가 건너뛴 기록 (시험 분석용)
+        self.pass_skips: List[dict] = []        # 지나침 감시가 건너뛴·보류한 기록 (시험 분석용)
+        self.pass_guard = None                  # 차량이 넘겨주는 판정: guard(tel) → 차체가 도로 띠 안이면 True
+        self.pass_blocked_since: Optional[float] = None   # 지나쳤는데 건너뛸 조건이 안 되는 상태가 시작된 시각 (monotonic)
 
     async def start(self):
         from mavsdk.asyncio import ComponentType, Configuration, Mavsdk
@@ -289,7 +300,19 @@ class Px4Driver(Driver):
                     continue
                 k = passed_item(sent[1], sent[2], prog.current, (tel.x, tel.y), tel.speed_mps)
                 if k is None:
+                    self.pass_blocked_since = None
                     continue
+                # 안전 조건: 건너뛸 항목이 차 앞(진행 방향 ±PASS_HEAD_MAX_DEG), 차체가 도로 띠 안. 아니면 보류 — 무조건 넘기지 않는다
+                inside = True if self.pass_guard is None else bool(self.pass_guard(tel))
+                ok, dh = pass_allowed(sent[1][k][:2], (tel.x, tel.y), tel.heading_deg, inside)
+                if not ok:
+                    if self.pass_blocked_since is None:
+                        self.pass_blocked_since = time.monotonic()
+                        self.pass_skips.append({"wall": round(time.time(), 2), "mission_seq": sent[0], "from": prog.current,
+                                                "to": k, "blocked": True, "heading_diff_deg": round(dh, 1), "body_inside": inside,
+                                                "xy": [round(tel.x, 1), round(tel.y, 1)]})
+                    continue
+                self.pass_blocked_since = None
                 async with self._cmd:
                     if self._prog.mission_seq != sent[0] or self._prog.current != prog.current:
                         continue
@@ -398,6 +421,7 @@ class Px4Driver(Driver):
             self._seen_running = False
             self._prog = Progress(0, len(plan), False, seq)
             self._sent = (seq, sent, here)
+            self.pass_blocked_since = None
             try:
                 await self._mis.upload_mission(MissionPlan(plan))
                 await self._ensure_armed()

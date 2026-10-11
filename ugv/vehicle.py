@@ -130,6 +130,15 @@ COAST_DECEL_MPS2 = 0.5      # 시동 꺼진 뒤 관성 감속 가정 (Gazebo c23
 COAST_PAD_S = 2.0
 COAST_MIN_MPS = 0.5         # 시동 꺼지기 직전 속도가 이보다 낮으면 보류하지 않는다
 STOP_ROAD_SNAP_MAX_M = 5.0  # 정지 경로를 '진행 방향 도로' 로 만들 수 있는 도로까지 최대 거리 (밖이면 진행 방향 직선 제동)
+# 도로를 따라가는 정지 경로를 쓸 수 없을 때(계획선에서 멀고, 도로 방향도 진행 방향과 맞지 않음 — 이미 도로 밖)의 정지:
+#   straight  = 드라이버 기본 (진행 방향 직선, 일반 감속 + 여유 5 m — 3.94 m/s 에서 10.2 m)
+#   emergency = 진행 방향 직선, 비상 감속(차종 emergency_decel) 제동거리 + 1 m, 최소 EMERG_STOP_MIN_M, 지점 속도 1 m/s
+# 2026-10-12 c42 j494846 v2: 직선 정지 10 m 동안 도로 밖 3.67 → 5.5 m, 기록 끝까지 정지 미확인. 시동 끄기(구동 차단)는 관성 주행이라
+# 대안이 아니다 (2026-10-11 c23: 13.5 m/s 에서 약 75 m). 도로로 급히 되돌아가는 경로는 만들지 않는다
+OFFROAD_STOP_MODE = os.getenv("UGV_OFFROAD_STOP", "straight")
+FAULT_STOP_PLAN_M = 3.0     # 고장 정지에서 남은 계획 경로를 따라 정지할 계획선 거리 상한
+EMERG_STOP_MIN_M = 4.0      # PX4 도착 반경(3 m)보다 멀게 — 가까우면 바로 도착 처리돼 미션 끝 대기(선회)로 간다
+PASS_STALL_S = 2.0          # 미션 항목을 지나쳤는데 건너뛸 안전 조건이 안 되는 상태(드라이버 pass_blocked_since)가 이만큼 → 정체 고장·정지
 OFFROAD_STOP_M = 2.0        # 주행 중 실제 차체가 도로 띠 밖으로 이만큼 넘게 나가면 (OFFROAD_CONFIRM_S 지속) 고장·정지
 OFFROAD_CONFIRM_S = 2.0      # 정지 감독: 0.2 m/s 미만(최신 텔레메트리)이 이만큼 이어지면 정차 확인
 # 정지·양보 명령이 이 시간 안에 끝나지 않으면 '전달 여부 불명' 실패로 본다 (실측 명령 교체 지연 최대 CMD_LATENCY_MAX_S 6 s + 여유)
@@ -253,6 +262,9 @@ class Vehicle:
         start = self.access if init == "STATION" else net.snap_ll(init["lat"], init["lon"])
         heading = self.access_heading if init == "STATION" else float(init.get("heading_deg", 0.0))
         self.driver = build_driver(cfg, (start.x, start.y), clock, heading, self.profile)
+        if hasattr(self.driver, "pass_guard"):
+            # 지나침 감시가 항목을 건너뛰는 조건: 실제 차체가 추정 도로 띠 안 (밖이면 보류 → 정체 고장·정지)
+            self.driver.pass_guard = lambda tel: self._body_outside(tel) <= 0.0
         self.lock = asyncio.Lock()
         self.state = "IDLE"
         self.fault: Optional[str] = None
@@ -784,9 +796,14 @@ class Vehicle:
                 need = self.profile.stop_distance(v)
                 g = self.graph
                 prefer = None
-                if self.speed is not None and self._plan_heading(tel) is not None:
-                    _, i = _progress_index(tel.x, tel.y, self.speed.pts, self.speed.cum, self._near_i)
-                    prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
+                if self.speed is not None:
+                    # 남은 계획 경로를 따라 정지 — 계획선 가까이(OFF_ROUTE_M/3 안)일 때. 상태로 거르지 않는다: 고장 정지는 _fail 이 먼저
+                    # 상태를 FAULT 로 바꿔 _plan_heading(주행 상태만)이 늘 None 이었다 → 계획선 위에서도 직선 정지로 떨어졌다 (2026-10-12)
+                    d_pl, i = _progress_index(tel.x, tel.y, self.speed.pts, self.speed.cum, self._near_i)
+                    # 고장(이탈·정체) 정지는 계획선 FAULT_STOP_PLAN_M 안에서만 — 멀리서 계획선으로 급히 되돌아가는 정지 경로를 만들지 않는다
+                    lim = FAULT_STOP_PLAN_M if self.state == "FAULT" else config.OFF_ROUTE_M / 3
+                    if d_pl <= lim and i + 1 < len(self.speed.pts):
+                        prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
                 pos = self.net.snap(tel.x, tel.y)
                 dp = g.dirpos(pos, tel.heading_deg) if prefer is None else None
                 if prefer is None and dp is not None and not self._road_stop_fits(pos, tel):
@@ -806,6 +823,19 @@ class Vehicle:
                                 "needed_m": round(need, 1), "short": got < need - 0.5, "speed_mps": round(v, 2),
                                 "drivable": chk["ok"], "steering_violations": chk["steering_violations"],
                                 "body_violations": chk["body_violations"], "worst_excess_m": chk["worst_excess_m"]}
+                        if not chk["ok"] and OFFROAD_STOP_MODE == "emergency":
+                            # 검사를 통과하지 못한 정지 경로는 보내지 않는다 → 아래 비상 감속 직선 (거절한 경로를 기록)
+                            items = None
+                            info = {"basis": "NO_ROAD_DIRECTION", "rejected_stop_path": info}
+            if not items and tel is not None and tel.speed_mps >= 0.3 and OFFROAD_STOP_MODE == "emergency":
+                v = tel.speed_mps
+                d = max(v * v / (2 * self.profile.emergency_decel_mps2) + 1.0, EMERG_STOP_MIN_M)
+                hd = math.radians(tel.heading_deg)
+                pts = [(tel.x, tel.y), (tel.x + d * math.sin(hd), tel.y + d * math.cos(hd))]
+                items = [(pts[1][0], pts[1][1], 1.0)]
+                info = {**info, "basis": "EMERGENCY_STRAIGHT (도로를 따르는 정지 경로 없음 — 진행 방향 직선, 비상 감속)",
+                        "length_m": round(d, 1), "needed_m": round(d, 1), "speed_mps": round(v, 2), "drivable": None,
+                        "decel_mps2": self.profile.emergency_decel_mps2}
             if items:
                 self.seq = await self._send_stop(self.driver.follow(items))
                 self.stop_path_pts = [tuple(q) for q in pts]
@@ -829,7 +859,7 @@ class Vehicle:
                 problems.append(f"정지 경로 {info['length_m']} m < 필요 {info['needed_m']} m")
             if info.get("drivable") is False:
                 problems.append("정지 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함")
-            if info.get("drivable") is None and "DRIVER_DEFAULT" in str(info.get("basis")):
+            if info.get("drivable") is None and ("DRIVER_DEFAULT" in str(info.get("basis")) or "EMERGENCY" in str(info.get("basis"))):
                 problems.append("도로 방향을 몰라 직선 정지")
             info["problems"] = problems
             self._event("STOP_PATH", **info)
@@ -1022,6 +1052,14 @@ class Vehicle:
             return
         # 도로 경계 이탈 (계획 경로 이탈과 따로): 실제 차체가 도로 띠 밖으로 OFFROAD_STOP_M 넘게 OFFROAD_CONFIRM_S 이어지면 고장·정지.
         # 계획 경로 30 m·5 s 기준은 도로 밖 수십 m 를 늦게 잡았다 (2026-10-11 Gazebo 지속 운용: 경로 이탈 확정 전 33 s·260 m, 도로 밖 43.9 m)
+        blk = getattr(self.driver, "pass_blocked_since", None)
+        if blk is not None and time.monotonic() - blk >= PASS_STALL_S:
+            async with self.lock:
+                self._fail("MISSION_STALL", f"미션 항목을 지나쳐 PX4 가 되돌아가려 함 — 건너뛸 안전 조건 없음 ({PASS_STALL_S:g} s)")
+                await self._safe_stop()
+                self.state = "FAULT"
+            self.driver.pass_blocked_since = None
+            return
         if tel.speed_mps >= 1.0:
             ex = self._body_outside(tel)
             if ex > OFFROAD_STOP_M:
