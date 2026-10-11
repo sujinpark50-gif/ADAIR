@@ -177,7 +177,13 @@ def road_dense(net, F, rid):
             pts += [(ax + (bx - ax) * k / n, ay + (by - ay) * k / n) for k in range(n)]
         pts.append(tuple(xy[-1]))
         EN = np.array([to5186_exact(x, y) for x, y in pts])
-        d = _DENSE[rid] = (np.array(pts), F.road_z(EN[:, 0], EN[:, 1]))
+        z = F.road_z(EN[:, 0], EN[:, 1])
+        flat = net.roads[rid].attrs.get("flat_at_node")
+        if flat:
+            # 시험 전용 회전 공터: 붙는 노드의 도로면 고도로 수평 (깎고 메운 평탄면)
+            fe, fn = to5186_exact(*net.nodes[flat])
+            z = np.full(len(pts), float(F.road_z(np.array([fe]), np.array([fn]))[0]))
+        d = _DENSE[rid] = (np.array(pts), z)
     return d
 
 
@@ -190,11 +196,15 @@ def junction_nodes(net, inc):
     v = _JN.get(key)
     if v is None:
         deg = {}
+        pads = set()
         for rid in inc:
             r = net.roads[rid]
             for n in (r.a, r.b):
                 deg[n] = deg.get(n, 0) + 1
-        v = _JN[key] = [n for n, d in deg.items() if d >= 3]
+            if r.attrs.get("flat_at_node"):
+                pads.add(r.attrs["flat_at_node"])
+        # 시험 전용 회전 공터가 붙는 노드는 지형 면 혼합에서 뺀다 (산비탈 지형 면이 섞여 공터가 32 % 로 기울었다) — 중심선 고도 혼합
+        v = _JN[key] = [n for n, d in deg.items() if d >= 3 and n not in pads]
     return v
 
 

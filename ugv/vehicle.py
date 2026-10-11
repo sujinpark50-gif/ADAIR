@@ -89,6 +89,25 @@ def _dist_to_polyline(x, y, pts, lo=0, hi=None):
     return best, bi
 
 
+def _progress_seg(x, y, pts, lo=0, hi=None, tie_m=1.0):
+    """경로 진행 위치: (x, y) 에서 가장 가까운 거리 + tie_m 안에 드는 구간 중 경로 순서상 가장 앞 구간 (거리, 구간 번호).
+    같은 자리를 경로가 다시 지나면(회전 공터로 돌아 같은 도로로 내려옴 등) 가장 가까운 구간이 나중 구간일 수 있다 —
+    그러면 그 사이 미션 지점을 '이미 지남' 으로 빼 버린다 (2026-10-11 회전 공터 시험: 복귀 미션에서 오르막 끝·공터 지점이 모두 빠져
+    차 뒤 지점으로 출발 → 도로 이탈 10.9 m). 38aa911 first_item_ahead 와 같은 기준 (START_TIE_M 1 m)."""
+    hi = len(pts) - 1 if hi is None else hi
+    ds = []
+    for i in range(max(lo, 0), max(min(hi, len(pts) - 1), 0)):
+        (ax, ay), (bx, by) = pts[i], pts[i + 1]
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+        ds.append((math.hypot(x - (ax + t * dx), y - (ay + t * dy)), i))
+    if not ds:
+        return math.inf, lo
+    dmin = min(d for d, _ in ds)
+    return next((d, i) for d, i in ds if d <= dmin + tie_m)
+
+
 _log = logging.getLogger("ugv.vehicle")
 BLOCK_REPLAN_MAX = 3      # 한 임무에서 서 있는 차에 막혀 다시 계획하는 최대 횟수
 HOLD_FAIL_MAX = 2         # 양보 정지 명령이 연속 이만큼 실패하면 고장(STOP_COMMAND_FAILED)으로 처리
@@ -342,7 +361,7 @@ class Vehicle:
         if self.speed is None or self.state not in ("DRIVING", "EVADING", "STOPPING"):
             return None
         pts = self.speed.pts
-        d, i = _dist_to_polyline(tel.x, tel.y, pts)
+        d, i = _progress_index(tel.x, tel.y, pts, self.speed.cum, self._near_i)   # 같은 자리 재통과 경로에서 나중 통과로 건너뛰지 않게
         if d > config.OFF_ROUTE_M / 3 or i + 1 >= len(pts):
             return None
         (ax, ay), (bx, by) = pts[i], pts[i + 1]
@@ -374,7 +393,7 @@ class Vehicle:
         # 지연 동안 갈 거리: 주행 중이면 지금 계획 경로를 따라, 아니면 진행 방향 도로를 따라 교차로 너머까지 예측한다
         prefer = None
         if hd is not None:
-            _, i = _dist_to_polyline(tel.x, tel.y, self.speed.pts)
+            _, i = _progress_index(tel.x, tel.y, self.speed.pts, self.speed.cum, self._near_i)
             prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
         return self.graph.project(dp, v * self.latency_s(), prefer), v, None
 
@@ -723,7 +742,7 @@ class Vehicle:
             # 지난 판정 = 계획 선형 위 차량 위치보다 앞(경로를 따라 2 m 이상 뒤)에 있는 지점
             sp = self.speed
             hi = next((k for k, c in enumerate(sp.cum) if c > 300.0), len(sp.pts) - 1)   # 경로 앞부분만 (되도는 경로 오인 방지)
-            _, iv = _dist_to_polyline(t.x, t.y, sp.pts, 0, hi)
+            _, iv = _progress_seg(t.x, t.y, sp.pts, 0, hi)
             s_veh = sp.cum[iv] + math.dist(sp.pts[iv], (t.x, t.y)) if iv > 0 else 0.0
             keep, j = [], 0
             # 미션 지점(보정 전 좌표)은 속도 계획 점의 부분열 — 차례로 맞춘다
@@ -766,7 +785,7 @@ class Vehicle:
                 g = self.graph
                 prefer = None
                 if self.speed is not None and self._plan_heading(tel) is not None:
-                    _, i = _dist_to_polyline(tel.x, tel.y, self.speed.pts)
+                    _, i = _progress_index(tel.x, tel.y, self.speed.pts, self.speed.cum, self._near_i)
                     prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
                 pos = self.net.snap(tel.x, tel.y)
                 dp = g.dirpos(pos, tel.heading_deg) if prefer is None else None

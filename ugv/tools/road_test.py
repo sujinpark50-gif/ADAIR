@@ -542,6 +542,10 @@ def main():
             time.sleep(1.0)
             continue
         t = c.get(f"/ugv/{a.rid}/task/{active}").json()
+        if "status" not in t:
+            # 실행 거절(409) 등으로 임무가 없다 — 기록을 남기고 끝낸다 (예전에는 KeyError 로 죽어 JSON 이 없었다)
+            print(f"  {time.time() - t0:6.1f}s {active[:6]} 임무 없음 (실행 거절) {t}", flush=True)
+            break
         pr = t.get("progress") or {}
         print(f"  {time.time() - t0:6.1f}s {active[:6]} {t['status']:<11} {pr.get('phase')} 남은 {pr.get('remaining_m')} m "
               f"속도 {pr.get('speed_mps')} m/s 경로편차 {pr.get('off_route_m')} m", flush=True)
