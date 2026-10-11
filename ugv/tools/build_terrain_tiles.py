@@ -62,6 +62,8 @@ def build_params():
         head, dirty = None, None
     from ugv import config
     return {"junction_mode": JUNCTION_MODE, "junc_level_sigma_m": JUNC_LEVEL_SIGMA_M, "road_surface_sigma_m": SIGMA_M,
+            "bridges": {"on": BRIDGES, "max_deck_above_dem_m": BRIDGE_MAX_DECK_ABOVE_DEM_M, "near_road_m": BRIDGE_NEAR_ROAD_M,
+                        "near_road_dz_m": BRIDGE_NEAR_ROAD_DZ_M},
             "blend_m": BLEND_M, "git_head": head, "git_dirty_ugv": dirty, "extra_roads": config.EXTRA_ROADS or None}
 
 
@@ -128,10 +130,70 @@ class Fields:
         return map_coordinates(self.z10, [row, col], order=1, mode="nearest")
 
 
+BRIDGES = os.getenv("ADAIR_BRIDGES", "0") == "1"     # 자료 교량(FACIL_KIND=1)을 직선 상판 도로면으로 (가정 — 상판 높이 자료 없음)
+BRIDGE_MAX_DECK_ABOVE_DEM_M = 6.0     # 상판이 지형보다 이보다 높으면 성토 표현이 가짜 산이 된다 → 제외 (계곡 고가, 별도 모델 필요)
+BRIDGE_NEAR_ROAD_M = 8.0              # 노드를 공유하지 않는 다른 도로가 이 안에 있고
+BRIDGE_NEAR_ROAD_DZ_M = 0.5           # 그 자리 상판과 도로면 높이 차가 이보다 크면 제외 (하부·평행 도로와 높이 상충)
+_BRIDGE_INC = set()
+
+
+def _deck(net, F, rid, step=2.0):
+    """교량 상판 직선 가정: 양 끝 노드의 도로면 고도 road_z 를 누적 거리로 직선 연결. (점, 누적 s, 상판 z, 그 점 DEM, 그 점 road_z)."""
+    r = net.roads[rid]
+    s = np.arange(0.0, r.length + 1e-9, step)
+    if s[-1] < r.length:
+        s = np.append(s, r.length)
+    P = np.array([net.at(rid, v)[2:4] for v in s])
+    EN = np.array([to5186_exact(x, y) for x, y in P])
+    rz = F.road_z(EN[:, 0], EN[:, 1])
+    deck = rz[0] + (rz[-1] - rz[0]) * s / s[-1]
+    return P, s, deck, F.dem(EN[:, 0], EN[:, 1], clamp=True), rz
+
+
+def bridge_rule(net, F, rid, normal_inc, near_index):
+    """자료 교량 하나를 도로면으로 넣을지 (사유, 가정 기록). 사유가 None 이면 포함."""
+    r = net.roads[rid]
+    if r.attrs.get("motorway"):
+        return "FACIL_KIND_1 MOTORWAY (자동차전용)", None
+    xy = np.array(r.xy)
+    E, Nn = zip(*[to5186_exact(x, y) for x, y in xy])
+    if np.isnan(F.dem(np.array(E), np.array(Nn))).any():
+        return "FACIL_KIND_1 OUTSIDE_DEM", None
+    P, s, deck, dem, rz = _deck(net, F, rid)
+    above = float((deck - dem).max())
+    if above > BRIDGE_MAX_DECK_ABOVE_DEM_M:
+        return f"BRIDGE_DECK_ABOVE_DEM_{above:.1f}m (성토 표현 부적합 — 계곡 고가, 상판·하부 자료 없음)", None
+    near = []
+    ends = {r.a, r.b}
+    lo, hi = P.min(0) - BRIDGE_NEAR_ROAD_M, P.max(0) + BRIDGE_NEAR_ROAD_M
+    worst_dz = 0.0
+    for oid, (q, bb0, bb1) in near_index.items():
+        o = net.roads[oid]
+        if oid == rid or ends & {o.a, o.b} or bb1[0] < lo[0] or bb0[0] > hi[0] or bb1[1] < lo[1] or bb0[1] > hi[1]:
+            continue
+        d = np.sqrt(((P[:, None, :] - q[None, :, :]) ** 2).sum(-1)).min(1)
+        m = d <= BRIDGE_NEAR_ROAD_M
+        if m.any():
+            dz = float(np.abs(deck[m] - rz[m]).max())
+            near.append([oid, round(float(d.min()), 1), round(dz, 2)])
+            worst_dz = max(worst_dz, dz)
+    if near and worst_dz > BRIDGE_NEAR_ROAD_DZ_M:
+        return f"BRIDGE_NEAR_ROAD (하부·평행 도로와 높이 상충 {worst_dz:.2f} m)", None
+    return None, {"kind": "BRIDGE_DECK_STRAIGHT", "len_m": round(r.length, 1),
+                  "deck_grade": round(abs(deck[-1] - deck[0]) / max(r.length, 1e-6), 4),
+                  "deck_above_dem_max_m": round(above, 2), "deck_minus_roadz_max_m": round(float(np.abs(deck - rz).max()), 2),
+                  "near_roads": near}
+
+
 def road_sets(net, F):
-    inc, exc = [], {}
+    """(포함, 제외 {도로: 사유}, 가정 {도로: 기록}). ADAIR_BRIDGES=1 이면 자료 교량 중 성토로 표현해도 자료와 모순 없는 것을 포함 (가정)."""
+    inc, exc, assumed = [], {}, {}
+    bridges = []
     for rid, r in net.roads.items():
         a = r.attrs
+        if BRIDGES and str(a.get("facil_kind")) == "1":
+            bridges.append(rid)
+            continue
         if str(a.get("facil_kind")) in ("1", "2"):
             exc[rid] = f"FACIL_KIND_{a.get('facil_kind')} (교량·터널 추정 — 높이·연결 미확인, 도로면 만들지 않음)"
             continue
@@ -145,7 +207,30 @@ def road_sets(net, F):
             exc[rid] = "OUTSIDE_DEM (DEM 범위 밖 꼭짓점)"
             continue
         inc.append(rid)
-    return inc, exc
+    _BRIDGE_INC.clear()
+    if bridges:
+        idx = {}
+        for oid in inc:
+            q = _dense_xy(net.roads[oid].xy, 1.0)
+            idx[oid] = (q, q.min(0), q.max(0))
+        for rid in bridges:
+            why, rec = bridge_rule(net, F, rid, inc, idx)
+            if why:
+                exc[rid] = why
+            else:
+                inc.append(rid)
+                assumed[rid] = rec
+                _BRIDGE_INC.add(rid)
+    return inc, exc, assumed
+
+
+def _dense_xy(xy, step):
+    out = [np.asarray(xy[0], float)]
+    for a, b in zip(xy[:-1], xy[1:]):
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        n = max(1, int(np.hypot(*(b - a)) / step))
+        out += [a + (b - a) * k / n for k in range(1, n + 1)]
+    return np.array(out)
 
 
 _CORNER = {}
@@ -197,6 +282,11 @@ def road_dense(net, F, rid):
             # 시험 전용 회전 공터: 붙는 노드의 도로면 고도로 수평 (깎고 메운 평탄면)
             fe, fn = to5186_exact(*net.nodes[flat])
             z = np.full(len(pts), float(F.road_z(np.array([fe]), np.array([fn]))[0]))
+        elif rid in _BRIDGE_INC:
+            # 자료 교량 상판 직선 가정: 양 끝 도로면 고도를 누적 거리 비례로 (분할 간격이 균일하지 않아 번호 비례 아님)
+            P = np.array(pts)
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
+            z = z[0] + (z[-1] - z[0]) * s / max(s[-1], 1e-9)
         d = _DENSE[rid] = (np.array(pts), z)
     return d
 
@@ -370,7 +460,7 @@ def build_all(only=None):
         raise SystemExit(f"시험 전용 도로가 섞인 트윈 타일 생성 거부 ({len(test_roads)}개) — 시험 월드면 ADAIR_ALLOW_TEST_ROADS=1")
     t0 = time.time()
     F = Fields()
-    inc, exc = road_sets(net, F)
+    inc, exc, assumed = road_sets(net, F)
     half_w = {rid: est_half_width(net.roads[rid]) for rid in inc}
     t_fields = time.time() - t0
     OUT.mkdir(parents=True, exist_ok=True)
@@ -382,8 +472,11 @@ def build_all(only=None):
                  "nx": NX, "ny": NY, "blend_m": BLEND_M, "road_surface_sigma_m": SIGMA_M,
                  "world_origin_alt_m": WORLD_ORIGIN_ALT, "roads_included": len(inc), "roads_excluded": exc,
                  "road_width": "est_half_width = 차로 수 × 3.25 / 2 + 0.5 m (완화 없음)", "fields_s": round(t_fields, 1),
-                 "not_verified": ["교량·터널·입체교차 (FACIL_KIND 1·2·자동차전용 도로면 없음)", "DEM 수직 기준 미확인",
-                                  "90 m DEM 보간 — 사면·하천·옹벽 세부 없음", "편경사 없음 (도로면 = 다듬은 지형 면)"]})
+                 "roads_assumed": assumed,
+                 "not_verified": ([f"교량 {len(assumed)}개 상판 높이 = 양 끝 도로면 고도 직선 (가정 — 상판·교각 자료 없음, 높이장 성토로 표현)",
+                                   "제외 교량(계곡 고가·하부 도로 상충)·터널·입체교차 (FACIL_KIND 2·자동차전용 도로면 없음)"]
+                                  if BRIDGES else ["교량·터널·입체교차 (FACIL_KIND 1·2·자동차전용 도로면 없음)"])
+                                 + ["DEM 수직 기준 미확인", "90 m DEM 보간 — 사면·하천·옹벽 세부 없음", "편경사 없음 (도로면 = 다듬은 지형 면)"]})
     import tracemalloc
     for i in range(NX):
         for j in range(NY):
