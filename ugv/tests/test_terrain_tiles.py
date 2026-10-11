@@ -85,3 +85,33 @@ def test_level_sigma_seam_exact():
     assert np.array_equal(a[:, -1], b[:, 0])
     c = BT.build_tile(net, F, inc, hw, 14, 0, junction_mode="level", level_sigma=0.0)["H"]
     assert np.nanmax(np.abs(a - c)) > 0.01                     # 평활이 실제로 적용됨
+
+
+# ---- 4단계: 종단 다듬기는 양 끝·지속 경사를 바꾸지 않는다 ----
+def _profile(net, F, rid):
+    r = net.roads[rid]
+    s = np.arange(0.0, r.length + 1e-9, 4.0)
+    P = np.array([net.at(rid, v)[2:4] for v in s])
+    EN = np.array([BT.to5186_exact(x, y) for x, y in P])
+    return s, F.road_z(EN[:, 0], EN[:, 1])
+
+
+def test_smooth_profile_preserves_endpoints_and_sustained_grade():
+    net, F, _ = _net_f()
+    for rid in ("683500486", "682500198", "683400421"):          # 지속 16 %·13.5 %, 국부 요철 도로
+        s, z = _profile(net, F, rid)
+        zs, used = BT.adaptive_smooth(s, z, 30.0)
+        assert abs(zs[0] - z[0]) < 1e-9 and abs(zs[-1] - z[-1]) < 1e-9
+        assert abs(BT.grade_window(s, zs, 300.0) - BT.grade_window(s, z, 300.0)) <= BT.LONG_KEEP_GRADE + 1e-9
+        assert np.abs(zs - z).max() <= BT.LONG_MAX_DEV_M + 1e-9
+        # 2차 차분(요철)은 줄어든다
+        assert np.abs(np.diff(zs, 2)).max() <= np.abs(np.diff(z, 2)).max() + 1e-9
+
+
+def test_plain_sigma30_can_lower_sustained_grade_so_adaptive_is_needed():
+    net, F, _ = _net_f()
+    s, z = _profile(net, F, "683400421")
+    zs = BT.smooth_profile(s, z, 30.0)                          # 고정 σ30 은 300 m 경사를 0.57 %p 낮춘다 (2026-10-11 확인)
+    assert BT.grade_window(s, z, 300.0) - BT.grade_window(s, zs, 300.0) > BT.LONG_KEEP_GRADE
+    za, used = BT.adaptive_smooth(s, z, 30.0)
+    assert used < 30.0

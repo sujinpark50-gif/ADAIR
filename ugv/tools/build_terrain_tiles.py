@@ -62,6 +62,7 @@ def build_params():
         head, dirty = None, None
     from ugv import config
     return {"junction_mode": JUNCTION_MODE, "junc_level_sigma_m": JUNC_LEVEL_SIGMA_M, "road_surface_sigma_m": SIGMA_M,
+            "long_sigma_m": LONG_SIGMA_M,
             "bridges": {"on": BRIDGES, "max_deck_above_dem_m": BRIDGE_MAX_DECK_ABOVE_DEM_M, "near_road_m": BRIDGE_NEAR_ROAD_M,
                         "near_road_dz_m": BRIDGE_NEAR_ROAD_DZ_M},
             "blend_m": BLEND_M, "git_head": head, "git_dirty_ugv": dirty, "extra_roads": config.EXTRA_ROADS or None}
@@ -287,8 +288,59 @@ def road_dense(net, F, rid):
             P = np.array(pts)
             s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
             z = z[0] + (z[-1] - z[0]) * s / max(s[-1], 1e-9)
+        elif LONG_SIGMA_M > 0:
+            P = np.array(pts)
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
+            z0 = z
+            z, used = adaptive_smooth(s, z0, LONG_SIGMA_M)
+            _LONG_STATS[rid] = {"sigma_m": used, "max_dev_m": round(float(np.abs(z - z0).max()), 3),
+                                "grade300_before": round(grade_window(s, z0, 300.0), 4),
+                                "grade300_after": round(grade_window(s, z, 300.0), 4)}
         d = _DENSE[rid] = (np.array(pts), z)
     return d
+
+
+LONG_SIGMA_M = float(os.getenv("ADAIR_LONG_SIGMA_M", "0"))   # 도로 방향 종단 다듬기 σ (m, 0 = 끔). level 모드에서만
+LONG_KEEP_GRADE = 0.005    # 다듬기 전후 300 m 창 최대 경사 차 상한 (지속 경사 보존)
+LONG_MAX_DEV_M = 3.0       # 다듬기 높이 변화 상한 (넘으면 σ 를 줄이고, σ/4 도 넘으면 다듬지 않음)
+_LONG_STATS = {}
+
+
+def adaptive_smooth(s, z0, sigma_m):
+    """도로마다 보존 조건을 지키는 가장 큰 σ (σ, σ/2, σ/4 순): 300 m 창 최대 경사 변화 ≤ LONG_KEEP_GRADE, 높이 변화 ≤ LONG_MAX_DEV_M.
+    다 넘으면 다듬지 않는다 — 실제 고도차(지속 경사)를 깎지 않기 위해. 반환 (z, 쓴 σ)."""
+    g0 = grade_window(s, z0, 300.0)
+    for sg in (sigma_m, sigma_m / 2, sigma_m / 4):
+        zt = smooth_profile(s, z0, sg)
+        if abs(grade_window(s, zt, 300.0) - g0) <= LONG_KEEP_GRADE and np.abs(zt - z0).max() <= LONG_MAX_DEV_M:
+            return zt, sg
+    return z0, 0.0
+
+
+def smooth_profile(s, z, sigma_m, step=2.0):
+    """도로 종단 1차원 가우스 다듬기 — 90 m DEM 보간 요철 제거. 양 끝 = 원래 값(노드 road_z) 고정 (교차로 혼합 불변량:
+    모든 도로의 노드 높이가 같다). 끝 고정은 다듬은 값과 원래 끝값 차이를 선형으로 되돌려 맞춘다."""
+    from scipy.ndimage import gaussian_filter1d
+    if sigma_m <= 0 or s[-1] < 4 * step:
+        return z
+    su = np.arange(0.0, s[-1] + 1e-9, step)
+    if su[-1] < s[-1]:
+        su = np.append(su, s[-1])
+    zu = np.interp(su, s, z)
+    zs = gaussian_filter1d(zu, sigma_m / step, mode="nearest")
+    f = su / su[-1]
+    zs = zs + (zu[0] - zs[0]) * (1 - f) + (zu[-1] - zs[-1]) * f
+    return np.interp(s, su, zs)
+
+
+def grade_window(s, z, w, step=2.0):
+    """창 w m 최대 |Δz|/w (도로가 w 보다 짧으면 양 끝 평균 경사)."""
+    if s[-1] <= w:
+        return float(abs(z[-1] - z[0]) / max(s[-1], 1e-9))
+    su = np.arange(0.0, s[-1] + 1e-9, step)
+    zu = np.interp(su, s, z)
+    k = int(round(w / step))
+    return float(np.abs(zu[k:] - zu[:-k]).max() / w)
 
 
 _JN = {}
@@ -471,6 +523,9 @@ def write_tile(name, zmin, span, img, i, j):
 
 
 def build_all(only=None):
+    if LONG_SIGMA_M > 0 and JUNCTION_MODE != "level":
+        # terrain 모드 교차로는 2차원 면 Z 를 써서 다듬은 도로 프로파일과 어긋나 턱이 생긴다
+        raise SystemExit("ADAIR_LONG_SIGMA_M 은 ADAIR_JUNCTION_MODE=level 에서만")
     net = RoadNetwork()
     test_roads = sorted(rid for rid, r in net.roads.items() if r.attrs.get("test_only"))
     if test_roads and os.getenv("ADAIR_ALLOW_TEST_ROADS") != "1":
@@ -522,6 +577,8 @@ def build_all(only=None):
                 "affine_res_m": round(T["affine_res_m"], 4), "build_s": round(time.time() - ts, 2),
                 "peak_mem_mb": round(peak / 1e6, 1)}
             print(name, meta["tiles"][name]["build_s"], "s roads", len(T["roads"]), flush=True)
+    if _LONG_STATS:
+        meta["long_smooth"] = dict(_LONG_STATS)
     meta["total_s"] = round(time.time() - t0, 1)
     meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     return meta
