@@ -70,3 +70,18 @@ def test_bridge_deck_endpoints_equal_node_roadz(monkeypatch):
     assert abs(z[0] - rz[0]) < 1e-9 and abs(z[-1] - rz[1]) < 1e-9          # 이웃 도로와 노드 높이가 같다 (교차로 혼합 불변량)
     s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
     assert np.allclose(z, z[0] + (z[-1] - z[0]) * s / s[-1])               # 누적 거리 비례 직선
+
+
+# ---- 3단계: level 모드 σ>0 이 이음매를 깨지 않는다 (여백 계산 뒤 잘라냄) ----
+def test_level_sigma_seam_exact():
+    net, F, _ = _net_f()
+    from ugv.drive_graph import est_half_width
+    inc = [r for r, x in net.roads.items() if str(x.attrs.get("facil_kind")) not in ("1", "2") and not x.attrs.get("motorway")]
+    inc = [r for r in inc if not np.isnan(F.dem(*np.array([BT.to5186_exact(*p) for p in net.roads[r].xy]).T)).any()]
+    hw = {r: est_half_width(net.roads[r]) for r in inc}
+    # 교차로 659548 이 T14_00 오른쪽 경계 40 m 안 (2026-10-11 확인한 쌍)
+    a = BT.build_tile(net, F, inc, hw, 14, 0, junction_mode="level", level_sigma=3.0)["H"]
+    b = BT.build_tile(net, F, inc, hw, 15, 0, junction_mode="level", level_sigma=3.0)["H"]
+    assert np.array_equal(a[:, -1], b[:, 0])
+    c = BT.build_tile(net, F, inc, hw, 14, 0, junction_mode="level", level_sigma=0.0)["H"]
+    assert np.nanmax(np.abs(a - c)) > 0.01                     # 평활이 실제로 적용됨

@@ -312,22 +312,29 @@ def junction_nodes(net, inc):
     return v
 
 
-def build_tile(net, F, inc, half_w, i, j, junction_mode=None):
+def build_tile(net, F, inc, half_w, i, j, junction_mode=None, level_sigma=None):
     """높이 = 도로 띠 안: 포함 도로들의 '가장 가까운 중심선 점 고도' 가중 평균 (도로마다 가중 = 띠+전이 폭 밖에서 0 으로
     연속 감소 / (거리+1)²). 도로 하나만 있는 곳은 그 도로 중심선 고도 그대로 → 횡단 평평. 교차로(여러 도로)는 연속 혼합.
     띠 밖 BLEND_M 까지 도로면 → 지형 D 선형 전이, 그 밖 D. (2026-10-10 첫 생성: 띠 안에서 다듬은 지형 면을 그대로 써
     산 사면 도로 횡단 경사 최대 59 %, 10 % 넘는 도로 320개)"""
+    mode = junction_mode or JUNCTION_MODE
+    sig = JUNC_LEVEL_SIGMA_M if level_sigma is None else level_sigma
     x0, y0, x1, y1 = tile_bounds(i, j)
-    xs = x0 + np.arange(N) * (TILE_M / (N - 1))
-    ys = y1 - np.arange(N) * (TILE_M / (N - 1))          # 행 0 = 북쪽
-    cell = xs[1] - xs[0]
+    cell = TILE_M / (N - 1)
+    # level 모드 σ>0: 타일 밖 여백(가우스 반경 4σ 이상)까지 같은 전역 격자로 계산해 평활한 뒤 잘라낸다 → 값이 위치만의 함수라
+    # 이웃 타일이 같은 값을 갖는다 (예전 타일 안 평활은 이음매 최대 0.73 m 어긋남). 여백 밖 값만 쓰지 않으므로 σ0·terrain 은 그대로
+    p = int(math.ceil(4.0 * sig / cell)) + 2 if (mode == "level" and sig > 0) else 0
+    Np = N + 2 * p
+    xs = x0 + (np.arange(Np) - p) * cell
+    ys = y1 - (np.arange(Np) - p) * cell                # 행 0 = 북쪽
     X, Y = np.meshgrid(xs, ys)
     E, Nn, res = tile_5186(i, j, X, Y)
     D = F.dem(E, Nn)
     Z = F.road_z(E, Nn)
-    edge = np.full((N, N), np.inf)
-    num = np.zeros((N, N))
-    den = np.zeros((N, N))
+    edge = np.full((Np, Np), np.inf)
+    num = np.zeros((Np, Np))
+    den = np.zeros((Np, Np))
+    xa, xb, ya, yb = x0 - p * cell, x1 + p * cell, y0 - p * cell, y1 + p * cell     # 계산 범위 (여백 포함)
     roads_here = []
     for rid in inc:
         r = net.roads[rid]
@@ -336,14 +343,14 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None):
         reach = R + cell
         bx0, by0 = np.min(r.xy, axis=0)
         bx1, by1 = np.max(r.xy, axis=0)
-        if bx1 < x0 - reach or bx0 > x1 + reach or by1 < y0 - reach or by0 > y1 + reach:
+        if bx1 < xa - reach or bx0 > xb + reach or by1 < ya - reach or by0 > yb + reach:
             continue
         P, Zd = road_dense(net, F, rid)
-        # 도로 창 (타일 안)
-        J0 = max(0, int((bx0 - reach - x0) / cell))
-        J1 = min(N - 1, int((bx1 + reach - x0) / cell) + 1)
-        I0 = max(0, int((y1 - (by1 + reach)) / cell))
-        I1 = min(N - 1, int((y1 - (by0 - reach)) / cell) + 1)
+        # 도로 창 (계산 범위 안)
+        J0 = max(0, int((bx0 - reach - xa) / cell))
+        J1 = min(Np - 1, int((bx1 + reach - xa) / cell) + 1)
+        I0 = max(0, int((yb - (by1 + reach)) / cell))
+        I1 = min(Np - 1, int((yb - (by0 - reach)) / cell) + 1)
         if J1 < J0 or I1 < I0:
             continue
         rd = np.full((I1 - I0 + 1, J1 - J0 + 1), np.inf)
@@ -351,12 +358,12 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None):
         hit = False
         for k in range(len(P) - 1):
             (ax, ay), (bx, by) = P[k], P[k + 1]
-            if max(ax, bx) < x0 - reach or min(ax, bx) > x1 + reach or max(ay, by) < y0 - reach or min(ay, by) > y1 + reach:
+            if max(ax, bx) < xa - reach or min(ax, bx) > xb + reach or max(ay, by) < ya - reach or min(ay, by) > yb + reach:
                 continue
-            j0 = max(J0, int((min(ax, bx) - reach - x0) / cell))
-            j1 = min(J1, int((max(ax, bx) + reach - x0) / cell) + 1)
-            i0 = max(I0, int((y1 - (max(ay, by) + reach)) / cell))
-            i1 = min(I1, int((y1 - (min(ay, by) - reach)) / cell) + 1)
+            j0 = max(J0, int((min(ax, bx) - reach - xa) / cell))
+            j1 = min(J1, int((max(ax, bx) + reach - xa) / cell) + 1)
+            i0 = max(I0, int((yb - (max(ay, by) + reach)) / cell))
+            i1 = min(I1, int((yb - (min(ay, by) - reach)) / cell) + 1)
             if j1 < j0 or i1 < i0:
                 continue
             hit = True
@@ -381,28 +388,38 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None):
     road_mask = edge <= 0
     S = np.where(den > 0, num / np.where(den > 0, den, 1.0), Z)
     # 교차로 근처는 다듬은 지형 면 Z (모든 도로가 같은 연속 면 → 둔덕 없음), 멀어지면 중심선 고도로 연속 전이
-    dn = np.full((N, N), np.inf)
+    dn = np.full((Np, Np), np.inf)
     for nid in junction_nodes(net, inc):
         nx, ny = net.nodes[nid]
-        if nx < x0 - JUNC_OUT_M or nx > x1 + JUNC_OUT_M or ny < y0 - JUNC_OUT_M or ny > y1 + JUNC_OUT_M:
+        if nx < xa - JUNC_OUT_M or nx > xb + JUNC_OUT_M or ny < ya - JUNC_OUT_M or ny > yb + JUNC_OUT_M:
             continue
-        j0, j1 = max(0, int((nx - JUNC_OUT_M - x0) / cell)), min(N - 1, int((nx + JUNC_OUT_M - x0) / cell) + 1)
-        i0, i1 = max(0, int((y1 - (ny + JUNC_OUT_M)) / cell)), min(N - 1, int((y1 - (ny - JUNC_OUT_M)) / cell) + 1)
+        j0, j1 = max(0, int((nx - JUNC_OUT_M - xa) / cell)), min(Np - 1, int((nx + JUNC_OUT_M - xa) / cell) + 1)
+        i0, i1 = max(0, int((yb - (ny + JUNC_OUT_M)) / cell)), min(Np - 1, int((yb - (ny - JUNC_OUT_M)) / cell) + 1)
         if j1 < j0 or i1 < i0:
             continue
         sub = (slice(i0, i1 + 1), slice(j0, j1 + 1))
         dn[sub] = np.minimum(dn[sub], np.hypot(X[sub] - nx, Y[sub] - ny))
     tj = np.clip((dn - JUNC_IN_M) / (JUNC_OUT_M - JUNC_IN_M), 0.0, 1.0)
     tj = tj * tj * (3 - 2 * tj)                         # 매끈한 전이 (기울기 연속)
-    if (junction_mode or JUNCTION_MODE) == "level":
+    if mode == "level":
         # 교차로 안도 도로 중심선 고도 혼합(횡단 수평)을 쓰고, 도로마다 고도가 달라 생기는 둔덕만 공간 평활로 없앤다.
         # terrain 모드는 지형 면 Z 를 써 산비탈 교차로가 원지형 횡경사(중앙값 10.6 %)를 물려받았다 (2026-10-11 지도 대조)
-        from scipy.ndimage import gaussian_filter
-        # σ 0 이면 평활 없음 — 값이 위치만으로 정해져 타일 이음매가 맞는다 (σ>0 은 타일마다 따로 평활해 이음매 최대 0.73 m 어긋남)
-        Sl = gaussian_filter(S, sigma=JUNC_LEVEL_SIGMA_M / cell, mode="nearest") if JUNC_LEVEL_SIGMA_M > 0 else S
+        if sig > 0:
+            from scipy.ndimage import gaussian_filter
+            # 정규화 평활: 도로 혼합이 있는 곳(den>0)만 섞는다 — 타일별 좌표 변환에 걸린 지형 면 Z 를 섞지 않아 위치만의 함수
+            m = (den > 0).astype(float)
+            gm = gaussian_filter(m, sigma=sig / cell, mode="nearest")
+            gs = gaussian_filter(np.where(den > 0, S, 0.0), sigma=sig / cell, mode="nearest")
+            Sl = np.where(gm > 1e-9, gs / np.where(gm > 1e-9, gm, 1.0), S)
+        else:
+            Sl = S
         S = Sl * (1 - tj) + S * tj
     else:
         S = Z * (1 - tj) + S * tj
+    if p:
+        cut = (slice(p, p + N), slice(p, p + N))
+        S, D, Z, edge, road_mask = S[cut], D[cut], Z[cut], edge[cut], road_mask[cut]
+        xs, ys = xs[p:p + N], ys[p:p + N]
     H = D.copy()
     H[road_mask] = S[road_mask]
     bm = (~road_mask) & (edge <= BLEND_M)
