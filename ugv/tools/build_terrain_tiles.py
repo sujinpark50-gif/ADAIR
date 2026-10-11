@@ -42,6 +42,10 @@ Q = 0.01                     # 높이 양자화 간격 (m) — 모든 타일 공
 BLEND_M = 12.0               # build_terrain_world 와 같음
 JUNCTION_MODE = os.getenv("ADAIR_JUNCTION_MODE", "terrain")   # terrain: 교차로 안 = 다듬은 지형 면 Z / level: 도로 중심선 고도 혼합을 평활 (횡단 수평 유지)
 JUNC_LEVEL_SIGMA_M = float(os.getenv("ADAIR_JUNC_LEVEL_SIGMA_M", "0"))          # level 모드 교차로 면 평활 (둔덕 제거). 2026-10-11 표본 25: σ2 교차로 횡경사 중앙값 4.0 %, σ4 4.5 %, σ7 6.0 % (σ7 은 턱 0.25 m)
+# level 모드에서 교차로별로 terrain 혼합을 쓸 노드 (붙은 도로들이 level 에서 더 나빠지는 교차로 — 2026-10-11 비교로 고름)
+JUNC_TERRAIN_NODES = set(json.loads(Path(os.environ["ADAIR_JUNC_TERRAIN_NODES"]).read_text(encoding="utf-8")))     if os.getenv("ADAIR_JUNC_TERRAIN_NODES") else set()
+# 종단 다듬기를 하지 않을 도로 (다듬으면 최종 표면 검사에서 악화 — 2차 확인으로 되돌림)
+LONG_SKIP = set(json.loads(Path(os.environ["ADAIR_LONG_SKIP"]).read_text(encoding="utf-8"))) if os.getenv("ADAIR_LONG_SKIP") else set()
 JUNC_IN_M, JUNC_OUT_M = 15.0, 30.0   # 교차로 노드에서 JUNC_IN_M 안은 다듬은 지형 면 Z, JUNC_OUT_M 밖은 중심선 고도(횡단 평평), 사이는 연속 전이.
                                      # 교차로에서 여러 도로 중심선 고도를 섞으면 둔덕(2 m 간격 2차 차분 p95 0.22 m)이 생겨 회전 중 바퀴가 들려
                                      # 미끄러졌다 (2026-10-11 Gazebo: 요율/기구학 하위 10 % 0.28, 단일 높이장 b1 월드 0.44~0.61)
@@ -62,7 +66,8 @@ def build_params():
         head, dirty = None, None
     from ugv import config
     return {"junction_mode": JUNCTION_MODE, "junc_level_sigma_m": JUNC_LEVEL_SIGMA_M, "road_surface_sigma_m": SIGMA_M,
-            "long_sigma_m": LONG_SIGMA_M,
+            "long_sigma_m": LONG_SIGMA_M, "design_cap": DESIGN_CAP,
+            "junc_terrain_nodes": len(JUNC_TERRAIN_NODES), "long_skip": len(LONG_SKIP),
             "bridges": {"on": BRIDGES, "max_deck_above_dem_m": BRIDGE_MAX_DECK_ABOVE_DEM_M, "near_road_m": BRIDGE_NEAR_ROAD_M,
                         "near_road_dz_m": BRIDGE_NEAR_ROAD_DZ_M},
             "blend_m": BLEND_M, "git_head": head, "git_dirty_ugv": dirty, "extra_roads": config.EXTRA_ROADS or None}
@@ -278,17 +283,24 @@ def road_dense(net, F, rid):
         pts.append(tuple(xy[-1]))
         EN = np.array([to5186_exact(x, y) for x, y in pts])
         z = F.road_z(EN[:, 0], EN[:, 1])
+        r_ = net.roads[rid]
+        if _NODE_Z and r_.a in _NODE_Z and r_.b in _NODE_Z:
+            # 설계 상한 복구로 옮긴 노드 높이에 양 끝을 맞춘다 (누적 거리 비례 선형 보정)
+            P0 = np.array(pts)
+            s0 = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P0, axis=0).T))]
+            f = s0 / max(s0[-1], 1e-9)
+            z = z + (_NODE_Z[r_.a] - z[0]) * (1 - f) + (_NODE_Z[r_.b] - z[-1]) * f
         flat = net.roads[rid].attrs.get("flat_at_node")
         if flat:
             # 시험 전용 회전 공터: 붙는 노드의 도로면 고도로 수평 (깎고 메운 평탄면)
             fe, fn = to5186_exact(*net.nodes[flat])
-            z = np.full(len(pts), float(F.road_z(np.array([fe]), np.array([fn]))[0]))
+            z = np.full(len(pts), float(_NODE_Z[flat]) if flat in _NODE_Z else float(F.road_z(np.array([fe]), np.array([fn]))[0]))
         elif rid in _BRIDGE_INC:
             # 자료 교량 상판 직선 가정: 양 끝 도로면 고도를 누적 거리 비례로 (분할 간격이 균일하지 않아 번호 비례 아님)
             P = np.array(pts)
             s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
             z = z[0] + (z[-1] - z[0]) * s / max(s[-1], 1e-9)
-        elif LONG_SIGMA_M > 0:
+        elif LONG_SIGMA_M > 0 and rid not in LONG_SKIP:
             P = np.array(pts)
             s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
             z0 = z
@@ -296,8 +308,114 @@ def road_dense(net, F, rid):
             _LONG_STATS[rid] = {"sigma_m": used, "max_dev_m": round(float(np.abs(z - z0).max()), 3),
                                 "grade300_before": round(grade_window(s, z0, 300.0), 4),
                                 "grade300_after": round(grade_window(s, z, 300.0), 4)}
+        cap = design_cap(r_) if not flat else None
+        if cap:
+            P = np.array(pts)
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
+            g_before = float(np.abs(np.diff(z) / np.maximum(np.diff(s), 1e-9)).max()) if len(z) > 1 else 0.0
+            if g_before > cap:
+                rec = {"cap": cap, "rank": r_.attrs.get("road_rank"), "grade_before": round(g_before, 4),
+                       "grade300_before": round(grade_window(s, z, 300.0), 4)}
+                if rid in DESIGN_CAP_SKIP:
+                    rec.update(status="NOT_RESTORED", why="복구하면 최종 표면 검사에서 악화 (2차 확인으로 되돌림)")
+                elif abs(z[-1] - z[0]) > cap * s[-1] + 1e-6:
+                    rec.update(status="NOT_RESTORED", why="끝(노드) 고도차가 상한 × 길이를 넘음 — 노드를 옮겨야 함(기본 끔): 실제 급경사·형상 단순화·노드 높이 조사 대상")
+                else:
+                    zc = smooth_profile(s, cap_profile(s, z, cap), CAP_CURVE_SIGMA_M)
+                    dev = float(np.abs(zc - z).max())
+                    jb = float(np.abs(np.diff(np.interp(np.arange(0, s[-1], 2.0), s, z), 2)).max()) if s[-1] > 6 else 0.0
+                    ja = float(np.abs(np.diff(np.interp(np.arange(0, s[-1], 2.0), s, zc), 2)).max()) if s[-1] > 6 else 0.0
+                    ga = float(np.abs(np.diff(zc) / np.maximum(np.diff(s), 1e-9)).max())
+                    if ga > cap + CAP_CURVE_TOL:
+                        rec.update(status="NOT_RESTORED", why=f"종단 곡선을 넣으면 상한을 넘음 ({ga * 100:.1f} %)")
+                    elif ja > max(jb + 0.02, 0.10):
+                        rec.update(status="NOT_RESTORED", why=f"복구하면 턱이 커짐 (2차 차분 {jb:.3f} → {ja:.3f} m)")
+                    elif dev > RESTORE_MAX_DEV_M:
+                        rec.update(status="NOT_RESTORED", why=f"상한까지 복구하려면 높이 {dev:.1f} m 변경 — 실제 급경사 또는 형상 단순화 의심",
+                                   needed_dev_m=round(dev, 1))
+                    else:
+                        rec.update(status="RESTORED", grade300_after=round(grade_window(s, zc, 300.0), 4), max_dev_m=round(dev, 2))
+                        z = zc
+                _CAP_STATS[rid] = rec
         d = _DENSE[rid] = (np.array(pts), z)
     return d
+
+
+DESIGN_CAP = os.getenv("ADAIR_DESIGN_CAP", "0") == "1"
+# 「도로의 구조·시설 기준에 관한 규칙」 제25조 최대 종단경사 (산지, 표에서 가장 낮은 설계속도 = 가장 너그러운 값) + 단서 1 %p.
+# 도로 등급(ROAD_RANK) → 도로 구분: 103 일반국도 = 간선(40 km/h 9 %), 106 지방도 = 집산(30 km/h 12 %), 107 시·군도 = 국지(20 km/h 16 %).
+# 90 m DEM 이 이 값보다 가파르게 만든 구간만 복구 (가정 — 실측 종단 아님). 108 기타·교량·시험 시설은 복구하지 않음
+DESIGN_CAP_BY_RANK = {103: 0.10, 106: 0.13, 107: 0.17}
+# 안전장치 (2026-10-11 1차 적용: 높이 변화 최대 89 m·노드 이동 17 m — DEM 오류가 아니라 실제 급경사·형상 단순화로 보이는 곳까지 깎았다).
+# 이 한도를 넘어야 상한을 맞출 수 있는 도로는 복구하지 않고 '실제 급경사 또는 형상 단순화 의심' 으로 남긴다
+NODE_SHIFT_MAX_M = 3.0      # 노드 높이 이동 상한 (한 노드를 옮기면 붙은 모든 도로 경사가 바뀐다)
+# 노드 이동은 기본 끔 (2026-10-11 2차: 노드 65개 이동이 이웃 도로 30개를 악화 — 끝 근처 꺾임·횡경사. 복구 안 된 도로의 노드도 움직였다)
+DESIGN_CAP_NODES = os.getenv("ADAIR_DESIGN_CAP_NODES", "0") == "1"
+CAP_CURVE_SIGMA_M = 10.0    # 상한으로 묶은 뒤 종단 곡선(꺾임 완화) — 묶은 경계의 급한 경사 변화가 턱(2차 차분 0.24 m)을 만들었다
+CAP_CURVE_TOL = 0.01        # 곡선 뒤 허용 경사 = 상한 + 1 %p (상한은 DEM 오류 판별용, 주행 기준 아님)
+# 2차 확인: 최종 표면 비교(ugv.tools.terrain_compare)에서 악화된 복구 도로 — 다음 생성에서 복구하지 않는다 (되돌림)
+DESIGN_CAP_SKIP = set(json.loads(Path(os.environ["ADAIR_DESIGN_CAP_SKIP"]).read_text(encoding="utf-8")))     if os.getenv("ADAIR_DESIGN_CAP_SKIP") else set()
+RESTORE_MAX_DEV_M = 5.0     # 도로 종단 복구 높이 변화 상한
+_NODE_Z = {}
+_CAP_STATS = {}
+
+
+def design_cap(r):
+    if not DESIGN_CAP or r.attrs.get("test_only") or r.road_id in _BRIDGE_INC:
+        return None
+    return DESIGN_CAP_BY_RANK.get(r.attrs.get("road_rank"))
+
+
+def node_heights(net, F, inc, margin=0.98, sweeps=2000):
+    """노드 높이 = road_z(노드) 에서 시작해, 양 끝 고도차가 설계 상한 × 길이를 넘는 도로의 두 노드를 서로 가깝게 옮긴다 (반씩).
+    도로 안 종단을 상한으로 묶으려면 끝 고도차가 먼저 상한 안이어야 한다. 반환 {노드: z}, {노드: 옮긴 m}."""
+    nodes = {n for rid in inc for n in (net.roads[rid].a, net.roads[rid].b)}
+    pts = np.array([to5186_exact(*net.nodes[n]) for n in nodes])
+    z0 = dict(zip(nodes, F.road_z(pts[:, 0], pts[:, 1])))
+    z = dict(z0)
+    cons = [(net.roads[rid].a, net.roads[rid].b, design_cap(net.roads[rid]) * net.roads[rid].length * margin)
+            for rid in inc if design_cap(net.roads[rid])]
+    def clamp(n):
+        z[n] = min(max(z[n], z0[n] - NODE_SHIFT_MAX_M), z0[n] + NODE_SHIFT_MAX_M)
+
+    for _ in range(sweeps):
+        moved = 0.0
+        for a, b, lim in cons:
+            d = z[a] - z[b]
+            e = abs(d) - lim
+            if e > 1e-4:
+                sgn = 1.0 if d > 0 else -1.0
+                za, zb = z[a], z[b]
+                z[a] -= sgn * e / 2
+                z[b] += sgn * e / 2
+                clamp(a)
+                clamp(b)
+                moved = max(moved, abs(z[a] - za), abs(z[b] - zb))
+        if moved <= 1e-4:
+            break                         # 상한 안이 됐거나, 이동 한도에 막혀 더 못 움직임 (남는 도로는 복구 안 함)
+    return z, {n: round(z[n] - z0[n], 3) for n in nodes if abs(z[n] - z0[n]) > 1e-3}
+
+
+def cap_profile(s, z, cap, passes=200):
+    """양 끝 고정, 2 m 간격 경사 ≤ cap 이 되도록 앞뒤로 번갈아 묶는다 (끝 고도차는 node_heights 로 이미 상한 안)."""
+    su = np.arange(0.0, s[-1] + 1e-9, 2.0)
+    if su[-1] < s[-1]:
+        su = np.append(su, s[-1])
+    zu = np.interp(su, s, z)
+    S, z0, zN = su[-1], zu[0], zu[-1]
+    lo = np.maximum(z0 - cap * su, zN - cap * (S - su))
+    hi = np.minimum(z0 + cap * su, zN + cap * (S - su))
+    zu = np.clip(zu, lo, hi)
+    ds = np.diff(su)
+    for _ in range(passes):
+        prev = zu.copy()
+        for i in range(1, len(zu) - 1):
+            zu[i] = min(max(zu[i], zu[i - 1] - cap * ds[i - 1]), zu[i - 1] + cap * ds[i - 1])
+        for i in range(len(zu) - 2, 0, -1):
+            zu[i] = min(max(zu[i], zu[i + 1] - cap * ds[i]), zu[i + 1] + cap * ds[i])
+        if np.abs(zu - prev).max() < 1e-6:
+            break
+    return np.interp(s, su, zu)
 
 
 LONG_SIGMA_M = float(os.getenv("ADAIR_LONG_SIGMA_M", "0"))   # 도로 방향 종단 다듬기 σ (m, 0 = 끔). level 모드에서만
@@ -441,6 +559,7 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None, level_sigma=None):
     S = np.where(den > 0, num / np.where(den > 0, den, 1.0), Z)
     # 교차로 근처는 다듬은 지형 면 Z (모든 도로가 같은 연속 면 → 둔덕 없음), 멀어지면 중심선 고도로 연속 전이
     dn = np.full((Np, Np), np.inf)
+    dn_t = np.full((Np, Np), np.inf)                  # level 모드에서 terrain 혼합을 쓸 교차로까지 거리
     for nid in junction_nodes(net, inc):
         nx, ny = net.nodes[nid]
         if nx < xa - JUNC_OUT_M or nx > xb + JUNC_OUT_M or ny < ya - JUNC_OUT_M or ny > yb + JUNC_OUT_M:
@@ -450,9 +569,13 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None, level_sigma=None):
         if j1 < j0 or i1 < i0:
             continue
         sub = (slice(i0, i1 + 1), slice(j0, j1 + 1))
-        dn[sub] = np.minimum(dn[sub], np.hypot(X[sub] - nx, Y[sub] - ny))
-    tj = np.clip((dn - JUNC_IN_M) / (JUNC_OUT_M - JUNC_IN_M), 0.0, 1.0)
-    tj = tj * tj * (3 - 2 * tj)                         # 매끈한 전이 (기울기 연속)
+        tgt = dn_t if (mode == "level" and nid in JUNC_TERRAIN_NODES) else dn
+        tgt[sub] = np.minimum(tgt[sub], np.hypot(X[sub] - nx, Y[sub] - ny))
+
+    def _tj(d):
+        t = np.clip((d - JUNC_IN_M) / (JUNC_OUT_M - JUNC_IN_M), 0.0, 1.0)
+        return t * t * (3 - 2 * t)                      # 매끈한 전이 (기울기 연속)
+    tj = _tj(dn)
     if mode == "level":
         # 교차로 안도 도로 중심선 고도 혼합(횡단 수평)을 쓰고, 도로마다 고도가 달라 생기는 둔덕만 공간 평활로 없앤다.
         # terrain 모드는 지형 면 Z 를 써 산비탈 교차로가 원지형 횡경사(중앙값 10.6 %)를 물려받았다 (2026-10-11 지도 대조)
@@ -466,6 +589,9 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None, level_sigma=None):
         else:
             Sl = S
         S = Sl * (1 - tj) + S * tj
+        if JUNC_TERRAIN_NODES:
+            tjt = _tj(dn_t)
+            S = Z * (1 - tjt) + S * tjt                 # 고른 교차로만 terrain 혼합 (평활 뒤 — 평활에는 Z 를 섞지 않음)
     else:
         S = Z * (1 - tj) + S * tj
     if p:
@@ -533,6 +659,11 @@ def build_all(only=None):
     t0 = time.time()
     F = Fields()
     inc, exc, assumed = road_sets(net, F)
+    node_shift = {}
+    _NODE_Z.clear()
+    if DESIGN_CAP and DESIGN_CAP_NODES:
+        nz, node_shift = node_heights(net, F, inc)
+        _NODE_Z.update(nz)
     half_w = {rid: est_half_width(net.roads[rid]) for rid in inc}
     t_fields = time.time() - t0
     OUT.mkdir(parents=True, exist_ok=True)
@@ -579,6 +710,11 @@ def build_all(only=None):
             print(name, meta["tiles"][name]["build_s"], "s roads", len(T["roads"]), flush=True)
     if _LONG_STATS:
         meta["long_smooth"] = dict(_LONG_STATS)
+    if DESIGN_CAP:
+        meta["design_cap"] = {"basis": "도로의 구조·시설 기준에 관한 규칙 제25조 (산지, 가장 낮은 설계속도) + 1 %p — 가정, 실측 종단 아님",
+                              "cap_by_rank": DESIGN_CAP_BY_RANK, "node_shift_max_m": NODE_SHIFT_MAX_M,
+                              "restore_max_dev_m": RESTORE_MAX_DEV_M, "node_moves": DESIGN_CAP_NODES,
+                              "curve_sigma_m": CAP_CURVE_SIGMA_M, "node_shift_m": node_shift, "roads": dict(_CAP_STATS)}
     meta["total_s"] = round(time.time() - t0, 1)
     meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     return meta
