@@ -193,3 +193,41 @@ def test_start_item_sk102_real_mission():
             pos = (here[0] + off[0], here[1] + off[1])
             assert first_item_ahead(sent, pos, 0.0, max_along_m=_reach(0.0, dt), here=here) == 0
             assert first_item_ahead(sent, pos, 0.0, here=here) == 0                   # 거리 상한 없이도 (경로 순서)
+
+
+# --- 주행 중 지나침 감시 (passed_item) — 2026-10-12 Gazebo c33 A 교량 경로 항목 51 을 3.34 m 로 지나쳐 PX4 가 되돌아 돌다 이탈
+from ugv.drivers.px4 import passed_item  # noqa: E402
+
+C33 = [(4561.55, 6044.95), (4562.81, 6044.86), (4564.04, 6044.62), (4565.25, 6044.24), (4566.38, 6043.69), (4567.45, 6043.03),
+       (4568.39, 6042.2), (4569.24, 6041.3), (4571.32, 6038.1), (4580.42, 6025.21), (4601.03, 5992.26), (4610.34, 5979.08)]
+C33_SENT = [(x, y, 4.0, True) for x, y in C33]      # 실제 미션 항목 44~55 (여기 번호 7 = 실제 51)
+
+
+def test_pass_none_while_tracking_normally():
+    # 계획선 위·옆 1.5 m 안을 따라가는 동안은 건너뛰지 않는다 (현재 항목은 차 앞 3 m 근처)
+    for cur, pos in ((3, (4562.8, 6045.1)), (5, (4564.7, 6045.4)), (7, (4567.6, 6043.4)), (8, (4569.6, 6040.0))):
+        assert passed_item(C33_SENT, None, cur, pos) is None
+
+
+def test_pass_skips_after_missing_item_outside_curve():
+    # 기록 위치 (sim 107.0 s): 현재 항목 51 에서 5 m, 경로상 이미 지남 → 차 앞 항목으로
+    k = passed_item(C33_SENT, None, 7, (4574.3, 6042.1))
+    assert k is not None and k >= 8
+    assert math.dist((4574.3, 6042.1), C33[k]) > 0
+
+
+def test_pass_none_inside_accept_radius_and_last_item():
+    assert passed_item(C33_SENT, None, 7, (4570.0, 6043.5)) is None                 # 2.3 m — PX4 가 곧 도착 처리
+    assert passed_item(C33_SENT, None, len(C33_SENT) - 1, (4620.0, 5970.0)) is None   # 마지막(정지점)은 건너뛰지 않음
+
+
+def test_pass_straight_offsets():
+    sent = [(float(x), 0.0, 5.0, True) for x in range(0, 60, 2)]
+    assert passed_item(sent, None, 10, (21.0, 2.5)) is None       # 옆 2.5 m 로 지나침 → 도착 반경 안이라 PX4 가 처리
+    k = passed_item(sent, None, 10, (22.0, 4.0))                  # 옆 4 m 로 지나침 → 진행 위치 + 3 m 넘는 첫 항목
+    assert k == 13
+    assert passed_item(sent, None, 10, (22.0, 4.0), 5.0) == 15    # 5 m/s 면 1 s 만큼 더 앞
+    # 늦은 진행 보고(cur 8)를 받아도 차 앞 + 3 m 밖 항목이라 PX4 실제 현재 항목(차 앞 3 m 안쪽은 이미 넘김)보다 뒤가 아니다
+    assert passed_item(sent, None, 8, (22.0, 4.0)) == 13
+    assert passed_item(sent, None, 10, (22.0, 20.0)) is None      # 미션 선에서 15 m 넘게 → 서버 이탈 감시 몫
+    assert passed_item(sent, None, 10, (17.0, 4.0)) is None       # 아직 항목 앞

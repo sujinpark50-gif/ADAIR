@@ -120,6 +120,55 @@ def first_item_ahead(sent, pos, v_mps: float, max_along_m: float = None, here=No
     return 0
 
 
+PASS_WINDOW = 15            # 지나침 감시: 현재 항목 앞뒤로 볼 구간 수
+PASS_MARGIN_M = 0.5         # 경로 진행 위치가 현재 항목을 이만큼 넘으면 '지나침'
+PASS_MAX_OFF_M = 15.0       # 미션 선에서 이보다 멀면 판단하지 않는다 (서버 이탈 감시가 맡는다)
+PASS_EVERY_S = 0.2
+PASS_HOLDOFF_S = 1.0        # 건너뛰기 명령 뒤 다음 판단까지
+PASS_TIE_M = 0.1            # 가장 가까운 구간이 여럿이면 이 차 안에서 경로 순서상 앞 (옆으로 밀린 차에는 1 m 면 앞 구간 끝점이 뽑힌다)
+PASS_SKIP = os.getenv("UGV_PX4_PASS_SKIP", "0") == "1"   # 지나침 감시 (1 = 켜기. 시험 검증 전 기본 끔)
+
+
+def passed_item(sent, here, cur: int, pos, v_mps: float = 0.0):
+    """주행 중 지나침 감시: 차가 PX4 현재 항목 cur 을 도착 반경(ACCEPT_M) 밖으로 지나쳤으면 차 앞의 첫 항목 번호, 아니면 None.
+    PX4 미션은 도착 반경 안에 들어와야 다음 항목으로 넘어간다. 급한 곡선에서 차가 바깥으로 3 m 넘게 밀려 항목을 지나치면
+    PX4 는 그 항목을 계속 현재 목표로 두고 되돌아가려 최대 조향으로 돌다가, 멈춘 구간의 연장선을 따라 직진해 도로를 벗어났다
+    (2026-10-12 Gazebo c33 A 교량 경로 항목 51 최소 3.34 m, c36 B 소방서 출발 항목 9 최소 3.06 m — ulog 미션 진행·궤적 대조).
+    경로 진행 위치는 cur 앞뒤 구간에서 가장 가까운 구간(거의 같으면 경로 순서상 앞)으로 잰다 (first_item_ahead 와 같은 방식).
+    마지막 항목(정지점)은 건너뛰지 않는다.
+    건너뛸 항목 = 경로 진행 위치 + ACCEPT_M + 속도 × 1 s 보다 먼 첫 항목 (first_item_ahead 와 같은 기준). PX4 는 도착 반경 안 항목을
+    스스로 넘기므로 실제 현재 항목은 그보다 앞이 아니다 — MAVSDK 진행 보고가 늦어도 뒤로 되돌리지 않는다
+    (2026-10-12 c38: '진행 위치 + 1 m' 기준은 늦은 보고 12 를 보고 13 을 설정, PX4 는 이미 15 → 되돌아가 이탈 25.9 m)."""
+    n = len(sent)
+    if cur is None or cur <= 0 and here is None or cur >= n - 1:
+        return None
+    if math.dist(pos, sent[cur][:2]) <= ACCEPT_M:
+        return None                                 # 곧 PX4 가 도착 처리한다
+    lo = max(cur - 1, 0)
+    pts = ([tuple(here[:2])] if cur == 0 and here is not None else []) + [tuple(it[:2]) for it in sent[lo:cur + PASS_WINDOW + 1]]
+    base = lo - (1 if cur == 0 and here is not None else 0)    # pts 번호 + base = sent 번호
+    cum = [0.0]
+    for a, b in zip(pts, pts[1:]):
+        cum.append(cum[-1] + math.dist(a, b))
+    segs = []
+    for k, (a, b) in enumerate(zip(pts, pts[1:])):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((pos[0] - a[0]) * dx + (pos[1] - a[1]) * dy) / L2))
+        segs.append((math.hypot(pos[0] - a[0] - t * dx, pos[1] - a[1] - t * dy), cum[k] + t * (cum[k + 1] - cum[k])))
+    if not segs:
+        return None
+    dmin = min(d for d, _ in segs)
+    d, along = next((d, s) for d, s in segs if d <= dmin + PASS_TIE_M)
+    if d > PASS_MAX_OFF_M or along < cum[cur - base] + PASS_MARGIN_M:
+        return None
+    need = along + ACCEPT_M + max(v_mps, 0.0) * 1.0
+    for k in range(cur - base + 1, len(cum)):
+        if cum[k] >= need:
+            return min(k + base, n - 1)
+    return None                                     # 창 안에 없으면 다음 판단으로 (멀리 건너뛰지 않는다)
+
+
 def _mission_item(lat, lon, speed, through):
     from mavsdk.plugins.mission.mission import MissionItem
     return MissionItem(latitude_deg=lat, longitude_deg=lon, relative_altitude_m=0.0, speed_m_s=speed,
@@ -153,6 +202,8 @@ class Px4Driver(Driver):
         self.connected = False
         self.last_error: Optional[str] = None
         self.parked_seq = None                  # 정차 유지(시동 끔)한 미션 번호
+        self._sent = None                       # (미션 번호, 보낸 항목, 계획 시점 위치) — 지나침 감시용
+        self.pass_skips: List[dict] = []        # 지나침 감시가 건너뛴 기록 (시험 분석용)
 
     async def start(self):
         from mavsdk.asyncio import ComponentType, Configuration, Mavsdk
@@ -181,6 +232,8 @@ class Px4Driver(Driver):
         if not self.connected:
             raise DriverError("PX4_NO_POSITION")
         self._tasks.append(asyncio.create_task(self._park_watch()))
+        if PASS_SKIP:
+            self._tasks.append(asyncio.create_task(self._pass_watch()))
 
     async def test_link(self, cut: bool) -> dict:
         """시험용 (UGV_TEST_HOOKS=1): 이 차량의 MAVLink 연결만 끊거나 잇는다. 끊으면 이 차량의 MAVSDK 인스턴스를 닫아 서버는 이 차에
@@ -223,6 +276,35 @@ class Px4Driver(Driver):
                 raise
             except Exception as e:  # noqa: BLE001
                 self.last_error = f"park: {type(e).__name__}: {e}"
+
+    async def _pass_watch(self):
+        """주행 중 지나친 미션 항목 건너뛰기 (passed_item). PX4 가 지나친 항목으로 되돌아가 도는 것을 막는다."""
+        hold_until = 0.0
+        while True:
+            await asyncio.sleep(PASS_EVERY_S)
+            try:
+                sent, prog, tel = self._sent, self._prog, self.telemetry()
+                if (sent is None or tel is None or tel.age_s() > 1.0 or not self._armed or prog.finished
+                        or prog.mission_seq != sent[0] or prog.total != len(sent[1]) or time.monotonic() < hold_until):
+                    continue
+                k = passed_item(sent[1], sent[2], prog.current, (tel.x, tel.y), tel.speed_mps)
+                if k is None:
+                    continue
+                async with self._cmd:
+                    if self._prog.mission_seq != sent[0] or self._prog.current != prog.current:
+                        continue
+                    await self._mis.set_current_mission_item(k)
+                    hold_until = time.monotonic() + PASS_HOLDOFF_S
+                    rec = {"wall": round(time.time(), 2), "mission_seq": sent[0], "from": prog.current, "to": k,
+                           "dist_m": round(math.dist((tel.x, tel.y), sent[1][prog.current][:2]), 2), "xy": [round(tel.x, 1), round(tel.y, 1)]}
+                    self.pass_skips.append(rec)
+                    if isinstance(getattr(self, "last_sent", None), dict):
+                        self.last_sent.setdefault("pass_skips", []).append(rec)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"pass_watch: {type(e).__name__}: {e}"
+                hold_until = time.monotonic() + PASS_HOLDOFF_S
 
     async def _pump(self, name, stream):
         import time
@@ -315,6 +397,7 @@ class Px4Driver(Driver):
             self._expected_total = len(plan)
             self._seen_running = False
             self._prog = Progress(0, len(plan), False, seq)
+            self._sent = (seq, sent, here)
             try:
                 await self._mis.upload_mission(MissionPlan(plan))
                 await self._ensure_armed()
