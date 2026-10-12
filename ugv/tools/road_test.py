@@ -353,6 +353,35 @@ def evaluate_log(log: dict, rows) -> dict:
     return out
 
 
+POST_STOP_MAX_S = 60.0
+
+
+def observe_after_end(c, rid, post_s):
+    """임무 끝 뒤 정지 확인·정지 유지 관측 (서버 상태 0.5 s 간격). 판정 기준은 0.2 m/s 미만 1 s 연속 (서버 정지 감독과 같은 속도 기준).
+    반환: {"confirmed", "confirm_after_s", "observed_after_confirm_s", "max_speed_after_confirm", "samples"}"""
+    t0, low_since, confirm, samples = time.time(), None, None, []
+    while True:
+        now = time.time() - t0
+        st = c.get(f"/ugv/{rid}/state").json()
+        v = st.get("speed_mps") or 0.0
+        samples.append({"t": round(now, 1), "speed": v, "state": st.get("mission_state"), "driver": st.get("driver_status"),
+                        "pos": st.get("position")})
+        if confirm is None:
+            low_since = (low_since if low_since is not None else now) if v < 0.2 else None
+            if low_since is not None and now - low_since >= 1.0:
+                confirm = now
+        if confirm is not None and now - confirm >= post_s:
+            break
+        if confirm is None and now >= POST_STOP_MAX_S:
+            break
+        time.sleep(0.5)
+    after = [x["speed"] for x in samples if confirm is not None and x["t"] >= confirm]
+    return {"confirmed": confirm is not None, "confirm_after_s": confirm, "post_s": post_s,
+            "observed_after_confirm_s": None if confirm is None else round(samples[-1]["t"] - confirm, 1),
+            "max_speed_after_confirm": max(after) if after else None, "basis": "서버 상태 속도 0.2 m/s 미만 1 s 연속",
+            "samples": samples}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", default="http://127.0.0.1:8100")
@@ -370,6 +399,8 @@ def main():
                     help="--abort-after 뒤, 차 위치부터 정지 거리 구간 지형 타일 표면 경사가 -값 이하(내리막)이고 8 m/s 넘을 때 중단")
     ap.add_argument("--fail-stop-n", type=int, default=0, help="중단 직전 미션 전송 n 번 실패 주입 (UGV_TEST_HOOKS=1 서버)")
     ap.add_argument("--track-s", type=float, default=900.0)
+    ap.add_argument("--post-stop-s", type=float, default=15.0,
+                    help="임무가 끝난 뒤(도착·실패·취소) 정지 확인(0.2 m/s 미만 1 s) 후 더 관측할 시간. 확인 못 하면 최대 60 s 뒤 미확인으로 기록")
     ap.add_argument("--world", default=config.DEFAULT_VEHICLES[0]["px4"]["gz_world"])
     ap.add_argument("--analyze", type=Path, help="저장된 road_*.json 을 다시 분석")
     ap.add_argument("--model", default="adair_ugv_1", help="Gazebo 모델 이름")
@@ -596,6 +627,11 @@ def main():
                 continue
             else:
                 log["final"] = t
+                if a.post_stop_s > 0:
+                    log["post_end"] = observe_after_end(c, a.rid, a.post_stop_s)
+                    pe = log["post_end"]
+                    print(f"  임무 끝 뒤 관측: 정지 확인 {pe['confirmed']} (확인 뒤 {pe['observed_after_confirm_s']} s, "
+                          f"그 뒤 최대 속도 {pe['max_speed_after_confirm']})", flush=True)
                 break
         waiting_junction = (a.second_near_junction and a.second and not second_sent
                             and time.time() - t0 >= a.second_after)

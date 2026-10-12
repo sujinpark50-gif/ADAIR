@@ -136,7 +136,10 @@ STOP_ROAD_SNAP_MAX_M = 5.0  # 정지 경로를 '진행 방향 도로' 로 만들
 # 2026-10-12 c42 j494846 v2: 직선 정지 10 m 동안 도로 밖 3.67 → 5.5 m, 기록 끝까지 정지 미확인. 시동 끄기(구동 차단)는 관성 주행이라
 # 대안이 아니다 (2026-10-11 c23: 13.5 m/s 에서 약 75 m). 도로로 급히 되돌아가는 경로는 만들지 않는다
 OFFROAD_STOP_MODE = os.getenv("UGV_OFFROAD_STOP", "straight")
-FAULT_STOP_PLAN_M = 3.0     # 고장 정지에서 남은 계획 경로를 따라 정지할 계획선 거리 상한
+# 고장 정지에서 남은 계획 경로를 따라 정지할 계획선 거리 상한. 기본 0 = 끔(예전 동작: 고장 정지는 진행 방향 도로 정지 경로).
+# 켜면 고장 차가 계획 경로 위에 서서 다른 차의 대체 경로를 막는 경우가 생겼다 (2026-10-12 단위 시험
+# test_closed_loop_fault_redecision_other_resource_return_ready: 수정 전 4/4 통과, 켠 상태 2/4 실패 — BLOCKED_BY_VEHICLE)
+FAULT_STOP_PLAN_M = float(os.getenv("UGV_FAULT_STOP_PLAN_M", "0"))
 EMERG_STOP_MIN_M = 4.0      # PX4 도착 반경(3 m)보다 멀게 — 가까우면 바로 도착 처리돼 미션 끝 대기(선회)로 간다
 PASS_STALL_S = 1.0          # 정체(드라이버 pass_blocked_since: 현재 항목을 놓치고 멀어지는데 건너뛸 수 없음)가 이만큼 → 고장·정지
                             # (기록 재생: 1 s 에서도 정상 주행 오작동 0, 실패 주행은 항목에서 6.6~7.3 m 일 때 감지 — 2 s 는 7.5~11 m)
@@ -797,13 +800,15 @@ class Vehicle:
                 need = self.profile.stop_distance(v)
                 g = self.graph
                 prefer = None
-                if self.speed is not None:
-                    # 남은 계획 경로를 따라 정지 — 계획선 가까이(OFF_ROUTE_M/3 안)일 때. 상태로 거르지 않는다: 고장 정지는 _fail 이 먼저
-                    # 상태를 FAULT 로 바꿔 _plan_heading(주행 상태만)이 늘 None 이었다 → 계획선 위에서도 직선 정지로 떨어졌다 (2026-10-12)
+                if self.speed is not None and self._plan_heading(tel) is not None:
+                    # 예전과 같은 조건 (주행 상태·계획선 OFF_ROUTE_M/3 안)
+                    _, i = _progress_index(tel.x, tel.y, self.speed.pts, self.speed.cum, self._near_i)
+                    prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
+                elif self.speed is not None and self.state == "FAULT" and FAULT_STOP_PLAN_M > 0:
+                    # 선택(UGV_FAULT_STOP_PLAN_M>0): 고장 정지도 계획선 가까이면 남은 계획 경로로. _fail 이 상태를 먼저 FAULT 로 바꿔
+                    # _plan_heading 이 None 이 되는 문제 보완 — 기본 끔 (다른 차의 대체 경로를 막는 회귀, 위 상수 설명)
                     d_pl, i = _progress_index(tel.x, tel.y, self.speed.pts, self.speed.cum, self._near_i)
-                    # 고장(이탈·정체) 정지는 계획선 FAULT_STOP_PLAN_M 안에서만 — 멀리서 계획선으로 급히 되돌아가는 정지 경로를 만들지 않는다
-                    lim = FAULT_STOP_PLAN_M if self.state == "FAULT" else config.OFF_ROUTE_M / 3
-                    if d_pl <= lim and i + 1 < len(self.speed.pts):
+                    if d_pl <= FAULT_STOP_PLAN_M and i + 1 < len(self.speed.pts):
                         prefer = [(tel.x, tel.y)] + self.speed.pts[i + 1:]
                 pos = self.net.snap(tel.x, tel.y)
                 dp = g.dirpos(pos, tel.heading_deg) if prefer is None else None

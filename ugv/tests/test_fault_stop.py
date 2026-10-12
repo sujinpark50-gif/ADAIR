@@ -25,7 +25,8 @@ def _go(A, clock, secs):
     return go()
 
 
-def test_fault_stop_on_plan_follows_remaining_route(tmp_path):
+def test_fault_stop_on_plan_follows_remaining_route(tmp_path, monkeypatch):
+    monkeypatch.setattr(VM, "FAULT_STOP_PLAN_M", 3.0)                 # 선택 기능 (기본 끔)
     async def go():
         f, clock = make_fleet(tmp_path, [FLEET_CFG[0]])
         A = f.vehicles["A-ugv1"]
@@ -158,3 +159,16 @@ def test_stall_detect_off_does_nothing(monkeypatch):
     st["x"], st["y"] = 21.0, 6.0
     asyncio.run(d._pass_step(0.0))
     assert d.pass_blocked_since is None
+
+
+def test_fault_stop_default_keeps_road_ahead(tmp_path):
+    """기본(UGV_FAULT_STOP_PLAN_M=0): 고장 정지는 예전처럼 진행 방향 도로 정지 경로."""
+    async def go():
+        f, clock = make_fleet(tmp_path, [FLEET_CFG[0]])
+        A = f.vehicles["A-ugv1"]
+        await A.execute(body("F3", *FRAME.to_ll(A.access.x - 900, A.access.y - 700)))
+        await _go(A, clock, 20)
+        A._fail("TEST_FAULT", "기본값")
+        info = await A._safe_stop()
+        assert info["basis"] != "PLANNED_ROUTE", info
+    asyncio.run(go())
