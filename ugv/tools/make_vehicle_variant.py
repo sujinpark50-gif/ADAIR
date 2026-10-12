@@ -41,7 +41,10 @@ MODEL_SUSP = {
                                   "front_left": (711000.0, 43000.0, -0.028), "front_right": (711000.0, 43000.0, -0.028)},
                         "travel": 0.10, "link_mass": 10.0},
 }
-MODEL_VARIANTS = {"adair_ugv": ["base", "rwd", "susp_a0", "susp_a", "susp_a_m"], "adair_firetruck": ["base", "susp_a", "fire_v2_base", "fire_v2"]}
+MODEL_VARIANTS = {"adair_ugv": ["base", "rwd", "susp_a0", "susp_a", "susp_a_m"], "adair_firetruck": ["base", "susp_a", "fire_v2_base", "fire_v2", "fire_v2_cg100", "fire_v2_cg140"]}
+# 무게중심 높이 민감도 (후속 계획 S4 7.3, S2 설계 문서: 결과 보기 전에 고정한 범위 1.0~1.4 m): fire_v2 와 같고 차체(base_link) 관성 중심 높이만
+#   지면 위 1.0 / 1.4 m (fire_v2 = 1.2 m = base_z 0.42 + 0.78). 질량·관성 텐서·서스펜션·바퀴는 그대로 (단순화: 관성 텐서는 높이와 무관하게 유지)
+CG_VARIANTS = {"fire_v2_cg100": 1.00, "fire_v2_cg140": 1.40}
 
 # 소방차 fire_v2 (후속 계획 S2 설계 문서 UGV_소방차_기준차량_설계_S2_20261012.md): 국내 중형펌프차 참고값 반영 — 가정값 포함
 #   운행 질량 12,175 kg(차량총중량 [대진정공 DFP-051H]), 축간 4.3 m [가정, 파비스 장축], 앞뒤 축하중 35/65 % [가정] → 무게중심 x=0 에서
@@ -183,12 +186,16 @@ def build(variant: str, model: str = "adair_ugv") -> str:
         return base
     if variant == "rwd":
         return remove_front_drive(base)
-    if variant in ("fire_v2_base", "fire_v2"):
+    if variant in ("fire_v2_base", "fire_v2") or variant in CG_VARIANTS:
         if model != "adair_firetruck":
             raise SystemExit(f"{model} 에는 변형 {variant} 없음")
-        s = make_fire_v2(base, with_susp=variant == "fire_v2")
-        if variant == "fire_v2":
+        s = make_fire_v2(base, with_susp=variant != "fire_v2_base")
+        if variant != "fire_v2_base":
             s = publish_susp_joints(add_suspension(s, MODEL_SUSP["adair_firetruck_v2"]))
+        if variant in CG_VARIANTS:
+            old = f'<pose>0 0 {FIRE_V2["com_z_above_base"]} 0 0 0</pose>'
+            assert s.count(old) == 1, old
+            s = s.replace(old, f'<pose>0 0 {round(CG_VARIANTS[variant] - FIRE_V2["base_z"], 3)} 0 0 0</pose>')
         return s
     if variant in ("susp_a0", "susp_a", "susp_a_m"):
         if variant not in MODEL_VARIANTS[model]:
