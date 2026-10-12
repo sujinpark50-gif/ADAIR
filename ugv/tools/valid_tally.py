@@ -8,6 +8,7 @@
   INVALID_CONTAMINATED  <TAG>.contaminated 있음
   INVALID_STOP          <TAG>.invalid_stop 있음 (사후 종료 확인 실패)
   INVALID_EVIDENCE      <TAG>.invalid_evidence 있음, 또는 증거 규칙(아래)을 못 채움
+  INVALID_RECORD        주행은 했으나 결과 JSON 을 남기지 못함 (시험 도구 예외 등) — 재시험
   VALID_PASS / VALID_FAIL   judge3 최종 합격 / 불합격 (도착·차체 도로 경계·정지 확인 ≥10 s)
 증거 규칙 (--run 접두어=규칙):
   v5        manifest_<TAG>.json·verify_<TAG>.txt 가 EVIDENCE_OK 이고 stop_post JSON 이 still_alive 0·residual_own 0
@@ -43,7 +44,7 @@ def clean_stop(p):
 
 
 def cell_of(tag):
-    m = re.match(r"c\d+[A-Z]?_(j\d+_\d+_\d+)_(D8|D5|v2)_", tag)
+    m = re.match(r"c\d+[A-Za-z]*_(j\d+_\d+_\d+)_(D8|D5|v2)_", tag)
     return (m.group(1), m.group(2)) if m else (None, None)
 
 
@@ -56,6 +57,9 @@ def classify(tag, rule, s4):
             return cls, (s4 / f"{tag}{mk}").read_text(encoding="utf-8", errors="replace").strip()[:160], None
     js = [f for L in LOGS for f in glob.glob(str(L / f"{tag}_2*.json"))]
     if not js:
+        if "임무 끝 뒤 관측" in out_txt or "기록기 종료 대기" in out_txt or "Traceback" in out_txt:
+            last = [l for l in out_txt.strip().splitlines() if l.strip()][-1][:120]
+            return "INVALID_RECORD", f"주행 뒤 결과 JSON 미기록 (시험 도구 실패: {last})", None
         return "INVALID_NOT_RUN", "결과 JSON 없음", None
     note = ""
     if rule == "v5":
