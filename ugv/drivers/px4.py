@@ -126,6 +126,7 @@ PASS_MAX_OFF_M = 15.0       # 미션 선에서 이보다 멀면 판단하지 않
 PASS_EVERY_S = 0.2
 PASS_HOLDOFF_S = 1.0        # 건너뛰기 명령 뒤 다음 판단까지
 PASS_TIE_M = 0.1            # 가장 가까운 구간이 여럿이면 이 차 안에서 경로 순서상 앞 (옆으로 밀린 차에는 1 m 면 앞 구간 끝점이 뽑힌다)
+STALL_AWAY_M = 1.5          # 정체: PX4 현재 항목이 그대로인데 차가 그 항목에서 (도착 반경 + 0.5 m 밖, 지금까지 최소 거리 + 이만큼) 멀어짐
 PASS_HEAD_MAX_DEG = 60.0    # 건너뛸 항목이 차 진행 방향 이 각도 안(앞)일 때만 — 아니면 보류(차량이 정체로 판단해 정지)
 PASS_SKIP = os.getenv("UGV_PX4_PASS_SKIP", "0") == "1"   # 지나침 감시 (1 = 켜기. 시험 검증 전 기본 끔)
 
@@ -168,6 +169,12 @@ def passed_item(sent, here, cur: int, pos, v_mps: float = 0.0):
         if cum[k] >= need:
             return min(k + base, n - 1)
     return None                                     # 창 안에 없으면 다음 판단으로 (멀리 건너뛰지 않는다)
+
+
+def stall_away(dcur: float, dmin: float) -> bool:
+    """PX4 현재 항목에서 멀어지는 중인가: 도착 반경 + 0.5 m 밖이고, 그 항목이 현재가 된 뒤 최소 거리보다 STALL_AWAY_M 넘게 멀다.
+    (기록 재생 2026-10-12: 정상 주행 5건 0회, 놓친 항목 실패 5건 모두 — 1 s 지속 기준)"""
+    return dcur > ACCEPT_M + 0.5 and dcur > dmin + STALL_AWAY_M
 
 
 def pass_allowed(target_xy, pos, heading_deg: float, body_inside: bool):
@@ -214,7 +221,8 @@ class Px4Driver(Driver):
         self._sent = None                       # (미션 번호, 보낸 항목, 계획 시점 위치) — 지나침 감시용
         self.pass_skips: List[dict] = []        # 지나침 감시가 건너뛴·보류한 기록 (시험 분석용)
         self.pass_guard = None                  # 차량이 넘겨주는 판정: guard(tel) → 차체가 도로 띠 안이면 True
-        self.pass_blocked_since: Optional[float] = None   # 지나쳤는데 건너뛸 조건이 안 되는 상태가 시작된 시각 (monotonic)
+        self.pass_blocked_since: Optional[float] = None   # 정체 시작 시각 (monotonic): 현재 항목을 놓치고 멀어지는데 건너뛸 수 없음
+        self._stall_key, self._stall_dmin = None, math.inf
 
     async def start(self):
         from mavsdk.asyncio import ComponentType, Configuration, Mavsdk
@@ -298,19 +306,29 @@ class Px4Driver(Driver):
                 if (sent is None or tel is None or tel.age_s() > 1.0 or not self._armed or prog.finished
                         or prog.mission_seq != sent[0] or prog.total != len(sent[1]) or time.monotonic() < hold_until):
                     continue
+                # 정체 판단은 지나침 판정과 따로: 현재 항목에서 계속 멀어지면 (PX4 로버는 항목을 지나쳤다는 판정이 없다 —
+                # navigator passed_curr_wp 는 고정익만. 도착 반경 밖으로 지나치면 그 항목에 계속 머문다)
+                key = (sent[0], prog.current)
+                dcur = math.dist((tel.x, tel.y), sent[1][prog.current][:2])
+                if key != self._stall_key:
+                    self._stall_key, self._stall_dmin = key, dcur
+                self._stall_dmin = min(self._stall_dmin, dcur)
+                away = stall_away(dcur, self._stall_dmin)
                 k = passed_item(sent[1], sent[2], prog.current, (tel.x, tel.y), tel.speed_mps)
-                if k is None:
-                    self.pass_blocked_since = None
-                    continue
-                # 안전 조건: 건너뛸 항목이 차 앞(진행 방향 ±PASS_HEAD_MAX_DEG), 차체가 도로 띠 안. 아니면 보류 — 무조건 넘기지 않는다
-                inside = True if self.pass_guard is None else bool(self.pass_guard(tel))
-                ok, dh = pass_allowed(sent[1][k][:2], (tel.x, tel.y), tel.heading_deg, inside)
+                ok, dh, inside = False, None, None
+                if k is not None:
+                    # 안전 조건: 건너뛸 항목이 차 앞(진행 방향 ±PASS_HEAD_MAX_DEG), 차체가 도로 띠 안. 아니면 건너뛰지 않는다
+                    inside = True if self.pass_guard is None else bool(self.pass_guard(tel))
+                    ok, dh = pass_allowed(sent[1][k][:2], (tel.x, tel.y), tel.heading_deg, inside)
                 if not ok:
-                    if self.pass_blocked_since is None:
+                    if away and self.pass_blocked_since is None:
                         self.pass_blocked_since = time.monotonic()
                         self.pass_skips.append({"wall": round(time.time(), 2), "mission_seq": sent[0], "from": prog.current,
-                                                "to": k, "blocked": True, "heading_diff_deg": round(dh, 1), "body_inside": inside,
+                                                "to": k, "blocked": True, "dist_m": round(dcur, 2), "dmin_m": round(self._stall_dmin, 2),
+                                                "heading_diff_deg": None if dh is None else round(dh, 1), "body_inside": inside,
                                                 "xy": [round(tel.x, 1), round(tel.y, 1)]})
+                    elif not away:
+                        self.pass_blocked_since = None
                     continue
                 self.pass_blocked_since = None
                 async with self._cmd:

@@ -11,7 +11,7 @@ import asyncio
 import math
 
 import ugv.vehicle as VM
-from ugv.drivers.px4 import pass_allowed
+from ugv.drivers.px4 import ACCEPT_M, pass_allowed, stall_away
 from ugv.geo import FRAME
 from ugv.tests.test_multi_vehicle import FLEET_CFG, body, make_fleet
 
@@ -78,3 +78,10 @@ def test_pass_allowed_conditions():
     assert not pass_allowed((-10.0, 0.0), (0.0, 0.0), 90.0, True)[0]              # 목표가 뒤 (반대 방향)
     assert not pass_allowed((0.0, 10.0), (0.0, 0.0), 90.0, True)[0]               # 옆 90°
     assert not pass_allowed((10.0, 0.0), (0.0, 0.0), 90.0, False)[0]              # 차체가 도로 띠 밖
+
+
+def test_stall_away_conditions():
+    assert not stall_away(2.0, 1.0)                        # 도착 반경 안 — PX4 가 곧 넘긴다
+    assert not stall_away(ACCEPT_M + 1.0, ACCEPT_M)        # 아직 최소 거리 + 1.5 m 안 (다가오는 중·옆을 지나는 중)
+    assert stall_away(ACCEPT_M + 2.5, ACCEPT_M)            # 놓치고 멀어짐
+    assert not stall_away(10.0, 9.5)                       # 멀리서 다가오는 중이었다면 최소 거리 기준으로는 멀어짐 아님

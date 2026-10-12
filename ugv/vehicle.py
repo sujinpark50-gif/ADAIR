@@ -138,7 +138,8 @@ STOP_ROAD_SNAP_MAX_M = 5.0  # 정지 경로를 '진행 방향 도로' 로 만들
 OFFROAD_STOP_MODE = os.getenv("UGV_OFFROAD_STOP", "straight")
 FAULT_STOP_PLAN_M = 3.0     # 고장 정지에서 남은 계획 경로를 따라 정지할 계획선 거리 상한
 EMERG_STOP_MIN_M = 4.0      # PX4 도착 반경(3 m)보다 멀게 — 가까우면 바로 도착 처리돼 미션 끝 대기(선회)로 간다
-PASS_STALL_S = 2.0          # 미션 항목을 지나쳤는데 건너뛸 안전 조건이 안 되는 상태(드라이버 pass_blocked_since)가 이만큼 → 정체 고장·정지
+PASS_STALL_S = 1.0          # 정체(드라이버 pass_blocked_since: 현재 항목을 놓치고 멀어지는데 건너뛸 수 없음)가 이만큼 → 고장·정지
+                            # (기록 재생: 1 s 에서도 정상 주행 오작동 0, 실패 주행은 항목에서 6.6~7.3 m 일 때 감지 — 2 s 는 7.5~11 m)
 OFFROAD_STOP_M = 2.0        # 주행 중 실제 차체가 도로 띠 밖으로 이만큼 넘게 나가면 (OFFROAD_CONFIRM_S 지속) 고장·정지
 OFFROAD_CONFIRM_S = 2.0      # 정지 감독: 0.2 m/s 미만(최신 텔레메트리)이 이만큼 이어지면 정차 확인
 # 정지·양보 명령이 이 시간 안에 끝나지 않으면 '전달 여부 불명' 실패로 본다 (실측 명령 교체 지연 최대 CMD_LATENCY_MAX_S 6 s + 여유)
@@ -1055,7 +1056,7 @@ class Vehicle:
         blk = getattr(self.driver, "pass_blocked_since", None)
         if blk is not None and time.monotonic() - blk >= PASS_STALL_S:
             async with self.lock:
-                self._fail("MISSION_STALL", f"미션 항목을 지나쳐 PX4 가 되돌아가려 함 — 건너뛸 안전 조건 없음 ({PASS_STALL_S:g} s)")
+                self._fail("MISSION_STALL", f"PX4 현재 미션 항목을 놓치고 멀어짐 — 건너뛸 안전 조건 없음 ({PASS_STALL_S:g} s)")
                 await self._safe_stop()
                 self.state = "FAULT"
             self.driver.pass_blocked_since = None
