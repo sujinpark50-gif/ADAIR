@@ -43,6 +43,15 @@ BLEND_M = 12.0               # build_terrain_world 와 같음
 JUNCTION_MODE = os.getenv("ADAIR_JUNCTION_MODE", "terrain")   # terrain: 교차로 안 = 다듬은 지형 면 Z / level: 도로 중심선 고도 혼합을 평활 (횡단 수평 유지)
 JUNC_LEVEL_SIGMA_M = float(os.getenv("ADAIR_JUNC_LEVEL_SIGMA_M", "0"))          # level 모드 교차로 면 평활 (둔덕 제거). 2026-10-11 표본 25: σ2 교차로 횡경사 중앙값 4.0 %, σ4 4.5 %, σ7 6.0 % (σ7 은 턱 0.25 m)
 # level 모드에서 교차로별로 terrain 혼합을 쓸 노드 (붙은 도로들이 level 에서 더 나빠지는 교차로 — 2026-10-11 비교로 고름)
+# 설계형 교차로면 (D 후보, 지정 노드만 — 시험용): 주도로 우선(주도로 중심선 종단을 교차로 안으로 연장, 부도로는 15~30 m 에서
+# 연결) 또는 같은 위계면 진입부 점들에 맞춘 기울어진 공통 평면. 실제 도로 설계 관행(TxDOT 4.8.5 table-topping·주도로 우선,
+# Maine DOT 5-1.02) 참고 — 측량 자료 아님. docs/ugv/UGV_도로면_설계기준_적용_20261012.md
+JUNC_DESIGN_NODES = set(json.loads(Path(os.environ["ADAIR_JUNC_DESIGN_NODES"]).read_text(encoding="utf-8")))     if os.getenv("ADAIR_JUNC_DESIGN_NODES") else set()
+DESIGN_STRAIGHT_DEG = 135.0     # 주도로 쌍: 두 도로가 이 각도 이상으로 이어질 때 (직진 쌍)
+DESIGN_PLANE_RING = (15.0, 25.0)
+DESIGN_WARP_GRADE = 0.04        # 연결(비틀기)이 더하는 종단 경사 상한 (Maine DOT 신호교차로 4 %, 일시정지 6 %) — 매끈한 전이 최대 기울기 1.5·Δ/L
+DESIGN_OUT_MAX_M = 60.0         # 전이 바깥 반경 상한 — 넘으면 그 노드는 설계면 후보 실패로 기록하고 기존 처리 유지
+DESIGN_REPORT = {}              # 노드 → 선택(주도로/평면)·전이 반경·부도로 높이 차 (tiles.json 에 기록)  # 공통 평면 맞춤: 노드에서 이 거리의 진입부 중심선 고도
 JUNC_TERRAIN_NODES = set(json.loads(Path(os.environ["ADAIR_JUNC_TERRAIN_NODES"]).read_text(encoding="utf-8")))     if os.getenv("ADAIR_JUNC_TERRAIN_NODES") else set()
 # 종단 다듬기를 하지 않을 도로 (다듬으면 최종 표면 검사에서 악화 — 2차 확인으로 되돌림)
 LONG_SKIP = set(json.loads(Path(os.environ["ADAIR_LONG_SKIP"]).read_text(encoding="utf-8"))) if os.getenv("ADAIR_LONG_SKIP") else set()
@@ -67,7 +76,7 @@ def build_params():
     from ugv import config
     return {"junction_mode": JUNCTION_MODE, "junc_level_sigma_m": JUNC_LEVEL_SIGMA_M, "road_surface_sigma_m": SIGMA_M,
             "long_sigma_m": LONG_SIGMA_M, "design_cap": DESIGN_CAP,
-            "junc_terrain_nodes": len(JUNC_TERRAIN_NODES), "long_skip": len(LONG_SKIP),
+            "junc_terrain_nodes": len(JUNC_TERRAIN_NODES), "junc_design_nodes": sorted(JUNC_DESIGN_NODES), "long_skip": len(LONG_SKIP),
             "bridges": {"on": BRIDGES, "max_deck_above_dem_m": BRIDGE_MAX_DECK_ABOVE_DEM_M, "near_road_m": BRIDGE_NEAR_ROAD_M,
                         "near_road_dz_m": BRIDGE_NEAR_ROAD_DZ_M},
             "blend_m": BLEND_M, "git_head": head, "git_dirty_ugv": dirty, "extra_roads": config.EXTRA_ROADS or None}
@@ -482,6 +491,109 @@ def junction_nodes(net, inc):
     return v
 
 
+def _road_away(net, rid, node, dist):
+    """도로 rid 의 node 쪽 끝에서 dist m 안쪽 점 (x, y)."""
+    r = net.roads[rid]
+    s = min(dist, r.length) if r.a == node else max(r.length - dist, 0.0)
+    p = net.at(rid, s)
+    return p.x, p.y
+
+
+def design_junction(net, F, inc, node):
+    """설계형 교차로면 정의 → ('major', 점열 P, 고도 Zp, 주도로 쌍) 또는 ('plane', (a, b, c)) 또는 None.
+    주도로 쌍: 노드에 붙은 포함 도로 중 위계(road_rank 작을수록 상위)·차로 수가 가장 높고 DESIGN_STRAIGHT_DEG 이상으로 이어지는 쌍.
+    없으면 공통 평면 z = a + b·x + c·y (진입부 DESIGN_PLANE_RING 구간 중심선 고도 최소제곱)."""
+    roads = [r for r in inc if node in (net.roads[r].a, net.roads[r].b)]
+    if len(roads) < 3:
+        return None
+    nx, ny = net.nodes[node]
+    info = {}
+    for rid in roads:
+        ax, ay = _road_away(net, rid, node, 10.0)
+        a = net.roads[rid].attrs
+        info[rid] = (math.atan2(ay - ny, ax - nx), int(a.get("road_rank") or 999), int(a.get("lanes") or 1))
+    best = None
+    for i1 in range(len(roads)):
+        for i2 in range(i1 + 1, len(roads)):
+            r1, r2 = roads[i1], roads[i2]
+            ang = abs((math.degrees(info[r1][0] - info[r2][0]) + 180.0) % 360.0 - 180.0)
+            if ang < DESIGN_STRAIGHT_DEG:
+                continue
+            key = (-max(info[r1][1], info[r2][1]), info[r1][2] + info[r2][2], ang)
+            if best is None or key > best[0]:
+                best = (key, r1, r2)
+    others = [r for r in roads if best is None or r not in best[1:]]
+    if best is not None and all(info[r][1] >= max(info[best[1]][1], info[best[2]][1]) for r in others) and             any(info[r][1] > max(info[best[1]][1], info[best[2]][1]) or info[r][2] < min(info[best[1]][2], info[best[2]][2])
+                for r in others):
+        # 주도로 우선: 주도로가 부도로보다 위계가 높거나 차로가 많을 때
+        pts, zs = [], []
+        for k, rid in enumerate(best[1:]):
+            P, Zd = road_dense(net, F, rid)
+            P, Zd = list(P), list(Zd)
+            r = net.roads[rid]
+            if (k == 0) == (r.a == node):          # 첫 도로는 노드 쪽이 끝, 둘째는 노드 쪽이 시작이 되게
+                P, Zd = P[::-1], Zd[::-1]
+            if k == 1:
+                P, Zd = P[1:], Zd[1:]
+            pts += [tuple(q) for q in P]
+            zs += list(Zd)
+        return ("major", np.array(pts), np.array(zs), best[1:])
+    A, b = [], []
+    for rid in roads:
+        P, Zd = road_dense(net, F, rid)
+        r = net.roads[rid]
+        cum = np.r_[0, np.cumsum(np.hypot(*np.diff(np.asarray(P), axis=0).T))]
+        dist = cum if r.a == node else cum[-1] - cum
+        sel = (dist >= DESIGN_PLANE_RING[0]) & (dist <= DESIGN_PLANE_RING[1])
+        for (x, y), z in zip(np.asarray(P)[sel], np.asarray(Zd)[sel]):
+            A.append([1.0, x - nx, y - ny])
+            b.append(z)
+    if len(b) < 3:
+        return None
+    coef, *_ = np.linalg.lstsq(np.array(A), np.array(b), rcond=None)
+    return ("plane", (float(coef[0]), float(coef[1]), float(coef[2])), (nx, ny))
+
+
+def design_out_radius(net, F, inc, node, dj):
+    """설계면과 각 도로 자기 면의 높이 차(노드에서 JUNC_IN_M 지점) → 전이 바깥 반경. 실패면 None."""
+    nx, ny = net.nodes[node]
+    worst = 0.0
+    for rid in [r for r in inc if node in (net.roads[r].a, net.roads[r].b)]:
+        if dj[0] == "major" and rid in dj[3]:
+            continue
+        P, Zd = road_dense(net, F, rid)
+        P, Zd = np.asarray(P), np.asarray(Zd)
+        k = int(np.argmin(np.abs(np.hypot(P[:, 0] - nx, P[:, 1] - ny) - JUNC_IN_M)))
+        zj = float(_design_eval(dj, P[k:k + 1, 0:1], P[k:k + 1, 1:2])[0, 0])
+        worst = max(worst, abs(zj - float(Zd[k])))
+    L = max(JUNC_OUT_M - JUNC_IN_M, 1.5 * worst / DESIGN_WARP_GRADE)
+    r_out = JUNC_IN_M + L
+    DESIGN_REPORT[node] = {"type": dj[0], "major": list(dj[3]) if dj[0] == "major" else None,
+                           "max_dz_at_in_m": round(worst, 3), "r_out_m": round(r_out, 1), "ok": r_out <= DESIGN_OUT_MAX_M}
+    return r_out if r_out <= DESIGN_OUT_MAX_M else None
+
+
+def _design_eval(dj, X, Y):
+    """설계면 고도 (격자 X, Y)."""
+    if dj[0] == "plane":
+        (a, b, c), (nx, ny) = dj[1], dj[2]
+        return a + b * (X - nx) + c * (Y - ny)
+    P, Zp = dj[1], dj[2]
+    best = np.full(X.shape, np.inf)
+    out = np.zeros(X.shape)
+    for k in range(len(P) - 1):
+        (ax, ay), (bx, by) = P[k], P[k + 1]
+        dx_, dy_ = bx - ax, by - ay
+        L2 = dx_ * dx_ + dy_ * dy_
+        t = np.clip(((X - ax) * dx_ + (Y - ay) * dy_) / L2, 0.0, 1.0) if L2 > 0 else np.zeros(X.shape)
+        dd = np.hypot(X - ax - t * dx_, Y - ay - t * dy_)
+        z = Zp[k] + t * (Zp[k + 1] - Zp[k])
+        m = dd < best
+        best = np.where(m, dd, best)
+        out = np.where(m, z, out)
+    return out          # 주도로 횡단 수평 (기존 도로 단면과 같음)
+
+
 def build_tile(net, F, inc, half_w, i, j, junction_mode=None, level_sigma=None):
     """높이 = 도로 띠 안: 포함 도로들의 '가장 가까운 중심선 점 고도' 가중 평균 (도로마다 가중 = 띠+전이 폭 밖에서 0 으로
     연속 감소 / (거리+1)²). 도로 하나만 있는 곳은 그 도로 중심선 고도 그대로 → 횡단 평평. 교차로(여러 도로)는 연속 혼합.
@@ -560,10 +672,29 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None, level_sigma=None):
     # 교차로 근처는 다듬은 지형 면 Z (모든 도로가 같은 연속 면 → 둔덕 없음), 멀어지면 중심선 고도로 연속 전이
     dn = np.full((Np, Np), np.inf)
     dn_t = np.full((Np, Np), np.inf)                  # level 모드에서 terrain 혼합을 쓸 교차로까지 거리
+    dn_d = np.full((Np, Np), np.inf)                  # level 모드에서 설계형 교차로면을 쓸 교차로까지 거리
+    JD = np.zeros((Np, Np))
+    RO = np.full((Np, Np), JUNC_OUT_M)               # 설계 노드별 전이 바깥 반경
     for nid in junction_nodes(net, inc):
         nx, ny = net.nodes[nid]
-        if nx < xa - JUNC_OUT_M or nx > xb + JUNC_OUT_M or ny < ya - JUNC_OUT_M or ny > yb + JUNC_OUT_M:
+        reach_n = DESIGN_OUT_MAX_M if nid in JUNC_DESIGN_NODES else JUNC_OUT_M
+        if nx < xa - reach_n or nx > xb + reach_n or ny < ya - reach_n or ny > yb + reach_n:
             continue
+        if mode == "level" and nid in JUNC_DESIGN_NODES:
+            dj = design_junction(net, F, inc, nid)
+            ro = design_out_radius(net, F, inc, nid, dj) if dj is not None else None
+            if ro is not None:
+                j0d, j1d = max(0, int((nx - ro - xa) / cell)), min(Np - 1, int((nx + ro - xa) / cell) + 1)
+                i0d, i1d = max(0, int((yb - (ny + ro)) / cell)), min(Np - 1, int((yb - (ny - ro)) / cell) + 1)
+                sd = (slice(i0d, i1d + 1), slice(j0d, j1d + 1))
+                if j1d < j0d or i1d < i0d:
+                    continue
+                dd = np.hypot(X[sd] - nx, Y[sd] - ny)
+                m = dd < dn_d[sd]
+                JD[sd] = np.where(m, _design_eval(dj, X[sd], Y[sd]), JD[sd])
+                RO[sd] = np.where(m, ro, RO[sd])
+                dn_d[sd] = np.where(m, dd, dn_d[sd])
+                continue
         j0, j1 = max(0, int((nx - JUNC_OUT_M - xa) / cell)), min(Np - 1, int((nx + JUNC_OUT_M - xa) / cell) + 1)
         i0, i1 = max(0, int((yb - (ny + JUNC_OUT_M)) / cell)), min(Np - 1, int((yb - (ny - JUNC_OUT_M)) / cell) + 1)
         if j1 < j0 or i1 < i0:
@@ -592,6 +723,10 @@ def build_tile(net, F, inc, half_w, i, j, junction_mode=None, level_sigma=None):
         if JUNC_TERRAIN_NODES:
             tjt = _tj(dn_t)
             S = Z * (1 - tjt) + S * tjt                 # 고른 교차로만 terrain 혼합 (평활 뒤 — 평활에는 Z 를 섞지 않음)
+        if JUNC_DESIGN_NODES:
+            td = np.clip((dn_d - JUNC_IN_M) / (RO - JUNC_IN_M), 0.0, 1.0)
+            tjd = td * td * (3 - 2 * td)
+            S = JD * (1 - tjd) + S * tjd                # 설계형 교차로면: 15 m 안 설계면, 30 m 밖 각 도로 자기 면, 사이 매끈한 전이
     else:
         S = Z * (1 - tj) + S * tj
     if p:
@@ -670,6 +805,8 @@ def build_all(only=None):
     meta_p = OUT / "tiles.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {"tiles": {}}
     meta["params"] = build_params()
+    if JUNC_DESIGN_NODES:
+        meta["design_junctions"] = DESIGN_REPORT     # 설계형 교차로면 노드별 선택·전이 반경·실패 (아래 타일 생성 중 채워진다)
     meta["test_only_roads"] = test_roads
     meta.update({"tile_m": TILE_M, "grid": N, "cell_m": round(TILE_M / (N - 1), 4), "q_m": Q, "origin_xy": [X0, Y0],
                  "nx": NX, "ny": NY, "blend_m": BLEND_M, "road_surface_sigma_m": SIGMA_M,
