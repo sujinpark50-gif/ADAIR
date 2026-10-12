@@ -267,7 +267,7 @@ SCENARIOS = {
     "cancel30": ([(600.0, 0.0)], 8.33), "estop30": ([(600.0, 0.0)], 8.33),
 }
 STOP_TRIGGER = {"60": 400.0, "50": 400.0, "30": 150.0}
-# 정차 유지 정책 (환경변수 UGV_DRIVE_PARK=server 일 때만, 기본은 예전 동작 = 미션 끝 뒤 기록 대기 후 시동 끔).
+# 정차 유지 정책 (환경변수 UGV_DRIVE_PARK=server | immediate 일 때만, 기본은 예전 동작 = 미션 끝 뒤 기록 대기 후 시동 끔).
 # 서버 드라이버(ADAIR_wt_fix ugv/drivers/px4.py park_due, 2026-10-13 확인값)와 같은 규칙: 미션 끝 뒤 0.3 m/s 미만 1 s → 시동 끔,
 # 속도와 관계없이 미션 끝 뒤 4 s → 시동 끔. 이 rover 는 미션 끝 뒤 마지막 지점 속도로 계속 달린다 (S4 비상 정지 시험: 정지점 뒤 약 1.25 m/s 로 12 s).
 PARK_MODE = os.getenv("UGV_DRIVE_PARK", "")
@@ -381,7 +381,18 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
             if await mis.is_mission_finished():
                 t_fin = time.time()
                 events.append({"ev": "mission_finished_seen", "wall": round(t_fin, 3)})
-                if PARK_MODE == "server":
+                if PARK_MODE == "immediate":
+                    # 개선 후보 (S4 → S5 검토용): 정지 임무가 끝났다고 본 즉시 시동을 끈다 (서버 4 s 상한 대기 동안의 저속 진행을 없앰)
+                    v = await first(tel.subscribe_velocity_ned)
+                    vh = math.hypot(v.north_m_s, v.east_m_s)
+                    try:
+                        await act.disarm()
+                        why = "immediate"
+                    except Exception as e:  # noqa: BLE001
+                        why = f"immediate (disarm 실패: {e})"
+                    events.append({"ev": "park_disarm", "why": why, "wall": round(time.time(), 3), "px4_speed_mps": round(vh, 3)})
+                    print(f"[{name}] 정차 유지(즉시): PX4 속도 {vh:.2f} m/s")
+                elif PARK_MODE == "server":
                     slow_since = None
                     while True:
                         v = await first(tel.subscribe_velocity_ned)
