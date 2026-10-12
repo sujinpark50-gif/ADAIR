@@ -10,6 +10,8 @@
   heightmap.png·model.sdf 해시와 전체 요약 해시(tiles_digest)도 함께.
 - Gazebo 에 실제 생성된 모델의 관절 목록 (`gz model -m <이름> -j`): 관절 수·prismatic(서스펜션) 수 — 파일이 아니라 실행 중 모델 기준.
 - 찾지 못한 항목은 null 과 이유를 남긴다 (빈 값 해시를 쓰지 않는다).
+- PX4 없이 띄운 실행(NO_PX4=1, 정지·대각 시험)은 PX4 기록이 없으므로 gz 서버 프로세스 환경의 GZ_SIM_RESOURCE_PATH 로 모델을 찾는다
+  (resolved_via = gz_server_env). 이때 차량 이름은 <모델>_<인스턴스>. PX4 기록이 있으면 예전과 같다.
 한계: 모델 파일 해석은 PX4 프로세스 환경의 경로 순서를 따라간 것이고 Gazebo 내부 해석을 직접 읽은 것은 아니다 — 관절 조회로 구조를 교차 확인.
 """
 import argparse
@@ -103,7 +105,23 @@ def main():
     for m in models:
         px = next((x for x in procs if x["role"] == f"px4-{m['instance']}"), None)
         rec = {**m, "px4_pid": px["pid"] if px else None}
-        if not px:
+        if not px and gz and gz["alive_same"] and m["model"] != "x500":
+            env = environ(gz["pid"])
+            rp = [d for d in env.get("GZ_SIM_RESOURCE_PATH", "").split(":") if d]
+            rec.update({"resolved_via": "gz_server_env (PX4 없음, NO_PX4)", "resource_path": rp})
+            hit = next((d for d in rp if (Path(d) / m["model"] / "model.sdf").exists()), None)
+            if hit:
+                f = Path(hit) / m["model"] / "model.sdf"
+                rec.update({"model_file": str(f), "model_content_sha1": sha1_text(f)})
+            else:
+                rec["error"] = "gz 서버 모델 경로에서 model.sdf 를 찾지 못함"
+            js = gz_joints(f"{m['model']}_{m['instance']}", gz["partition"])
+            rec["gz_joints"] = js
+            rec["gz_joint_count"] = None if js is None else len(js)
+            rec["gz_prismatic_count"] = None if js is None else sum(j["type"] == "prismatic" for j in js)
+            if js is None:
+                rec["error"] = "Gazebo 모델 관절 조회 실패"
+        elif not px:
             rec["error"] = "이 실행 ID 의 PX4 프로세스 기록 없음"
         elif not px["alive_same"]:
             rec["error"] = "PX4 프로세스가 없거나 시작 시각 불일치 (PID 재사용)"
