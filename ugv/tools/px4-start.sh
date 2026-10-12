@@ -63,19 +63,31 @@ export GZ_PARTITION="${GZ_PARTITION:-adair_ugv}"
 export GZ_IP="${GZ_IP:-127.0.0.1}"
 
 world_up() { gz service -i --service "/world/$WORLD/scene/info" 2>&1 | grep -q "Service providers"; }
+# 띄운 프로세스 기록 (px4-stop.sh 가 이것만 TERM→대기→KILL→확인으로 끈다): 역할[:실행ID] PID 시작시각 파티션 명령
+RUN_ID="${ADAIR_RUN_ID:-}"
+record_proc() {  # $1 역할 $2 pid
+  local st; st=$(awk '{print $22}' "/proc/$2/stat" 2>/dev/null) || return 0
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1${RUN_ID:+:$RUN_ID}" "$2" "$st" "$GZ_PARTITION" "$(tr '\0' ' ' < "/proc/$2/cmdline" | cut -c1-200)" >> "$STATE_DIR/procs.tsv"
+}
+# 실행 ID 가 있으면 다른 실행이 남긴 월드·PX4 재사용을 거부 (실행 오염). 같은 실행(여러 대 차례 기동)의 재사용은 허용
+own_run() { [ -n "$RUN_ID" ] && grep -q "^$1:$RUN_ID	" "$STATE_DIR/procs.tsv" 2>/dev/null; }
+contaminated() { echo "[ugv] CONTAMINATED: $1 — 앞 실행이 남긴 것 (px4-stop.sh 로 정리하거나 GZ_REUSE_WORLD=1)"; exit 6; }
 
-# 3) 월드 (이미 떠 있으면 그대로 쓴다)
+# 3) 월드 (이미 떠 있으면 그대로 쓴다 — 단 ADAIR_RUN_ID 가 있고 이 실행이 띄운 월드가 아니면 거부)
+if world_up && [ -n "$RUN_ID" ] && ! own_run gz && [ "${GZ_REUSE_WORLD:-0}" != 1 ]; then contaminated "월드 $WORLD 이미 떠 있음"; fi
 if ! world_up; then
   echo "[ugv] Gazebo 월드 시작: $WORLD"
   # 앞 실행의 서버 로그는 시각을 붙여 남긴다 (로그 없는 서버 종료 재발 확인용, 2026-10-10)
   [ -f "$STATE_DIR/gz-server.log" ] && mv "$STATE_DIR/gz-server.log" "$STATE_DIR/gz-server.$(date -r "$STATE_DIR/gz-server.log" +%Y%m%d_%H%M%S).log"
-  nohup gz sim --verbose="${GZ_VERBOSE:-1}" -r -s "$WORLD_FILE" > "$STATE_DIR/gz-server.log" 2>&1 &
+  setsid nohup gz sim --verbose="${GZ_VERBOSE:-1}" -r -s "$WORLD_FILE" > "$STATE_DIR/gz-server.log" 2>&1 &
   echo $! > "$STATE_DIR/gz-server.pid"
+  sleep 0.2; record_proc gz "$(cat "$STATE_DIR/gz-server.pid")"
   for _ in $(seq 60); do world_up && break; sleep 1; done
   world_up || { echo "[ugv] Gazebo 월드가 뜨지 않음 ($STATE_DIR/gz-server.log)"; exit 1; }
 fi
 if [[ ${GUI:-0} == 1 ]] && ! pgrep -f "gz sim -g" >/dev/null; then       # 창은 하나만
-  nohup gz sim -g > "$STATE_DIR/gz-gui.log" 2>&1 &
+  setsid nohup gz sim -g > "$STATE_DIR/gz-gui.log" 2>&1 &
+  GPID=$!; sleep 0.2; record_proc gui "$GPID"
 fi
 
 # 4) 차량 스폰 (같은 이름이 있으면 건너뜀)
@@ -91,16 +103,18 @@ fi
 
 # 5) PX4 (이미 떠 있으면 건너뜀)
 if pgrep -f "px4 -i $INSTANCE " > /dev/null; then
+  if [ -n "$RUN_ID" ] && ! own_run "px4-$INSTANCE" && [ "${GZ_REUSE_WORLD:-0}" != 1 ]; then contaminated "PX4 인스턴스 $INSTANCE 이미 실행 중"; fi
   echo "[ugv] PX4 인스턴스 $INSTANCE 이미 실행 중"
 else
   (
     cd "$STATE_DIR/px4-$INSTANCE"
     PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=$AUTOSTART PX4_GZ_MODEL_NAME="$MODEL_NAME" PX4_GZ_WORLD="$WORLD" \
     PX4_SIM_SPEED_FACTOR="${SPEED:-1}" HEADLESS=1 \
-      nohup "$BUILD/bin/px4" -i "$INSTANCE" -d -w "$STATE_DIR/px4-$INSTANCE" "$BUILD/etc" \
+      setsid nohup "$BUILD/bin/px4" -i "$INSTANCE" -d -w "$STATE_DIR/px4-$INSTANCE" "$BUILD/etc" \
       > "$STATE_DIR/px4-$INSTANCE.log" 2>&1 &
     echo $! > "$STATE_DIR/px4-$INSTANCE.pid"
   )
+  sleep 0.2; record_proc "px4-$INSTANCE" "$(cat "$STATE_DIR/px4-$INSTANCE.pid")"
   for _ in $(seq 60); do grep -q "Ready for takeoff\|home set\|ekf2.*local position" "$STATE_DIR/px4-$INSTANCE.log" 2>/dev/null && break; sleep 1; done
 fi
 
