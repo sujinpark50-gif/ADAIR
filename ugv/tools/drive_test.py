@@ -169,11 +169,11 @@ def analyze(rows, plan_xy=None, corners=None, window_s=0.5, sustain_s=3.0, event
         out["final_speed_mps"] = round(spd[-1], 3)
         out["stopped_at_end"] = spd[-1] < 0.1
         # 마지막 감속: 지속 최고속도 근처에서 멈출 때까지
-        # 감속 시작 = 정지 전에 속도가 (최고 x 0.97) 이상이던 마지막 표본의 다음 (2026-10-13 S1·S3 독립 검증 R2: 첫 구현은 문턱 아래로
+        # 감속 시작 = 정지 전에 속도가 (최고 − 0.5 m/s) 이상이던 마지막 표본의 다음 (2026-10-13 S1·S3 독립 검증 R2: 첫 구현은 문턱 아래로
         # '처음' 내려간 시각이라 최고속도 뒤 일시 속도 조절을 감속 시작으로 잡았다 — 소방차 susp_a straight50_a 603 m). 휴리스틱이며 명령 시각이 아니다
         peak = max(range(s0, last + 1), key=lambda i: spd[i])
         stop = next((i for i in range(peak, len(spd)) if spd[i] < 0.1), None)
-        hi = [i for i in range(peak, stop if stop is not None else len(spd)) if spd[i] >= spd[peak] * 0.97]
+        hi = [i for i in range(peak, stop if stop is not None else len(spd)) if spd[i] >= spd[peak] - 0.5]   # 판정기(vehicle_drive_report)와 같은 문턱
         dec0 = (hi[-1] + 1) if hi and hi[-1] + 1 < len(spd) else None
         if dec0 is not None and stop is not None:
             out["final_decel"] = {
@@ -181,7 +181,7 @@ def analyze(rows, plan_xy=None, corners=None, window_s=0.5, sustain_s=3.0, event
                 "distance_m": round(sum(math.hypot(rows[q + 1]["x"] - rows[q]["x"], rows[q + 1]["y"] - rows[q]["y"])
                                         for q in range(dec0, stop)), 1),
                 "mean_decel_mps2": round(spd[dec0] / (t[stop] - t[dec0]), 2) if t[stop] > t[dec0] else None,
-                "definition": "last_above_0.97peak_v2 (heuristic, not command time)"}
+                "definition": "last_above_peak-0.5mps_v3 (= vehicle_drive_report brake_metrics; heuristic, not command time)"}
         out.update(command_brake(rows, t, spd, events))
     if plan_xy:
         cte = [_dist_to_polyline(r["x"], r["y"], plan_xy) for r in rows]
