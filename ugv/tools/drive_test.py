@@ -86,7 +86,43 @@ def _dist_to_polyline(x, y, pts):
     return best
 
 
-def analyze(rows, plan_xy=None, corners=None, window_s=0.5, sustain_s=3.0):
+def command_brake(rows, t, spd, events):
+    """정지 명령(취소·비상) 시각부터: 명령 -> 감속 시작(명령 때 속도에서 0.3 m/s 떨어짐) -> 정지(0.1 m/s 미만) 시간·거리.
+    시각 대응 = gz_detail 의 wall_t (같은 PC 의 WSL 시계). 명령 때 PX4 위치와 그 시각 Gazebo 위치 차를 함께 남겨 대응을 확인한다."""
+    cmd = next((e for e in events or [] if e.get("ev") == "stop_command"), None)
+    if cmd is None:
+        return {}
+    if not rows or "wall_t" not in rows[0]:
+        return {"command_brake": {"error": "기록에 wall_t 없음 — 명령 시각 대응 불가 (미확인)"}}
+    k = next((i for i, r in enumerate(rows) if r.get("wall_t", 0) >= cmd["wall"]), None)
+    if k is None:
+        return {"command_brake": {"error": "명령 시각이 기록 밖 (미확인)"}}
+    v0 = spd[k]
+    kd = next((i for i in range(k, len(spd)) if spd[i] < v0 - 0.3), None)
+    ks = next((i for i in range(k, len(spd)) if spd[i] < 0.1), None)
+
+    def d(a, b):
+        return round(sum(math.hypot(rows[q + 1]["x"] - rows[q]["x"], rows[q + 1]["y"] - rows[q]["y"]) for q in range(a, b)), 2)
+    out = {"kind": cmd.get("kind"), "speed_at_command_mps": round(v0, 2), "planned_stop_dist_m": cmd.get("dist_m"),
+           "planned_decel_mps2": cmd.get("decel_mps2"), "item_speed_mps": cmd.get("item_speed_mps"),
+           "px4_vs_gz_pos_at_command_m": round(math.hypot(rows[k]["x"] - cmd["px4_en"][0], rows[k]["y"] - cmd["px4_en"][1]), 2),
+           "upload_latency_wall_s": round(cmd["wall_started"] - cmd["wall"], 2) if cmd.get("wall_started") else None}
+    if kd is not None:
+        out.update({"cmd_to_decel_s": round(t[kd] - t[k], 2), "cmd_to_decel_m": d(k, kd)})
+    if ks is not None:
+        sp = rows[ks]
+        stop_pt = cmd.get("stop_en")
+        out.update({"cmd_to_stop_s": round(t[ks] - t[k], 2), "cmd_to_stop_m": d(k, ks),
+                    "stop_vs_planned_point_m": round(math.hypot(sp["x"] - stop_pt[0], sp["y"] - stop_pt[1]), 2) if stop_pt else None})
+        after = [i for i in range(ks, len(spd)) if t[i] >= t[ks] + 1.0]
+        out["observed_after_stop_s"] = round(t[-1] - t[ks], 2)
+        out["re_motion_after_stop"] = any(spd[i] >= 0.3 for i in after)
+    else:
+        out["cmd_to_stop_s"] = None
+    return {"command_brake": out}
+
+
+def analyze(rows, plan_xy=None, corners=None, window_s=0.5, sustain_s=3.0, events=None):
     """Gazebo 자세(시뮬레이션 시각)만으로 속도·정지·추종 오차를 계산한다."""
     if len(rows) < 3:
         return {"error": "기록 부족", "rows": len(rows)}
@@ -133,15 +169,20 @@ def analyze(rows, plan_xy=None, corners=None, window_s=0.5, sustain_s=3.0):
         out["final_speed_mps"] = round(spd[-1], 3)
         out["stopped_at_end"] = spd[-1] < 0.1
         # 마지막 감속: 지속 최고속도 근처에서 멈출 때까지
+        # 감속 시작 = 정지 전에 속도가 (최고 x 0.97) 이상이던 마지막 표본의 다음 (2026-10-13 S1·S3 독립 검증 R2: 첫 구현은 문턱 아래로
+        # '처음' 내려간 시각이라 최고속도 뒤 일시 속도 조절을 감속 시작으로 잡았다 — 소방차 susp_a straight50_a 603 m). 휴리스틱이며 명령 시각이 아니다
         peak = max(range(s0, last + 1), key=lambda i: spd[i])
-        dec0 = next((i for i in range(peak, len(spd)) if spd[i] < spd[peak] * 0.97), None)
         stop = next((i for i in range(peak, len(spd)) if spd[i] < 0.1), None)
+        hi = [i for i in range(peak, stop if stop is not None else len(spd)) if spd[i] >= spd[peak] * 0.97]
+        dec0 = (hi[-1] + 1) if hi and hi[-1] + 1 < len(spd) else None
         if dec0 is not None and stop is not None:
             out["final_decel"] = {
                 "from_speed_mps": round(spd[dec0], 2), "sim_time_s": round(t[stop] - t[dec0], 2),
                 "distance_m": round(sum(math.hypot(rows[q + 1]["x"] - rows[q]["x"], rows[q + 1]["y"] - rows[q]["y"])
                                         for q in range(dec0, stop)), 1),
-                "mean_decel_mps2": round(spd[dec0] / (t[stop] - t[dec0]), 2) if t[stop] > t[dec0] else None}
+                "mean_decel_mps2": round(spd[dec0] / (t[stop] - t[dec0]), 2) if t[stop] > t[dec0] else None,
+                "definition": "last_above_0.97peak_v2 (heuristic, not command time)"}
+        out.update(command_brake(rows, t, spd, events))
     if plan_xy:
         cte = [_dist_to_polyline(r["x"], r["y"], plan_xy) for r in rows]
         srt = sorted(cte)
@@ -218,10 +259,17 @@ SCENARIOS = {
     "stop30": ([(300.0, 0.0)], 8.33),
     # 소방차 (계획 8.1: 목표 50 km/h = RO_SPEED_LIM 13.9, airframe 51101) 직선 1.2 km 끝 정지
     "straight50": ([(1200.0, 0.0)], 13.9),
+    # 2026-10-13 후속 계획 S4: 명령 기준 제동 — 순항 중 정지 명령을 서버와 같은 방식(정지점 하나짜리 미션으로 교체)으로 보낸다.
+    #   cancel* = 명령 취소 정지: 정지점 v^2/(2·차종 decel_mps2) + 5 m, 지점 속도 = 지금 속도 (서버 계획 정지와 같은 감속 가정)
+    #   estop*  = 비상 정지: 정지점 max(v^2/(2·차종 emergency_decel_mps2) + 1 m, 4 m), 지점 속도 1 m/s (vehicle.py EMERGENCY_STRAIGHT)
+    "cancel60": ([(1500.0, 0.0)], 16.7), "estop60": ([(1500.0, 0.0)], 16.7),
+    "cancel50": ([(1500.0, 0.0)], 13.9), "estop50": ([(1500.0, 0.0)], 13.9),
+    "cancel30": ([(600.0, 0.0)], 8.33), "estop30": ([(600.0, 0.0)], 8.33),
 }
+STOP_TRIGGER = {"60": 400.0, "50": 400.0, "30": 150.0}    # 명령 조건: 출발에서 이만큼 + 목표 속도 95 % 이상 3 회 연속
 
 
-async def run(name: str, address: str, track_s: float, world="adair_flat", detail=False, tag="", model="adair_ugv_1"):
+async def run(name: str, address: str, track_s: float, world="adair_flat", detail=False, tag="", model="adair_ugv_1", profile="adair_ugv"):
     from mavsdk.asyncio.plugins.action import ActionAsync
     from mavsdk.asyncio.plugins.mission import MissionAsync
     from mavsdk.asyncio.plugins.telemetry import TelemetryAsync
@@ -280,6 +328,12 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
             await asyncio.sleep(0.2)
     t_start = time.time()
     braked = False
+    events = [{"ev": "mission_start", "wall": round(t_start, 3)}]
+    cmd_kind = "cancel" if name.startswith("cancel") else "estop" if name.startswith("estop") else None
+    above = 0
+    if cmd_kind:
+        from ugv.profiles import PROFILES
+        prof = PROFILES[profile]
     while time.time() - t_start < track_s - 8:
         if name == "brake" and not braked:
             v = await first(tel.subscribe_velocity_ned)
@@ -296,11 +350,35 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
                 await start_mission(mis)
                 braked = True
                 print(f"[{name}] 정지 명령: {d:.1f} m 앞 정지점 (PX4 속도 {vh:.2f} m/s, 참고용)")
+        elif cmd_kind and not braked:
+            v = await first(tel.subscribe_velocity_ned)
+            p = await first(tel.subscribe_position)
+            e, n = latlon_to_enu(p.latitude_deg, p.longitude_deg)
+            vh = math.hypot(v.north_m_s, v.east_m_s)
+            above = above + 1 if vh >= 0.95 * speed else 0
+            if above >= 3 and math.hypot(e - e0, n - n0) >= STOP_TRIGGER[name[-2:]]:
+                tw = time.time()
+                if cmd_kind == "cancel":
+                    dec, d, isp = prof.decel_mps2, vh * vh / (2 * prof.decel_mps2) + STOP_MARGIN_M, vh
+                else:
+                    dec, isp = prof.emergency_decel_mps2, 1.0
+                    d = max(vh * vh / (2 * dec) + 1.0, 4.0)
+                se, sn = e + d * v.east_m_s / vh, n + d * v.north_m_s / vh
+                lat, lon = enu_to_latlon(se, sn)
+                await mis.upload_mission(MissionPlan([mission_item(lat, lon, isp, through=False)]))
+                await start_mission(mis)
+                braked = True
+                events.append({"ev": "stop_command", "kind": cmd_kind, "wall": round(tw, 3), "wall_started": round(time.time(), 3),
+                               "px4_en": [round(e, 3), round(n, 3)], "px4_speed_mps": round(vh, 3), "stop_en": [round(se, 3), round(sn, 3)],
+                               "dist_m": round(d, 2), "decel_mps2": dec, "item_speed_mps": round(isp, 2), "profile": profile})
+                print(f"[{name}] 정지 명령({cmd_kind}): {d:.1f} m 앞 정지점, 감속 가정 {dec} m/s², PX4 속도 {vh:.2f} m/s")
         else:
             if await mis.is_mission_finished():
-                await asyncio.sleep(6.0)          # 정지 후 기록
+                events.append({"ev": "mission_finished_seen", "wall": round(time.time(), 3)})
+                await asyncio.sleep(12.0 if cmd_kind else 6.0)          # 정지 후 기록 (명령 정지는 재이동 관측 10 s 이상)
                 break
         await asyncio.sleep(0.2)
+    out_csv.with_suffix(".events.json").write_text(json.dumps(events, ensure_ascii=False, indent=1), encoding="utf-8")
     try:
         await act.disarm()
     except Exception:  # noqa: BLE001
@@ -314,7 +392,9 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
 
 def report(csv_path: Path, plan_path: Path):
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    res = analyze(load_track(csv_path), plan["plan_xy"], [(c[0], tuple(c[1]), c[2]) for c in plan["corners"]])
+    ev_path = csv_path.with_suffix(".events.json")
+    events = json.loads(ev_path.read_text(encoding="utf-8")) if ev_path.exists() else None
+    res = analyze(load_track(csv_path), plan["plan_xy"], [(c[0], tuple(c[1]), c[2]) for c in plan["corners"]], events=events)
     res = {"scenario": plan["scenario"], "commanded_speed_mps": plan["speed_mps"], "measured_from": "gazebo_pose+sim_time",
            "track_csv": str(csv_path.resolve().relative_to(ROOT) if csv_path.resolve().is_relative_to(ROOT) else csv_path), **res}
     csv_path.with_suffix(".json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -333,13 +413,15 @@ def main():
     ap.add_argument("--detail", action="store_true", help="gz_detail 상세 기록 (접촉 센서 있는 후보 모델)")
     ap.add_argument("--tag", default="", help="결과 파일 이름 앞부분 (기본 = 시나리오)")
     ap.add_argument("--model", default="adair_ugv_1", help="Gazebo 차량 이름 (소방차 adair_firetruck_1)")
+    ap.add_argument("--profile", default=None, help="정지 명령 감속 가정 차종 (ugv/profiles.py, 기본 = --model 에서)")
     a = ap.parse_args()
     if a.analyze:
         report(a.analyze, a.plan or a.analyze.with_suffix(".plan.json"))
         return
     if not a.scenario:
         ap.error("scenario 또는 --analyze 필요")
-    out = asyncio.run(run(a.scenario, a.address, a.track_s, world=a.world, detail=a.detail, tag=a.tag, model=a.model))
+    prof = a.profile or ("adair_firetruck" if a.model.startswith("adair_firetruck") else "adair_ugv")
+    out = asyncio.run(run(a.scenario, a.address, a.track_s, world=a.world, detail=a.detail, tag=a.tag, model=a.model, profile=prof))
     report(out, out.with_suffix(".plan.json"))
 
 
