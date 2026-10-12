@@ -299,6 +299,18 @@ def judge(p):
         events = json.loads(ev_p.read_text(encoding="utf-8")) if ev_p.exists() else None
         rows_f = [{k: fnum(v) for k, v in r.items()} for r in rows]
         cb = command_brake(rows_f, T, spd, events).get("command_brake") if events else {"error": "events.json 없음 — 명령 시각 미확인"}
+        if cb and events and "error" not in cb:
+            # 계획 정지점 통과(진행 방향 투영 ≥ 0) 시각·속도 — 제동이 계획 감속을 따랐는지. 정차 유지 정책 유무 표시
+            cmd = next(e for e in events if e["ev"] == "stop_command")
+            k_c = next((i for i, r in enumerate(rows_f) if (r.get("wall_t") or 0) >= cmd["wall"]), 0)
+            ux, uy = cmd["stop_en"][0] - cmd["px4_en"][0], cmd["stop_en"][1] - cmd["px4_en"][1]
+            L = math.hypot(ux, uy) or 1.0
+            kp = next((i for i in range(k_c, len(X)) if ((X[i] - cmd["stop_en"][0]) * ux + (Y[i] - cmd["stop_en"][1]) * uy) / L >= 0), None)
+            cb["speed_at_planned_point_mps"] = None if kp is None else round(spd[kp], 2)
+            cb["cmd_to_planned_point_s"] = None if kp is None else round(T[kp] - T[k_c], 2)
+            pk = next((e for e in events if e["ev"] == "park_disarm"), None)
+            cb["park_policy"] = (f"server ({pk['why']})" if pk else
+                                 "없음 — PX4 단독: 미션 끝 뒤 시험 도구가 기록 대기 후 시동 끔 (시스템 정지거리 아님, 서버는 미션 끝 1 s 정차·4 s 상한에 시동 끔)")
         out["command_brake"] = cb
         if cb and cb.get("cmd_to_stop_m") is not None and cb.get("planned_stop_dist_m") is not None:
             checks["cmd_stop_within_planned"] = cb["cmd_to_stop_m"] <= cb["planned_stop_dist_m"]
