@@ -266,7 +266,12 @@ SCENARIOS = {
     "cancel50": ([(1500.0, 0.0)], 13.9), "estop50": ([(1500.0, 0.0)], 13.9),
     "cancel30": ([(600.0, 0.0)], 8.33), "estop30": ([(600.0, 0.0)], 8.33),
 }
-STOP_TRIGGER = {"60": 400.0, "50": 400.0, "30": 150.0}    # 명령 조건: 출발에서 이만큼 + 목표 속도 95 % 이상 3 회 연속
+STOP_TRIGGER = {"60": 400.0, "50": 400.0, "30": 150.0}
+# 정차 유지 정책 (환경변수 UGV_DRIVE_PARK=server 일 때만, 기본은 예전 동작 = 미션 끝 뒤 기록 대기 후 시동 끔).
+# 서버 드라이버(ADAIR_wt_fix ugv/drivers/px4.py park_due, 2026-10-13 확인값)와 같은 규칙: 미션 끝 뒤 0.3 m/s 미만 1 s → 시동 끔,
+# 속도와 관계없이 미션 끝 뒤 4 s → 시동 끔. 이 rover 는 미션 끝 뒤 마지막 지점 속도로 계속 달린다 (S4 비상 정지 시험: 정지점 뒤 약 1.25 m/s 로 12 s).
+PARK_MODE = os.getenv("UGV_DRIVE_PARK", "")
+PARK_AFTER_S, RUNAWAY_PARK_S, PARK_SLOW_MPS = 1.0, 4.0, 0.3    # 명령 조건: 출발에서 이만큼 + 목표 속도 95 % 이상 3 회 연속
 
 
 async def run(name: str, address: str, track_s: float, world="adair_flat", detail=False, tag="", model="adair_ugv_1", profile="adair_ugv"):
@@ -328,7 +333,7 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
             await asyncio.sleep(0.2)
     t_start = time.time()
     braked = False
-    events = [{"ev": "mission_start", "wall": round(t_start, 3)}]
+    events = [{"ev": "mission_start", "wall": round(t_start, 3), "park_mode": PARK_MODE or "none (예전: 미션 끝 뒤 기록 대기 후 시동 끔)"}]
     cmd_kind = "cancel" if name.startswith("cancel") else "estop" if name.startswith("estop") else None
     above = 0
     if cmd_kind:
@@ -374,7 +379,26 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
                 print(f"[{name}] 정지 명령({cmd_kind}): {d:.1f} m 앞 정지점, 감속 가정 {dec} m/s², PX4 속도 {vh:.2f} m/s")
         else:
             if await mis.is_mission_finished():
-                events.append({"ev": "mission_finished_seen", "wall": round(time.time(), 3)})
+                t_fin = time.time()
+                events.append({"ev": "mission_finished_seen", "wall": round(t_fin, 3)})
+                if PARK_MODE == "server":
+                    slow_since = None
+                    while True:
+                        v = await first(tel.subscribe_velocity_ned)
+                        vh = math.hypot(v.north_m_s, v.east_m_s)
+                        now = time.time()
+                        slow_since = (slow_since or now) if vh < PARK_SLOW_MPS else None
+                        why = ("runaway_4s" if now - t_fin >= RUNAWAY_PARK_S else
+                               "still_1s" if slow_since is not None and now - slow_since >= PARK_AFTER_S else None)
+                        if why:
+                            try:
+                                await act.disarm()
+                            except Exception as e:  # noqa: BLE001
+                                why += f" (disarm 실패: {e})"
+                            events.append({"ev": "park_disarm", "why": why, "wall": round(now, 3), "px4_speed_mps": round(vh, 3)})
+                            print(f"[{name}] 정차 유지(서버 규칙): {why}, PX4 속도 {vh:.2f} m/s")
+                            break
+                        await asyncio.sleep(0.1)
                 await asyncio.sleep(12.0 if cmd_kind else 6.0)          # 정지 후 기록 (명령 정지는 재이동 관측 10 s 이상)
                 break
         await asyncio.sleep(0.2)
