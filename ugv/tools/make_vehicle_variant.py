@@ -41,7 +41,65 @@ MODEL_SUSP = {
                                   "front_left": (711000.0, 43000.0, -0.028), "front_right": (711000.0, 43000.0, -0.028)},
                         "travel": 0.10, "link_mass": 10.0},
 }
-MODEL_VARIANTS = {"adair_ugv": ["base", "rwd", "susp_a0", "susp_a", "susp_a_m"], "adair_firetruck": ["base", "susp_a"]}
+MODEL_VARIANTS = {"adair_ugv": ["base", "rwd", "susp_a0", "susp_a", "susp_a_m"], "adair_firetruck": ["base", "susp_a", "fire_v2_base", "fire_v2"]}
+
+# 소방차 fire_v2 (후속 계획 S2 설계 문서 UGV_소방차_기준차량_설계_S2_20261012.md): 국내 중형펌프차 참고값 반영 — 가정값 포함
+#   운행 질량 12,175 kg(차량총중량 [대진정공 DFP-051H]), 축간 4.3 m [가정, 파비스 장축], 앞뒤 축하중 35/65 % [가정] → 무게중심 x=0 에서
+#   앞축 +2.795 / 뒤축 −1.505 m, 무게중심 지면 위 1.2 m [가정], 바퀴 반지름 0.42 m (245/70R19.5), 윤거 앞 1.95 / 뒤 1.80 m [가정],
+#   차체 7.67 × 2.42 m (상자 길이 ×1.0957·폭 ×1.052, 중심 x +0.36 → 앞 오버행 1.4 / 뒤 1.97 m). 조향 ±35°·구동(네 바퀴 같은 속도)·마찰은 그대로.
+#   airframe: RA_WHEEL_BASE 3.8 → 4.3 (variants/<후보>/airframes/ 에 사본, px4-start 가 우선 사용)
+FIRE_V2 = {"total_kg": 12175.0, "wheel_kg": 80.0, "steer_link_kg": 2.0, "xf": 2.795, "xr": -1.505, "yf": 0.975, "yr": 0.9, "r": 0.42,
+           "base_z": 0.42, "com_z_above_base": 0.78, "len_scale": 7.67 / 7.0, "wid_scale": 2.42 / 2.3, "body_dx": 0.36, "body_h_eff": 2.6}
+# fire_v2 서스펜션: 스프렁/바퀴 앞 2,039 kg·뒤 3,867 kg. UGV 에서 잰 유효 강성 비 0.64 를 '시작값'으로만 써서 유효 동특성 목표 ≈ 2.37 Hz·감쇠비 0.72
+#   (설정 K = 유효 목표 / 0.64). 소방차 유효 K 는 S3 정지·대각 시험으로 다시 잰다 (확정값 아님).
+MODEL_SUSP["adair_firetruck_v2"] = {
+    "pos": {"rear_left": (-1.505, 0.9), "rear_right": (-1.505, -0.9), "front_left": (2.795, 0.975), "front_right": (2.795, -0.975)},
+    "wheel": {"rear_left": (1339000.0, 82900.0, -0.029), "rear_right": (1339000.0, 82900.0, -0.029),
+              "front_left": (706000.0, 43700.0, -0.029), "front_right": (706000.0, 43700.0, -0.029)},
+    "travel": 0.10, "link_mass": 10.0}
+
+
+def make_fire_v2(s: str, with_susp: bool) -> str:
+    """adair_firetruck SDF 를 fire_v2 제원으로 (base_link·차체 상자·바퀴 위치·반지름·질량·관성)."""
+    f = FIRE_V2
+    body_kg = f["total_kg"] - 4 * f["wheel_kg"] - 2 * f["steer_link_kg"] - (4 * MODEL_SUSP["adair_firetruck_v2"]["link_mass"] if with_susp else 0.0)
+    i = s.index('<link name="base_link">')
+    j = s.index('</link>', i)
+    blk = s[i:j]
+    blk = blk.replace('<pose relative_to="__model__">0 0 0.5 0 0 0</pose>', f'<pose relative_to="__model__">0 0 {f["base_z"]} 0 0 0</pose>', 1)
+    blk = blk.replace('<pose>0 0 0.6 0 0 0</pose>', f'<pose>0 0 {f["com_z_above_base"]} 0 0 0</pose>', 1)
+    blk = re.sub(r"<mass>[\d.]+</mass>", f"<mass>{body_kg}</mass>", blk, count=1)
+    L, Wd, H = 7.67, 2.42, f["body_h_eff"]
+    I = {"ixx": body_kg * (Wd ** 2 + H ** 2) / 12, "iyy": body_kg * (L ** 2 + H ** 2) / 12, "izz": body_kg * (L ** 2 + Wd ** 2) / 12}
+    blk = re.sub(r"<(ixx|iyy|izz)>[\d.]+</(?:ixx|iyy|izz)>", lambda m: f"<{m.group(1)}>{I[m.group(1)]:.0f}</{m.group(1)}>", blk)
+
+    def pose(m):
+        x, y, z = float(m.group(1)), m.group(2), m.group(3)
+        return f"<pose>{f['body_dx'] + x * f['len_scale']:.3f} {y} {z} 0 0 0</pose>"
+
+    def size(m):
+        return f"<size>{float(m.group(1)) * f['len_scale']:.3f} {float(m.group(2)) * f['wid_scale']:.3f} {m.group(3)}</size>"
+    k = blk.index("</inertial>")
+    head, tail = blk[:k], blk[k:]
+    tail = re.sub(r"<pose>([-\d.]+) (0) ([-\d.]+) 0 0 0</pose>", pose, tail)
+    tail = re.sub(r"<size>([\d.]+) ([\d.]+) ([\d.]+)</size>", size, tail)
+    s = s[:i] + head + tail + s[j:]
+    for old, new in ((f'"base_link">-1.6 1.0 0', f'"base_link">{f["xr"]} {f["yr"]} 0'), (f'"base_link">-1.6 -1.0 0', f'"base_link">{f["xr"]} -{f["yr"]} 0'),
+                     (f'"base_link">2.2 1.0 0', f'"base_link">{f["xf"]} {f["yf"]} 0'), (f'"base_link">2.2 -1.0 0', f'"base_link">{f["xf"]} -{f["yf"]} 0')):
+        n = s.count(old)
+        assert n in (1, 2), (old, n)
+        s = s.replace(old, new)
+    s = s.replace("<radius>0.5</radius>", f"<radius>{f['r']}</radius>")
+    wI = (f["wheel_kg"] * (3 * f["r"] ** 2 + 0.35 ** 2) / 12, f["wheel_kg"] * f["r"] ** 2 / 2)
+    s = s.replace("<ixx>5.82</ixx><ixy>0</ixy><ixz>0</ixz><iyy>5.82</iyy><iyz>0</iyz><izz>10.0</izz>",
+                  f"<ixx>{wI[0]:.3f}</ixx><ixy>0</ixy><ixz>0</ixz><iyy>{wI[0]:.3f}</iyy><iyz>0</iyz><izz>{wI[1]:.3f}</izz>")
+    return s
+
+
+def fire_v2_airframe() -> str:
+    a = (ROOT / "ugv" / "px4" / "airframes" / "51101_gz_adair_firetruck").read_text(encoding="utf-8").replace("\r", "")
+    assert a.count("param set-default RA_WHEEL_BASE 3.8") == 1
+    return a.replace("param set-default RA_WHEEL_BASE 3.8", "param set-default RA_WHEEL_BASE 4.3   # fire_v2 후보 (S2 설계, 축간 4.3 m 가정)")
 
 
 def sha1(b: bytes) -> str:
@@ -125,6 +183,13 @@ def build(variant: str, model: str = "adair_ugv") -> str:
         return base
     if variant == "rwd":
         return remove_front_drive(base)
+    if variant in ("fire_v2_base", "fire_v2"):
+        if model != "adair_firetruck":
+            raise SystemExit(f"{model} 에는 변형 {variant} 없음")
+        s = make_fire_v2(base, with_susp=variant == "fire_v2")
+        if variant == "fire_v2":
+            s = publish_susp_joints(add_suspension(s, MODEL_SUSP["adair_firetruck_v2"]))
+        return s
     if variant in ("susp_a0", "susp_a", "susp_a_m"):
         if variant not in MODEL_VARIANTS[model]:
             raise SystemExit(f"{model} 에는 변형 {variant} 없음")
@@ -158,6 +223,9 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
         out.write_bytes(new)
         (d / "model.config").write_bytes((MODELS / a.model / "model.config").read_bytes())
+        if v.startswith("fire_v2"):
+            (VARIANTS / v / "airframes").mkdir(exist_ok=True)
+            (VARIANTS / v / "airframes" / "51101_gz_adair_firetruck").write_bytes(fire_v2_airframe().encode("utf-8"))
         man = {"variant": v, "model": a.model, "source_sha1": sha1((MODELS / a.model / "model.sdf").read_bytes()),
                "model_sdf_sha1": sha1(new), "params": ({k: (list(v2) if isinstance(v2, tuple) else v2) for k, v2 in MODEL_SUSP[a.model].items()}
                                                          if v.startswith("susp") else None),

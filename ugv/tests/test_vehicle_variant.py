@@ -83,3 +83,19 @@ def test_susp_a_m_restores_total_mass():
     # 질량 말고는 susp_a 와 같다
     strip = lambda t: re.sub(r"<link name=\"base_link\">.*?</inertial>", "", t, count=1, flags=re.S)
     assert strip(mv.build("susp_a")) == strip(mv.build("susp_a_m"))
+
+
+@pytest.mark.parametrize("v", ["fire_v2_base", "fire_v2"])
+def test_fire_v2_geometry_and_mass(v):
+    saved = (mv.VARIANTS / v / "adair_firetruck" / "model.sdf").read_bytes()
+    assert mv.sha1(saved) == mv.sha1(mv.build(v, "adair_firetruck").encode("utf-8"))
+    m = _model(mv.build(v, "adair_firetruck"))
+    assert _mass(m) == pytest.approx(12175.0)
+    pos = {l.get("name"): [float(x) for x in l.find("pose").text.split()[:3]] for l in m.findall("link") if l.get("name", "").startswith("wheel_")}
+    assert pos["wheel_front_left_link"][:2] == [2.795, 0.975] and pos["wheel_rear_right_link"][:2] == [-1.505, -0.9]
+    assert pos["wheel_front_left_link"][0] - pos["wheel_rear_left_link"][0] == pytest.approx(4.3)
+    radii = {float(r.text) for r in m.iter("radius")}
+    assert radii == {0.42}
+    assert sum(j.get("type") == "prismatic" for j in m.findall("joint")) == (4 if v == "fire_v2" else 0)
+    af = (mv.VARIANTS / v / "airframes" / "51101_gz_adair_firetruck").read_text(encoding="utf-8")
+    assert "RA_WHEEL_BASE 4.3" in af and "RA_WHEEL_BASE 3.8" not in af

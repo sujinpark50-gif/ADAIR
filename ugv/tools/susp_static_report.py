@@ -6,6 +6,7 @@
 기준은 결과를 보기 전에 정한 것 (차량 개조 구현 계획 4.4절), 정착 10 s 뒤 구간만 본다:
  S1 평탄(adair_flat_susp): ① Σfn 과 m·g 오차 ≤ 1 % ② (서스펜션 후보) 네 바퀴 fn 이 평균 ±10 % 안, 서스펜션 관절 q 네 값 차 ≤ 3 mm
     ③ 차체 z 잔류 진동 진폭(마지막 20 s 의 (최대−최소)/2) < 1 mm ④ q_eq 기록
+ 소방차(태그 ft-): 평탄은 축별 좌우 ±10 %·앞축 하중 비율이 설계값(SDF 바퀴 위치) ±3 %p·축별 좌우 q 차 ≤ 3 mm, 대각은 축별 평균 대비 최소 fn.
  S2 대각(adair_flat_diag2/5): 최소 바퀴 fn ≥ 평균 × 0.7 (2 cm) / × 0.5 (5 cm), 네 바퀴 VALID 비율 ≥ 99 %.
     base(서스펜션 없음)는 대조 — 판정하지 않고 기록만.
 m = 후보 model.sdf 질량 합, g = 월드 중력 9.8 m/s² (adair_flat 계열 <gravity>0 0 -9.8>).
@@ -29,6 +30,18 @@ def model_mass(variant, model="adair_ugv"):
     p = ROOT / "ugv" / "gazebo" / "variants" / variant / model / "model.sdf"
     m = ET.fromstring(p.read_text(encoding="utf-8")).find("model")
     return sum(float(l.find("inertial/mass").text) for l in m.findall("link") if l.find("inertial/mass") is not None)
+
+
+def design_front_share(variant, model):
+    """후보 SDF 의 바퀴 x 위치와 차체 무게중심(x=0 가정 확인)으로 정적 앞축 하중 비율 (바퀴·링크 질량 포함 근사)."""
+    p = ROOT / "ugv" / "gazebo" / "variants" / variant / model / "model.sdf"
+    m = ET.fromstring(p.read_text(encoding="utf-8")).find("model")
+    xs = {}
+    for l in m.findall("link"):
+        if l.get("name") in ("wheel_front_left_link", "wheel_rear_left_link"):
+            xs[l.get("name")] = float(l.find("pose").text.split()[0])
+    xf, xr = xs["wheel_front_left_link"], xs["wheel_rear_left_link"]
+    return -xr / (xf - xr)
 
 
 def fnum(v):
@@ -74,7 +87,22 @@ def judge(csv_path):
     checks = {}
     fns = [v for v in fn_med.values() if v is not None]
     mean_fn = sum(fns) / len(fns) if len(fns) == 4 else None
-    if world == "adair_flat_susp":
+    if world == "adair_flat_susp" and model == "adair_firetruck":
+        # 소방차 (후속 계획 S3-1): 앞뒤 축하중이 달라 네 바퀴 동일 기준을 쓰지 않는다 — 축별 좌우 균형·설계 축하중 비율·축별 좌우 q 차
+        checks["sum_fn_vs_mg_le_1pct"] = sum_fn is not None and abs(sum_fn - mg) / mg <= 0.01
+        checks["residual_z_lt_1mm"] = out["residual_z_amp_mm"] < 1.0
+        if len(fns) == 4:
+            fl, fr, rl, rr = (fn_med[w] for w in W)
+            out["front_share"] = round((fl + fr) / sum(fns), 4)
+            out["front_share_design"] = round(design_front_share(variant, model), 4)
+            checks["axle_lr_within_10pct"] = abs(fl - fr) / ((fl + fr) / 2) <= 0.10 and abs(rl - rr) / ((rl + rr) / 2) <= 0.10
+            checks["front_share_within_3pp"] = abs(out["front_share"] - out["front_share_design"]) <= 0.03
+        else:
+            checks["axle_lr_within_10pct"] = False
+        if has_susp:
+            qs = [q[s_] for s_ in SUSP]
+            checks["q_lr_diff_le_3mm"] = (None not in qs and abs(qs[0] - qs[1]) <= 0.003 and abs(qs[2] - qs[3]) <= 0.003)
+    elif world == "adair_flat_susp":
         checks["sum_fn_vs_mg_le_1pct"] = sum_fn is not None and abs(sum_fn - mg) / mg <= 0.01
         checks["residual_z_lt_1mm"] = out["residual_z_amp_mm"] < 1.0
         if has_susp:
@@ -84,8 +112,14 @@ def judge(csv_path):
     elif world.startswith("adair_flat_diag"):
         lim = 0.7 if "diag2" in world else 0.5
         out["min_fn_over_mean"] = None if mean_fn is None else round(min(fns) / mean_fn, 3)
+        if model == "adair_firetruck" and len(fns) == 4:
+            fl, fr, rl, rr = (fn_med[w] for w in W)
+            out["min_fn_over_axle_mean"] = round(min(fl / ((fl + fr) / 2), fr / ((fl + fr) / 2), rl / ((rl + rr) / 2), rr / ((rl + rr) / 2)), 3)
         if has_susp:
-            checks[f"min_fn_ge_{lim}_mean"] = mean_fn is not None and min(fns) / mean_fn >= lim
+            if model == "adair_firetruck":   # 축별 평균 기준 (앞뒤 하중이 다름)
+                checks[f"min_fn_ge_{lim}_axle_mean"] = out.get("min_fn_over_axle_mean") is not None and out["min_fn_over_axle_mean"] >= lim
+            else:
+                checks[f"min_fn_ge_{lim}_mean"] = mean_fn is not None and min(fns) / mean_fn >= lim
             checks["all_valid_ge_99pct"] = all(v >= 0.99 for v in valid_ratio.values())
         else:
             out["note"] = "base(서스펜션 없음) 대조 — 판정하지 않음"

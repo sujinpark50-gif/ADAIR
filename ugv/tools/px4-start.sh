@@ -46,7 +46,10 @@ esac
 mkdir -p "$STATE_DIR/px4-$INSTANCE"
 
 # 1) airframe 설치 (Windows 에서 편집해 CRLF 가 섞여도 sh 가 읽게 LF 로)
-if [ -n "$AIRFRAME" ]; then sed 's/\r$//' "$REPO/ugv/px4/airframes/$AIRFRAME" > "$BUILD/etc/init.d-posix/airframes/$AIRFRAME"; fi
+# 차량 후보 폴더에 airframe 사본이 있으면 그것 (예: fire_v2 의 RA_WHEEL_BASE 4.3). 없으면 저장소 원본
+VDIR="${GZ_MODEL_OVERRIDE:-}"; [ -z "$VDIR" ] && [ -n "${UGV_MODEL_VARIANT:-}" ] && VDIR="$REPO/ugv/gazebo/variants/$UGV_MODEL_VARIANT"
+AF_SRC="$REPO/ugv/px4/airframes/$AIRFRAME"; [ -n "$AIRFRAME" ] && [ -n "$VDIR" ] && [ -f "$VDIR/airframes/$AIRFRAME" ] && AF_SRC="$VDIR/airframes/$AIRFRAME"
+if [ -n "$AIRFRAME" ]; then sed 's/\r$//' "$AF_SRC" > "$BUILD/etc/init.d-posix/airframes/$AIRFRAME"; echo "[ugv] airframe $AF_SRC"; fi
 
 # 2) Gazebo 환경: PX4 기본 설정 + 우리 모델·월드 경로. 파티션을 나눠 UAV Gazebo 와 섞이지 않게 한다
 export GZ_SIM_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH:-}" GZ_SIM_SYSTEM_PLUGIN_PATH="${GZ_SIM_SYSTEM_PLUGIN_PATH:-}"
