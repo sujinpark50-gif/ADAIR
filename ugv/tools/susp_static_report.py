@@ -11,14 +11,21 @@
     base(서스펜션 없음)는 대조 — 판정하지 않고 기록만.
 m = 후보 model.sdf 질량 합, g = 월드 중력 9.8 m/s² (adair_flat 계열 <gravity>0 0 -9.8>).
 힘은 VALID 표본만 쓴다 (미수신·오래됨은 빈칸 — 0 으로 세지 않음).
+v2 (2026-10-13 S1·S3 독립 검증 R1): 서스펜션 유무·질량·축 위치·무게중심은 후보 SDF (vehicle_report_common.sdf_info). 소방차 설계 앞축 비율은
+링크·관성 pose 로 구한 총무게중심 기준 (첫 구현의 x_cg=0 가정값은 참고 열 front_share_design_v1). 판정 상태 PASS/FAIL/UNVERIFIED/INVALID/CONTROL —
+기대 검사 항목이 모두 계산되지 않았거나 기록 품질이 부족하면 UNVERIFIED (빈 checks 를 합격으로 세지 않음). 서스펜션 없는 대각 판 = CONTROL (판정 안 함).
 """
 import argparse
 import csv
+import subprocess
 import json
 import statistics
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from ugv.tools import vehicle_report_common as vc
+
+JUDGE_VERSION = "ssr-2 (2026-10-13: SDF 제원·무게중심 축하중·품질·상태)"
 ROOT = Path(__file__).resolve().parents[2]
 W = ["wheel_front_left", "wheel_front_right", "wheel_rear_left", "wheel_rear_right"]
 SUSP = ["susp_front_left", "susp_front_right", "susp_rear_left", "susp_rear_right"]
@@ -63,7 +70,8 @@ def judge(csv_path):
     rows = [r for r in rows if float(r["sim_t"]) - t0 >= SETTLE_S]
     if len(rows) < 100:
         return {"tag": tag, "invalid": f"정착 뒤 표본 {len(rows)} < 100"}
-    mass = model_mass(variant, model)
+    geo = vc.sdf_info(variant, model)
+    mass = geo["mass_kg"]
     mg = mass * G
     valid_ratio = {w: sum(r[f"{w}_c_state"] == "VALID" for r in rows) / len(rows) for w in W}
     all4 = [r for r in rows if all(r[f"{w}_c_state"] == "VALID" for w in W)]
@@ -76,9 +84,8 @@ def judge(csv_path):
     zl = [float(r["z"]) for r in rows if tl - float(r["sim_t"]) <= 20.0]
     q = {s: (statistics.median([fnum(r[f"{s}_q"]) for r in rows if fnum(r[f"{s}_q"]) is not None])
              if any(fnum(r[f"{s}_q"]) is not None for r in rows) else None) for s in SUSP}
-    sdf = ET.fromstring((ROOT / "ugv" / "gazebo" / "variants" / variant / model / "model.sdf").read_text(encoding="utf-8")).find("model")
-    has_susp = any(j.get("type") == "prismatic" for j in sdf.findall("joint"))   # 이름(susp*)이 아니라 SDF 로 (fire_v2 도 서스펜션)
-    out = {"tag": tag, "model": model, "variant": variant, "world": world, "mass_kg": mass, "mg_N": round(mg, 1), "samples": len(rows),
+    has_susp = geo["has_susp"]   # 이름(susp*)이 아니라 SDF prismatic 관절 (fire_v2 도 서스펜션)
+    out = {"tag": tag, "key": f"{model}|{variant}|{world}", "csv_sha1": vc.sha1_file(csv_path), "geometry": geo, "judge_version": JUDGE_VERSION, "model": model, "variant": variant, "world": world, "mass_kg": mass, "mg_N": round(mg, 1), "samples": len(rows),
            "all4_valid_samples": len(all4), "valid_ratio": {w: round(v, 4) for w, v in valid_ratio.items()},
            "fn_median_N": {w: (None if v is None else round(v, 1)) for w, v in fn_med.items()},
            "sum_fn_median_N": None if sum_fn is None else round(sum_fn, 1), "sum_fz_median_N": None if sum_fz is None else round(sum_fz, 1),
@@ -95,7 +102,8 @@ def judge(csv_path):
         if len(fns) == 4:
             fl, fr, rl, rr = (fn_med[w] for w in W)
             out["front_share"] = round((fl + fr) / sum(fns), 4)
-            out["front_share_design"] = round(design_front_share(variant, model), 4)
+            out["front_share_design_v1"] = round(design_front_share(variant, model), 4)   # 첫 구현 (x_cg = 0 가정)
+            out["front_share_design"] = geo["front_share_cg"]                                # 총무게중심 기준 (강체·평지 4점 지지 단순화)
             checks["axle_lr_within_10pct"] = abs(fl - fr) / ((fl + fr) / 2) <= 0.10 and abs(rl - rr) / ((rl + rr) / 2) <= 0.10
             checks["front_share_within_3pp"] = abs(out["front_share"] - out["front_share_design"]) <= 0.03
         else:
@@ -125,8 +133,23 @@ def judge(csv_path):
         else:
             out["note"] = "base(서스펜션 없음) 대조 — 판정하지 않음"
     out["checks"] = checks
-    decided = [v for v in checks.values() if v is not None]
-    out["pass"] = (all(decided) and len(decided) == len(checks)) if checks else None
+    T = [float(r["sim_t"]) for r in rows]
+    qual = vc.quality(rows, T, has_susp)
+    out["data_quality"] = qual
+    if world.startswith("adair_flat_diag"):
+        exp = ([f"min_fn_ge_{lim}_axle_mean" if model == "adair_firetruck" else f"min_fn_ge_{lim}_mean", "all_valid_ge_99pct"] if has_susp else [])
+    elif model == "adair_firetruck":
+        exp = ["sum_fn_vs_mg_le_1pct", "residual_z_lt_1mm", "axle_lr_within_10pct", "front_share_within_3pp"] + (["q_lr_diff_le_3mm"] if has_susp else [])
+    else:
+        exp = ["sum_fn_vs_mg_le_1pct", "residual_z_lt_1mm"] + (["fn_within_10pct", "q_spread_le_3mm"] if has_susp else [])
+    out["expected_checks"] = exp
+    markers, evidence = vc.run_markers(csv_path.parent, tag)
+    out["run_markers"], out["run_evidence"] = markers, evidence
+    if world.startswith("adair_flat_diag") and not has_susp and not markers:
+        out["status"], out["missing_checks"] = "CONTROL", []
+    else:
+        out["status"], out["missing_checks"] = vc.status(markers, qual["ok"], checks, exp)
+    out["pass"] = out["status"] == "PASS" if out["status"] in ("PASS", "FAIL") else None
     return out
 
 
@@ -134,15 +157,28 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("folder")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--baseline", default=None, help="이전 report.json — 회차별 이전 판정을 함께 남긴다")
     a = ap.parse_args()
     res = [judge(p) for p in sorted(Path(a.folder).glob("*.csv"))]
+    commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    base = {}
+    if a.baseline and Path(a.baseline).exists():
+        base = {b["tag"]: b for b in json.loads(Path(a.baseline).read_text(encoding="utf-8")) if isinstance(b, dict) and "tag" in b}
+    for r in res:
+        r["judge_commit"] = commit
+        b = base.get(r["tag"])
+        if b:
+            r["previous"] = {"pass": b.get("pass"), "checks": b.get("checks"), "judge_version": b.get("judge_version", "ssr-1")}
     for r in res:
         if "invalid" in r:
             print(f"{r['tag']:34s} 무효: {r['invalid']}")
             continue
         print(f"{r['tag']:34s} m {r['mass_kg']:.0f} Σfn {r['sum_fn_median_N']} (mg {r['mg_N']}) fn {list(r['fn_median_N'].values())} "
               f"z진동 {r['residual_z_amp_mm']} mm q {[None if v is None else round(v, 4) for v in r['susp_q_eq_m'].values()]} "
-              f"→ {r['checks']} {'합격' if r['pass'] else ('대조' if r['pass'] is None else '불합격')}")
+              f"→ {r['checks']} {r['status']}" + (f" 누락 {r['missing_checks']}" if r.get("missing_checks") else "")
+              + (f" 품질 {r['data_quality']['why']}" if r["data_quality"].get("why") else "")
+              + (f" [이전 {r['previous']['pass']}]" if r.get("previous") else "")
+              + (f" 앞축비 실측 {r['front_share']} 설계(CG) {r['front_share_design']} 설계(v1) {r['front_share_design_v1']}" if "front_share" in r else ""))
     if a.out:
         Path(a.out).write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
 
