@@ -177,3 +177,14 @@ def test_valid_tally_record_failure(tmp_path):
     tag = "c99A_j000001_0001_0002_D8_x_r"
     (tmp_path / f"{tag}.out").write_text("임무 끝 뒤 관측\nTraceback\n", encoding="utf-8")
     assert valid_tally.classify(tag, "v5", tmp_path)[0] == "INVALID_RECORD"
+
+
+# ---- 회전 시험 판정이 돌아가고 기대 항목이 모두 계산된다 (서스펜션 후보)
+def test_curve_judge_computes_expected(tmp_path):
+    xs = bump_xs(v=10.0, x_end=300.0)
+    f = stamp_name(tmp_path, "ft-fire_v2_adair_flat_curve_a")
+    write_track(f, xs, q=lambda i: -0.03)
+    f.with_suffix(".plan.json").write_text(json.dumps({"plan_xy": [[0, 0], [150, 0], [300, 0]], "corners": [["C1", [150, 0], 0]]}), encoding="utf-8")
+    r = vdr.judge(f)
+    assert r["missing_checks"] == [] and r["status"] == "PASS"
+    assert r["body_cg_height_m"] == pytest.approx(1.2) and r["static_rollover_g_est"] == pytest.approx(1.8 / 2.4, rel=1e-3)

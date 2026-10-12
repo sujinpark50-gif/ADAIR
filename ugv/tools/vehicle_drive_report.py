@@ -14,6 +14,9 @@
  T4 제동 30→0 (stop30): 같은 방식, 거리 ≤ 20 m.
  S4 명령 정지 (cancel60/50/30·estop60/50/30, 2026-10-13 추가 — S4 결과 보기 전에 정함): drive_test 의 정지 명령 기록(<기록>.events.json)부터
     정지(0.1 m/s 미만)까지 실제 거리 ≤ 명령 때 계획한 정지 거리(서버와 같은 감속 가정), 정지 확인 뒤 ≥ 10 s 재이동 없음. 명령 시각 기록이 없으면 미확인.
+ 회전 curve (S4 7.1·7.3, 2026-10-13 chain_s4b 결과 보기 전에 정함): 90°·45°·135° 꺾임 평지 경로. 판정 = 바퀴별 접촉 상실(NO_CONTACT·한 바퀴 STALE) 연속
+    ≤ 0.2 s, (서스펜션) |q| 최대 < 0.08 m·발산 없음, 최종 정지 확인 뒤 ≥ 10 s 재이동 없음. 기록만: roll 최대, 바퀴 fn 최소/축 평균(하중 이동),
+    꺾임별 계획선 최대 이탈, 정적 전복 추정 g·윤거/(2h) (동적 한계 보장 아님). 경로 추종 오차·속도 기준은 이 평지 시험에서 판정하지 않는다.
  횡편차 (v2): .plan.json 의 계획(전송) 직선 기준. 첫 구현(v1)은 실제 첫 위치→실제 마지막 위치 선이라 종점이 벗어나면 기준선이 돌았다 — 참고 열로 남김.
  판정 상태 PASS/FAIL/UNVERIFIED/INVALID 와 기록 품질·실행 유효성 = ugv/tools/vehicle_report_common.py. --baseline 으로 이전 report.json 을 주면
  회차마다 이전 판정을 함께 남긴다 (원본 판정 보존).
@@ -41,6 +44,7 @@ EXPECTED = {
                  "roll_pitch_le_2deg", "accel_time_dist_ok", "brake_dist_ok", "stop_confirmed_no_remotion_10s", "wheel_lock_le_1s"],
     "stop30": ["brake_dist_ok", "stop_confirmed_no_remotion_10s", "wheel_lock_le_1s"],
     "command": ["cmd_stop_within_planned", "stop_confirmed_no_remotion_10s", "wheel_lock_le_1s"],
+    "curve": ["no_contact_le_0.2s", "stop_confirmed_no_remotion_10s"], "curve_susp": ["no_contact_le_0.2s", "stop_confirmed_no_remotion_10s", "q_abs_max_lt_0.08", "no_divergence"],
 }
 
 W = ["wheel_front_left", "wheel_front_right", "wheel_rear_left", "wheel_rear_right"]
@@ -306,13 +310,51 @@ def judge(p):
         checks["stop_confirmed_no_remotion_10s"] = (br.get("stop_confirm_t") is not None and br.get("observed_after_s", 0) >= 10.0
                                                    and br.get("re_motion_t") is None)
         checks["wheel_lock_le_1s"] = br.get("wheel_lock_max_s") is not None and br["wheel_lock_max_s"] <= 1.0
+    elif sc == "curve":
+        nc = {w: runs_of([r[f"{w}_c_state"] in ("NO_CONTACT", "STALE") for r in rows], T) for w in W}
+        out["no_contact_max_s"] = nc
+        checks["no_contact_le_0.2s"] = all(v <= 0.2 for v in nc.values())
+        out["roll_max_deg"] = round(max(abs(float(r["roll"])) for r in rows) * 180 / math.pi, 3)
+        mv = [i for i in range(len(rows)) if spd[i] > 1.0]
+        fnr = []
+        for i in mv:
+            fn = [fnum(rows[i].get(f"{w}_fn")) for w in W]
+            if None not in fn and all(rows[i][f"{w}_c_state"] == "VALID" for w in W):
+                fnr.append(min(fn[0] / ((fn[0] + fn[1]) / 2), fn[1] / ((fn[0] + fn[1]) / 2), fn[2] / ((fn[2] + fn[3]) / 2), fn[3] / ((fn[2] + fn[3]) / 2)))
+        out["min_fn_over_axle_mean"] = round(min(fnr), 3) if fnr else None
+        plan_p = p.with_suffix(".plan.json")
+        if plan_p.exists():
+            pl = json.loads(plan_p.read_text(encoding="utf-8"))
+            pts = pl["plan_xy"]
+            from ugv.tools.drive_test import _dist_to_polyline
+            out["corner_max_dev_m"] = {c[0]: round(max((_dist_to_polyline(X[i], Y[i], pts) for i in range(len(X))
+                                                        if math.hypot(X[i] - c[1][0], Y[i] - c[1][1]) <= 40.0), default=float("nan")), 2) for c in pl["corners"]}
+        geom = vc.sdf_info(variant, model)
+        m_sdf = ET.fromstring((ROOT / geom["model_sdf"]).read_text(encoding="utf-8")).find("model")
+        bl = [l for l in m_sdf.findall("link") if l.get("name") == "base_link"][0]
+        h_cg = float(bl.find("pose").text.split()[2]) + float(bl.find("inertial/pose").text.split()[2])
+        ys = [float(l.find("pose").text.split()[1]) for l in m_sdf.findall("link") if l.get("name", "").startswith("wheel_") and l.get("name").endswith("_link") and "steering" not in l.get("name")]
+        track = 2 * min(abs(y) for y in ys) if ys else None
+        out["static_rollover_g_est"] = round(track / (2 * h_cg), 3) if track and h_cg else None
+        out["body_cg_height_m"] = round(h_cg, 3)
+        if geo["has_susp"]:
+            qmax = max((abs(fnum(r.get(f"{s_}_q"))) for r in rows for s_ in SUSP if fnum(r.get(f"{s_}_q")) is not None), default=None)
+            out["susp_q_abs_max_raw_m"] = qmax
+            checks["q_abs_max_lt_0.08"] = None if qmax is None else qmax < 0.08
+            checks["no_divergence"] = None if qmax is None else qmax < 0.099
+        k_go = next((i for i in range(len(spd)) if spd[i] > 0.3), 0)
+        k_stop = next((i for i in range(len(spd) - 1, -1, -1) if spd[i] > 0.3), len(spd) - 1)
+        q_i0, q_i1 = k_go, k_stop + 1
+        st = stop_after(T, spd, k_stop)
+        out.update(st)
+        checks["stop_confirmed_no_remotion_10s"] = st.get("stop_confirm_t") is not None and st.get("observed_after_s", 0) >= 10.0 and st.get("re_motion_t") is None
     if sc in ("straight", "straight50", "stop30"):
         out["brake_definition"] = "임무 도착 감속 — 실측 휴리스틱(정지 전 마지막 '최대 − 0.5 m/s' 이상 다음 표본), 명령 시각 아님"
-    qual = vc.quality(rows, T, geo["has_susp"] and sc == "bump", q_i0, q_i1)
+    qual = vc.quality(rows, T, geo["has_susp"] and sc in ("bump", "curve"), q_i0, q_i1)
     out["data_quality"] = qual
     exp = (EXPECTED["bump_susp"] if geo["has_susp"] else EXPECTED["bump"]) if sc == "bump" else \
         EXPECTED["straight"] if sc in ("straight", "straight50") else EXPECTED["stop30"] if sc == "stop30" else \
-        EXPECTED["command"] if sc.startswith(("cancel", "estop")) else []
+        EXPECTED["command"] if sc.startswith(("cancel", "estop")) else         (EXPECTED["curve_susp"] if geo["has_susp"] else EXPECTED["curve"]) if sc == "curve" else []
     out["checks"] = checks
     out["expected_checks"] = exp
     out["status"], out["missing_checks"] = vc.status(markers, qual["ok"], checks, exp)
@@ -344,7 +386,7 @@ def main():
         bad = [k for k, v in r["checks"].items() if v is False] + [f"{k}(미계산)" for k in r.get("missing_checks", [])]
         keys = [k for k in ("stable_58_62_s", "max_kmh", "accel_0_58_s", "accel_0_58_m", "brake_dist_m", "brake_start_speed_mps", "wheel_lock_max_s",
                             "susp_q_abs_max_raw_m", "q_residual_ratio_1s_after", "no_contact_max_s", "lateral_dev_max_m", "lateral_dev_max_m_v1", "end_error_m",
-                            "yaw_rate_max_0.5s_dps") if k in r]
+                            "yaw_rate_max_0.5s_dps", "roll_max_deg", "min_fn_over_axle_mean", "corner_max_dev_m", "static_rollover_g_est") if k in r]
         prev = f" [이전 {'합격' if r['previous']['pass'] else '불합격'}]" if r.get("previous") else ""
         print(f"{'ft-' if r['model'] == 'adair_firetruck' else ''}{r['variant']}/{r['scenario']}/{r['rep']}: {r['status']} {bad if bad else ''}{prev} | "
               + ", ".join(f"{k}={r[k]}" for k in keys) + (f" | 품질 {r['data_quality']['why']}" if r["data_quality"].get("why") else "")
