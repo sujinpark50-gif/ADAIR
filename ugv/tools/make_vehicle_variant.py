@@ -10,6 +10,9 @@
   susp_a0  base + 바퀴마다 차체↔바퀴(앞은 조향 링크) 수직 prismatic 스프링·감쇠 (K 130 kN/m, C 8 kN·s/m, ref −0.03 m, ±0.10 m, 링크 5 kg)
            = 시험 chain56 이 쓴 logs/ugv/stage5/jturn/fable_models/susp 와 내용 동일 (결과 재사용 조건)
   susp_a   susp_a0 + JointStatePublisher 에 서스펜션 관절 4개 추가 (물리 동일, 관절 위치 계측용)
+  (소방차 adair_firetruck: base·susp_a 만. susp_a = 축별 K·C — 앞 711 kN/m·43 kN·s/m, 뒤 977 kN/m·59.1 kN·s/m, ref −0.028, ±0.10 m, 링크 10 kg.
+   UGV 값 복사가 아니라 소방차 질량(앞 2,000·뒤 2,750 kg/바퀴 스프렁)에서 다시 계산한 계획 8.1 F-a. UGV 실측 유효 강성 비 0.64 를 가정하면
+   유효 동특성이 UGV susp_a 실측(2.37 Hz, 감쇠비 0.72)과 비슷 — 소방차에서 다시 실측해야 함)
   susp_a_m susp_a 의 질량 보정판 — 차체 1500 → 1480 kg (관성 같은 비율)로 총질량 1,604 kg 를 원본과 맞춤. 원인 시험 전용 (지시서 0절)
 해시는 줄바꿈 정규화 내용 해시 (fable_models 사본은 CRLF 로 저장돼 있어 바이트는 다르고 내용은 같다).
 원본 생성: fable_make_models.py·fable_make_susp.py (2026-10-12, logs 아래) 를 옮긴 것. --check 는 재생성 결과와 저장본 sha1 비교.
@@ -29,6 +32,16 @@ VARIANTS = ROOT / "ugv" / "gazebo" / "variants"
 WHEELS = ["wheel_rear_left_link", "wheel_rear_right_link", "wheel_front_left_link", "wheel_front_right_link"]
 SUSP_POS = {"rear_left": (-1.35, 0.8), "rear_right": (-1.35, -0.8), "front_left": (1.35, 0.8), "front_right": (1.35, -0.8)}
 SUSP_A = {"k": 130000.0, "c": 8000.0, "ref": -0.03, "travel": 0.10, "link_mass": 5.0}
+# 차종별 susp_a: 바퀴 위치(SDF 실측)와 바퀴별 (K, C, ref)
+MODEL_SUSP = {
+    "adair_ugv": {"pos": SUSP_POS, "wheel": {w: (SUSP_A["k"], SUSP_A["c"], SUSP_A["ref"]) for w in SUSP_POS},
+                  "travel": SUSP_A["travel"], "link_mass": SUSP_A["link_mass"]},
+    "adair_firetruck": {"pos": {"rear_left": (-1.6, 1.0), "rear_right": (-1.6, -1.0), "front_left": (2.2, 1.0), "front_right": (2.2, -1.0)},
+                        "wheel": {"rear_left": (977000.0, 59100.0, -0.028), "rear_right": (977000.0, 59100.0, -0.028),
+                                  "front_left": (711000.0, 43000.0, -0.028), "front_right": (711000.0, 43000.0, -0.028)},
+                        "travel": 0.10, "link_mass": 10.0},
+}
+MODEL_VARIANTS = {"adair_ugv": ["base", "rwd", "susp_a0", "susp_a", "susp_a_m"], "adair_firetruck": ["base", "susp_a"]}
 
 
 def sha1(b: bytes) -> str:
@@ -55,9 +68,11 @@ def remove_front_drive(s: str) -> str:
     return s
 
 
-def add_suspension(s: str, k: float, c: float, ref: float, travel: float, link_mass: float) -> str:
+def add_suspension(s: str, cfg: dict) -> str:
     links = joints = ""
-    for w, (px, py) in SUSP_POS.items():
+    travel, link_mass = cfg["travel"], cfg["link_mass"]
+    for w, (px, py) in cfg["pos"].items():
+        k, c, ref = cfg["wheel"][w]
         links += f'''
     <link name="susp_{w}_link">
       <pose relative_to="base_link">{px} {py} 0 0 0 0</pose>
@@ -111,7 +126,9 @@ def build(variant: str, model: str = "adair_ugv") -> str:
     if variant == "rwd":
         return remove_front_drive(base)
     if variant in ("susp_a0", "susp_a", "susp_a_m"):
-        s = add_suspension(base, **SUSP_A)
+        if variant not in MODEL_VARIANTS[model]:
+            raise SystemExit(f"{model} 에는 변형 {variant} 없음")
+        s = add_suspension(base, MODEL_SUSP[model])
         if variant == "susp_a0":
             return s
         s = publish_susp_joints(s)
@@ -121,12 +138,12 @@ def build(variant: str, model: str = "adair_ugv") -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--variant", default="base,rwd,susp_a0,susp_a,susp_a_m")
+    ap.add_argument("--variant", default=None, help="쉼표로 (기본: 그 차종의 전부)")
     ap.add_argument("--model", default="adair_ugv")
     ap.add_argument("--check", action="store_true", help="저장본과 재생성 결과 sha1 비교만")
     a = ap.parse_args()
     bad = 0
-    for v in a.variant.split(","):
+    for v in (a.variant.split(",") if a.variant else MODEL_VARIANTS[a.model]):
         txt = build(v, a.model)
         d = VARIANTS / v / a.model
         out = d / "model.sdf"
@@ -142,9 +159,10 @@ def main():
         out.write_bytes(new)
         (d / "model.config").write_bytes((MODELS / a.model / "model.config").read_bytes())
         man = {"variant": v, "model": a.model, "source_sha1": sha1((MODELS / a.model / "model.sdf").read_bytes()),
-               "model_sdf_sha1": sha1(new), "params": SUSP_A if v.startswith("susp") else None,
+               "model_sdf_sha1": sha1(new), "params": ({k: (list(v2) if isinstance(v2, tuple) else v2) for k, v2 in MODEL_SUSP[a.model].items()}
+                                                         if v.startswith("susp") else None),
                "generator": "ugv/tools/make_vehicle_variant.py"}
-        (VARIANTS / v / "MANIFEST.json").write_text(json.dumps(man, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        (VARIANTS / v / ("MANIFEST.json" if a.model == "adair_ugv" else f"MANIFEST_{a.model}.json")).write_text(json.dumps(man, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         print(v, len(new), "bytes", sha1(new)[:16])
     sys.exit(1 if bad else 0)
 

@@ -1,0 +1,51 @@
+{
+ "variant": "susp_a",
+ "model": "adair_firetruck",
+ "source_sha1": "f7374787677ea384f0aca60175b0d7b55f700ac8",
+ "model_sdf_sha1": "de95461396cc98f9b487785631d175abdb87b28e",
+ "params": {
+  "pos": {
+   "rear_left": [
+    -1.6,
+    1.0
+   ],
+   "rear_right": [
+    -1.6,
+    -1.0
+   ],
+   "front_left": [
+    2.2,
+    1.0
+   ],
+   "front_right": [
+    2.2,
+    -1.0
+   ]
+  },
+  "wheel": {
+   "rear_left": [
+    977000.0,
+    59100.0,
+    -0.028
+   ],
+   "rear_right": [
+    977000.0,
+    59100.0,
+    -0.028
+   ],
+   "front_left": [
+    711000.0,
+    43000.0,
+    -0.028
+   ],
+   "front_right": [
+    711000.0,
+    43000.0,
+    -0.028
+   ]
+  },
+  "travel": 0.1,
+  "link_mass": 10.0
+ },
+ "generator": "ugv/tools/make_vehicle_variant.py"
+}

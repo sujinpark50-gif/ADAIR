@@ -12,6 +12,8 @@
  T3 제동 60→0 (straight 끝): 감속 시작(안정 구간 끝 이후 속도가 최대보다 0.5 m/s 떨어진 첫 시각 — 명령 속도 기록이 없어 실측 기준) → 0.2 m/s 미만
     거리 30~60 m, 정지 확인(1 s 연속 < 0.2 m/s) 뒤 10 s 재이동(≥ 0.3 m/s) 없음, 바퀴 잠김(바퀴 각속도·반지름 < 0.3 m/s 인데 차속 > 1 m/s) 연속 ≤ 1 s.
  T4 제동 30→0 (stop30): 같은 방식, 거리 ≤ 20 m.
+ 소방차 (태그 앞 ft-, 계획 8.1, 별도 합격표): straight50 — 48~52 km/h ≥ 10 s·52 초과 없음, 가속 0→48 km/h 8~13 s·≤ 110 m, 임무 끝 정지 50→0 ≤ 55 m,
+    바퀴 반지름 0.5 m. 나머지 항목(표준편차·조향·yaw rate·횡편차·roll/pitch·잠김·재이동)은 UGV 와 같은 기준.
 """
 import argparse
 import csv
@@ -107,15 +109,21 @@ def brake_metrics(rows, T, X, Y, spd, vmax_ref):
 
 
 def judge(p):
-    m = re.match(r"(.+?)_(adair_flat\w*?)_(bump|straight|stop30|brake|curve)_(\w+?)_\d{8}_\d{6}$", p.stem)
+    ft = p.stem.startswith("ft-")
+    m = re.match(r"(.+?)_(adair_flat\w*?)_(bump|straight50|straight|stop30|brake|curve)_(\w+?)_\d{8}_\d{6}$", p.stem.removeprefix("ft-"))
     if not m:
         return None
     variant, world, sc, rep = m.groups()
+    global WHEEL_R
+    WHEEL_R = 0.5 if ft else 0.35
+    lo_kmh, hi_kmh, acc_kmh, acc_s, acc_m, brake_lim = ((48, 52, 48, (8.0, 13.0), 110.0, (0.0, 55.0)) if sc == "straight50"
+                                                        else (58, 62, 58, (6.0, 10.0), 90.0, (30.0, 60.0)))
     rows, T, X, Y, spd = load(p)
-    out = {"file": p.name, "variant": variant, "world": world, "scenario": sc, "rep": rep, "rows": len(rows)}
+    out = {"file": p.name, "model": "adair_firetruck" if ft else "adair_ugv", "variant": variant, "world": world, "scenario": sc, "rep": rep, "rows": len(rows)}
     checks = {}
     if sc == "bump":
-        k_cross = next((i for i in range(len(X)) if X[i] >= BUMP_X + 2.7), None)   # 뒷바퀴까지 띠를 지난 시각 (축간 2.7 m)
+        front, wb = (2.2, 3.8) if ft else (1.35, 2.7)        # 앞축 위치·축간 (SDF)
+        k_cross = next((i for i in range(len(X)) if X[i] >= BUMP_X - front + wb + 0.6), None)   # 뒷바퀴까지 띠를 지난 시각
         nc = {w: runs_of([r[f"{w}_c_state"] == "NO_CONTACT" for r in rows], T) for w in W}
         out["no_contact_max_s"] = nc
         checks["no_contact_le_0.2s"] = all(v <= 0.2 for v in nc.values())
@@ -125,7 +133,7 @@ def judge(p):
             out["susp_q_abs_max_m"] = None if qmax is None else round(qmax, 4)
             checks["q_abs_max_lt_0.08"] = qmax is not None and qmax < 0.08
             checks["no_divergence"] = qmax is not None and qmax < 0.099
-            k_in = next((i for i in range(len(X)) if X[i] >= BUMP_X - 1.35 - 0.6), None)   # 앞바퀴가 띠에 닿기 직전
+            k_in = next((i for i in range(len(X)) if X[i] >= BUMP_X - front - 0.6), None)   # 앞바퀴가 띠에 닿기 직전
             if k_cross is not None and k_in is not None:
                 dev, dev_static = {}, {}
                 for s in SUSP:
@@ -147,12 +155,12 @@ def judge(p):
                 checks["settle_1s_le_10pct"] = False
                 out["note"] = "띠 통과 기록 없음"
             out.pop("q_bump_peak_dev_m", None)
-            kb = next((i for i in range(len(X)) if X[i] >= BUMP_X - 1.35 - 0.6), None)
+            kb = next((i for i in range(len(X)) if X[i] >= BUMP_X - front - 0.6), None)
             out["speed_at_bump_mps"] = None if kb is None else round(spd[kb], 2)
-    elif sc in ("straight", "stop30"):
+    elif sc in ("straight", "straight50", "stop30"):
         kmh = [v * 3.6 for v in spd]
-        if sc == "straight":
-            band = [58 <= v <= 62 for v in kmh]
+        if sc in ("straight", "straight50"):
+            band = [lo_kmh <= v <= hi_kmh for v in kmh]
             best = (0.0, None, None)
             i = 0
             while i < len(band):
@@ -166,10 +174,10 @@ def judge(p):
                 else:
                     i += 1
             dur, a, b = best
-            out["stable_58_62_s"] = round(dur, 2)
+            out["stable_58_62_s"] = round(dur, 2)          # 소방차는 48~52 km/h 구간
             out["max_kmh"] = round(max(kmh), 2)
             checks["stable_ge_10s"] = dur >= 10.0
-            checks["no_over_62"] = max(kmh) <= 62.0
+            checks["no_over_limit"] = max(kmh) <= hi_kmh
             if a is not None:
                 seg = rows[a:b]
                 sp = spd[a:b]
@@ -203,16 +211,16 @@ def judge(p):
                     out["yaw_rate_max_0.5s_dps"] = round(max(sm), 3) if sm else None
                     checks["yaw_rate_le_2dps"] = out["yaw_rate_max_0.5s_dps"] is not None and out["yaw_rate_max_0.5s_dps"] <= 2.0
             k_go = next((i for i in range(len(spd)) if spd[i] > 0.2), None)
-            k_58 = next((i for i in range(len(kmh)) if kmh[i] >= 58), None)
+            k_58 = next((i for i in range(len(kmh)) if kmh[i] >= acc_kmh), None)
             if k_go is not None and k_58 is not None:
                 out["accel_0_58_s"] = round(T[k_58] - T[k_go], 2)
                 out["accel_0_58_m"] = round(sum(math.hypot(X[i + 1] - X[i], Y[i + 1] - Y[i]) for i in range(k_go, k_58)), 1)
-                checks["accel_6_10s_le_90m"] = 6.0 <= out["accel_0_58_s"] <= 10.0 and out["accel_0_58_m"] <= 90.0
+                checks["accel_time_dist_ok"] = acc_s[0] <= out["accel_0_58_s"] <= acc_s[1] and out["accel_0_58_m"] <= acc_m
             else:
-                checks["accel_6_10s_le_90m"] = False
+                checks["accel_time_dist_ok"] = False
         br = brake_metrics(rows, T, X, Y, spd, None)
         out.update(br)
-        lim = (30.0, 60.0) if sc == "straight" else (0.0, 20.0)
+        lim = brake_lim if sc in ("straight", "straight50") else (0.0, 20.0)
         d = br.get("brake_dist_m")
         checks["brake_dist_ok"] = d is not None and lim[0] <= d <= lim[1]
         checks["stop_confirmed_no_remotion_10s"] = (br.get("stop_confirm_t") is not None and br.get("observed_after_s", 0) >= 10.0

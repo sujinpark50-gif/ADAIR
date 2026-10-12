@@ -1,0 +1,8 @@
+{
+ "variant": "base",
+ "model": "adair_firetruck",
+ "source_sha1": "f7374787677ea384f0aca60175b0d7b55f700ac8",
+ "model_sdf_sha1": "14b295330e02398a0ee5808b98e0cb63bb54b89a",
+ "params": null,
+ "generator": "ugv/tools/make_vehicle_variant.py"
+}

@@ -40,7 +40,8 @@ def fnum(v):
 
 def judge(csv_path):
     tag = csv_path.stem
-    variant, world = tag.split("_adair_", 1)
+    model = "adair_firetruck" if tag.startswith("ft-") else "adair_ugv"
+    variant, world = tag.removeprefix("ft-").split("_adair_", 1)
     world = "adair_" + world
     rows = list(csv.DictReader(open(csv_path, encoding="utf-8")))
     if not rows:
@@ -49,7 +50,7 @@ def judge(csv_path):
     rows = [r for r in rows if float(r["sim_t"]) - t0 >= SETTLE_S]
     if len(rows) < 100:
         return {"tag": tag, "invalid": f"정착 뒤 표본 {len(rows)} < 100"}
-    mass = model_mass(variant)
+    mass = model_mass(variant, model)
     mg = mass * G
     valid_ratio = {w: sum(r[f"{w}_c_state"] == "VALID" for r in rows) / len(rows) for w in W}
     all4 = [r for r in rows if all(r[f"{w}_c_state"] == "VALID" for w in W)]
@@ -63,7 +64,7 @@ def judge(csv_path):
     q = {s: (statistics.median([fnum(r[f"{s}_q"]) for r in rows if fnum(r[f"{s}_q"]) is not None])
              if any(fnum(r[f"{s}_q"]) is not None for r in rows) else None) for s in SUSP}
     has_susp = variant.startswith("susp")
-    out = {"tag": tag, "variant": variant, "world": world, "mass_kg": mass, "mg_N": round(mg, 1), "samples": len(rows),
+    out = {"tag": tag, "model": model, "variant": variant, "world": world, "mass_kg": mass, "mg_N": round(mg, 1), "samples": len(rows),
            "all4_valid_samples": len(all4), "valid_ratio": {w: round(v, 4) for w, v in valid_ratio.items()},
            "fn_median_N": {w: (None if v is None else round(v, 1)) for w, v in fn_med.items()},
            "sum_fn_median_N": None if sum_fn is None else round(sum_fn, 1), "sum_fz_median_N": None if sum_fz is None else round(sum_fz, 1),
@@ -81,7 +82,7 @@ def judge(csv_path):
             qs = [v for v in q.values() if v is not None]
             checks["q_spread_le_3mm"] = (max(qs) - min(qs) <= 0.003) if len(qs) == 4 else None   # 관절 미발행(susp_a0)이면 판정 불가
     elif world.startswith("adair_flat_diag"):
-        lim = 0.7 if world.endswith("diag2") else 0.5
+        lim = 0.7 if "diag2" in world else 0.5
         out["min_fn_over_mean"] = None if mean_fn is None else round(min(fns) / mean_fn, 3)
         if has_susp:
             checks[f"min_fn_ge_{lim}_mean"] = mean_fn is not None and min(fns) / mean_fn >= lim

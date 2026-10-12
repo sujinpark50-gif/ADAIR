@@ -49,7 +49,7 @@ def to_wsl_path(p: Path) -> str:
 
 
 # ---------------------------------------------------------------------------- 기록
-def start_tracker(out_csv: Path, duration_s: float, world="adair_flat", model="adair_ugv_1", detail=False):
+def start_tracker(out_csv: Path, duration_s: float, world="adair_flat", model="adair_ugv_1", detail=False):  # noqa: E501
     """detail=True 면 gz_detail (바퀴 접촉·서스펜션 관절, 접촉 센서 있는 후보 모델) — 아니면 gz_track (자세만)."""
     tool = ["-m", "ugv.tools.gz_detail"] if detail else [to_wsl_path(ROOT / "ugv" / "tools" / "gz_track.py")]
     cmd = ["wsl.exe", "-d", WSL_DISTRO, "--cd", to_wsl_path(ROOT), "--exec", "env",
@@ -216,10 +216,12 @@ SCENARIOS = {
     # 30 km/h 직선 300 m 끝 정지
     "bump": ([(80.0, 0.0)], 5.0),
     "stop30": ([(300.0, 0.0)], 8.33),
+    # 소방차 (계획 8.1: 목표 50 km/h = RO_SPEED_LIM 13.9, airframe 51101) 직선 1.2 km 끝 정지
+    "straight50": ([(1200.0, 0.0)], 13.9),
 }
 
 
-async def run(name: str, address: str, track_s: float, world="adair_flat", detail=False, tag=""):
+async def run(name: str, address: str, track_s: float, world="adair_flat", detail=False, tag="", model="adair_ugv_1"):
     from mavsdk.asyncio.plugins.action import ActionAsync
     from mavsdk.asyncio.plugins.mission import MissionAsync
     from mavsdk.asyncio.plugins.telemetry import TelemetryAsync
@@ -254,7 +256,7 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
 
     health = await first(tel.subscribe_health)
     print(f"[{name}] 시작 위치 gz≈({e0:.1f},{n0:.1f}) health local_ok={health.is_local_position_ok}")
-    tracker = start_tracker(out_csv, track_s, world=world, detail=detail)
+    tracker = start_tracker(out_csv, track_s, world=world, detail=detail, model=model)
     await asyncio.sleep(3.0)                      # 기록기가 구독을 시작할 시간
     await mis.clear_mission()
     await mis.set_return_to_launch_after_mission(False)
@@ -330,13 +332,14 @@ def main():
     ap.add_argument("--world", default="adair_flat", help="Gazebo 월드 이름 (px4-start 의 WORLD 와 같게)")
     ap.add_argument("--detail", action="store_true", help="gz_detail 상세 기록 (접촉 센서 있는 후보 모델)")
     ap.add_argument("--tag", default="", help="결과 파일 이름 앞부분 (기본 = 시나리오)")
+    ap.add_argument("--model", default="adair_ugv_1", help="Gazebo 차량 이름 (소방차 adair_firetruck_1)")
     a = ap.parse_args()
     if a.analyze:
         report(a.analyze, a.plan or a.analyze.with_suffix(".plan.json"))
         return
     if not a.scenario:
         ap.error("scenario 또는 --analyze 필요")
-    out = asyncio.run(run(a.scenario, a.address, a.track_s, world=a.world, detail=a.detail, tag=a.tag))
+    out = asyncio.run(run(a.scenario, a.address, a.track_s, world=a.world, detail=a.detail, tag=a.tag, model=a.model))
     report(out, out.with_suffix(".plan.json"))
 
 
