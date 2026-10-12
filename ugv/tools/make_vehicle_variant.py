@@ -10,6 +10,7 @@
   susp_a0  base + 바퀴마다 차체↔바퀴(앞은 조향 링크) 수직 prismatic 스프링·감쇠 (K 130 kN/m, C 8 kN·s/m, ref −0.03 m, ±0.10 m, 링크 5 kg)
            = 시험 chain56 이 쓴 logs/ugv/stage5/jturn/fable_models/susp 와 내용 동일 (결과 재사용 조건)
   susp_a   susp_a0 + JointStatePublisher 에 서스펜션 관절 4개 추가 (물리 동일, 관절 위치 계측용)
+  susp_a_m susp_a 의 질량 보정판 — 차체 1500 → 1480 kg (관성 같은 비율)로 총질량 1,604 kg 를 원본과 맞춤. 원인 시험 전용 (지시서 0절)
 해시는 줄바꿈 정규화 내용 해시 (fable_models 사본은 CRLF 로 저장돼 있어 바이트는 다르고 내용은 같다).
 원본 생성: fable_make_models.py·fable_make_susp.py (2026-10-12, logs 아래) 를 옮긴 것. --check 는 재생성 결과와 저장본 sha1 비교.
 
@@ -90,6 +91,18 @@ def publish_susp_joints(s: str) -> str:
     return s.replace(anchor, '      <joint_name>wheel_front_right_steering_joint</joint_name>\n' + extra + '    </plugin>')
 
 
+def scale_body_mass(s: str, new_mass: float) -> str:
+    """base_link 질량을 new_mass 로, 관성 대각 성분은 같은 비율로 (무게중심 위치 그대로)."""
+    i = s.index('<link name="base_link">')
+    j = s.index("</inertial>", i)
+    blk = s[i:j]
+    m0 = float(re.search(r"<mass>([\d.]+)</mass>", blk).group(1))
+    r = new_mass / m0
+    blk2 = re.sub(r"<mass>[\d.]+</mass>", f"<mass>{new_mass}</mass>", blk, count=1)
+    blk2 = re.sub(r"<(ixx|iyy|izz)>([\d.]+)</(?:ixx|iyy|izz)>", lambda m: f"<{m.group(1)}>{float(m.group(2)) * r:.4g}</{m.group(1)}>", blk2)
+    return s[:i] + blk2 + s[j:]
+
+
 def build(variant: str, model: str = "adair_ugv") -> str:
     sdf = (MODELS / model / "model.sdf").read_text(encoding="utf-8")
     base = add_contact(sdf)
@@ -97,15 +110,18 @@ def build(variant: str, model: str = "adair_ugv") -> str:
         return base
     if variant == "rwd":
         return remove_front_drive(base)
-    if variant in ("susp_a0", "susp_a"):
+    if variant in ("susp_a0", "susp_a", "susp_a_m"):
         s = add_suspension(base, **SUSP_A)
-        return s if variant == "susp_a0" else publish_susp_joints(s)
+        if variant == "susp_a0":
+            return s
+        s = publish_susp_joints(s)
+        return s if variant == "susp_a" else scale_body_mass(s, 1480.0)
     raise SystemExit(f"변형 {variant} 없음")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--variant", default="base,rwd,susp_a0,susp_a")
+    ap.add_argument("--variant", default="base,rwd,susp_a0,susp_a,susp_a_m")
     ap.add_argument("--model", default="adair_ugv")
     ap.add_argument("--check", action="store_true", help="저장본과 재생성 결과 sha1 비교만")
     a = ap.parse_args()

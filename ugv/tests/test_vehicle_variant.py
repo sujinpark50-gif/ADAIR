@@ -7,7 +7,7 @@ import pytest
 
 from ugv.tools import make_vehicle_variant as mv
 
-VARIANTS = ["base", "rwd", "susp_a0", "susp_a"]
+VARIANTS = ["base", "rwd", "susp_a0", "susp_a", "susp_a_m"]
 
 
 def _model(txt):
@@ -72,3 +72,14 @@ def test_susp_a_publishes_susp_joints_only_difference():
     pub = lambda t: re.findall(r"<joint_name>(susp_\w+)</joint_name>", t.split("JointStatePublisher")[1])
     assert pub(a0) == [] and sorted(pub(a)) == sorted(f"susp_{w}_joint" for w in mv.SUSP_POS)
     assert a.replace("".join(f"      <joint_name>susp_{w}_joint</joint_name>\n" for w in mv.SUSP_POS), "") == a0
+
+
+def test_susp_a_m_restores_total_mass():
+    m = _model(mv.build("susp_a_m"))
+    assert _mass(m) == pytest.approx(1604.0)
+    body = [l for l in m.findall("link") if l.get("name") == "base_link"][0]
+    assert float(body.find("inertial/mass").text) == 1480.0
+    assert float(body.find("inertial/inertia/iyy").text) == pytest.approx(2250 * 1480 / 1500, rel=1e-3)
+    # 질량 말고는 susp_a 와 같다
+    strip = lambda t: re.sub(r"<link name=\"base_link\">.*?</inertial>", "", t, count=1, flags=re.S)
+    assert strip(mv.build("susp_a")) == strip(mv.build("susp_a_m"))

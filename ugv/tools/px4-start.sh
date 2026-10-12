@@ -9,6 +9,7 @@
 #   PX4_DIR    PX4-Autopilot 경로 (기본 ~/PX4-Autopilot, 빌드 build/px4_sitl_default 필요)
 #   WORLD      ugv/gazebo/worlds/<WORLD>.sdf (기본 adair_flat). 월드 파일 안의 world name 과 같아야 한다
 #   WORLD_FILE 월드 파일 경로를 직접 줄 때 (시험용 사본 등). 기본 ugv/gazebo/worlds/<WORLD>.sdf
+#   NO_PX4     1 이면 월드·차량 스폰까지만 (PX4·MAVLink 없음)
 #   UGV_MODEL_VARIANT 차량 후보 이름 (ugv/gazebo/variants/<이름>, 예: susp_a). 없으면 정식 모델
 #   GZ_SIM_RESOURCE_PATH 를 미리 주면 그 경로도 모델 검색에 쓴다 (시험용 모델 사본)
 #   INSTANCE   PX4 인스턴스 번호 (기본 1. 0 은 UAV 몫). MAVLink 는 14540+INSTANCE 로 보낸다
@@ -100,6 +101,9 @@ else
     --req "name: \"$MODEL_NAME\", allow_renaming: false, sdf: \"$SDF\"" > /dev/null
   echo "[ugv] 차량 스폰: $MODEL_NAME @ $POSE"
 fi
+
+# NO_PX4=1: 월드·차량만 (서스펜션 정지·대각 시험처럼 PX4 가 필요 없는 계측)
+if [ "${NO_PX4:-0}" = 1 ]; then echo "[ugv] NO_PX4=1 — PX4 없이 월드·차량만"; exit 0; fi
 
 # 5) PX4 (이미 떠 있으면 건너뜀)
 if pgrep -f "px4 -i $INSTANCE " > /dev/null; then
