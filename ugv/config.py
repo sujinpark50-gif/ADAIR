@@ -21,6 +21,9 @@ STATIONS_JSON = Path(os.getenv("UGV_STATIONS_JSON", ROOT / "environment" / "conf
 ROAD_GPKG = Path(os.getenv("UGV_ROAD_GPKG", ROOT / "environment" / "data" / "processed" / "roads_clipped.gpkg"))
 # 도로 부분집합 (B 월드 제한 구역 등): JSON {"roads": [...]} 의 링크만 쓴다. 비우면 전체
 ROAD_SUBSET = os.getenv("UGV_ROAD_SUBSET", "")
+# 시험 전용 덧붙임 도로 (예: 시험 월드 회전 공터 — 원자료에 없는 시설). JSON {"nodes": {id: [lat, lon]}, "roads": [...]}
+# (road_source.load 의 도로 형식). 비우면 없음 — 트윈 운용·발표 월드에서는 쓰지 않는다
+EXTRA_ROADS = os.getenv("UGV_EXTRA_ROADS", "")
 UGV_ON_MOTORWAY = os.getenv("UGV_ON_MOTORWAY", "0") == "1"   # 자동차전용 도로(AUTO_EXCLU=1) 통행 (기본 안 함)
 # 제한속도가 원자료에 없을 때 도로 등급(ROAD_RANK)별 값 (km/h). 실제 경로 속도는 MIN_ROAD_SPEED_KMH~MAX_SPEED 로 묶인다
 ROAD_RANK_SPEED_KMH = {101: 100, 102: 80, 103: 80, 104: 60, 105: 60, 106: 60, 107: 50, 108: 30}

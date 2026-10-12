@@ -71,6 +71,8 @@ def link(act):
 
 
 def run(a):
+    global RID, INST, MODEL, WORLD
+    RID, INST, MODEL, WORLD = a.rid, a.instance, a.model, a.world      # 기본값 = 예전 고정값 (F7 재현 조건)
     OUT.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     csv = OUT / f"{a.tag}_{stamp}.csv"
@@ -245,6 +247,10 @@ def main():
     r.add_argument("--params", default="")
     r.add_argument("--cut", choices=("suspend", "hook", "mavlink"), default="suspend")
     r.add_argument("--cut-xy", nargs=2, type=float, default=CUT_XY, help="링크를 끊을 위치 (지역 평면 m)")
+    r.add_argument("--rid", default=RID)
+    r.add_argument("--instance", type=int, default=INST)
+    r.add_argument("--model", default=MODEL)
+    r.add_argument("--world", default=WORLD)
     z = sub.add_parser("analyze")
     z.add_argument("log", type=Path)
     a = ap.parse_args()

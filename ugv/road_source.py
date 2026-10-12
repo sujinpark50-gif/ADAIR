@@ -151,5 +151,15 @@ def load(path=None) -> dict:
     for nid in node_xy:
         nodes[nid] = (lats[k], lons[k])
         k += 1
+    if config.EXTRA_ROADS:
+        # 시험 전용 덧붙임 도로 (원자료에 없음 — attrs.test_only 로 표시). 같은 번호의 원자료 노드에 이어 붙는다
+        import json
+        from pathlib import Path
+        extra = json.loads(Path(config.EXTRA_ROADS).read_text(encoding="utf-8"))
+        for nid, ll in extra.get("nodes", {}).items():
+            nodes.setdefault(nid, tuple(ll))
+        for r in extra["roads"]:
+            roads.append({**r, "geometry": [tuple(p) for p in r["geometry"]], "attrs": {**r["attrs"], "test_only": True}})
+        counts["extra_test_roads"] = len(extra["roads"])
     return {"source": str(path), "nodes": nodes, "roads": roads, "counts": counts,
             "clip_extent": {"min_x": minx, "min_y": miny, "max_x": maxx, "max_y": maxy, "srs_id": srs}}
