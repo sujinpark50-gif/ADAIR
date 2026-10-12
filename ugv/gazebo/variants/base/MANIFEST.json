@@ -1,0 +1,8 @@
+{
+ "variant": "base",
+ "model": "adair_ugv",
+ "source_sha1": "0669adace858aadc99f391539adc6d9485e46b0e",
+ "model_sdf_sha1": "0ea865829aabf0e9169e190796eaa9cbb92a3d2f",
+ "params": null,
+ "generator": "ugv/tools/make_vehicle_variant.py"
+}

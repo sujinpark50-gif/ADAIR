@@ -9,6 +9,7 @@
 #   PX4_DIR    PX4-Autopilot 경로 (기본 ~/PX4-Autopilot, 빌드 build/px4_sitl_default 필요)
 #   WORLD      ugv/gazebo/worlds/<WORLD>.sdf (기본 adair_flat). 월드 파일 안의 world name 과 같아야 한다
 #   WORLD_FILE 월드 파일 경로를 직접 줄 때 (시험용 사본 등). 기본 ugv/gazebo/worlds/<WORLD>.sdf
+#   UGV_MODEL_VARIANT 차량 후보 이름 (ugv/gazebo/variants/<이름>, 예: susp_a). 없으면 정식 모델
 #   GZ_SIM_RESOURCE_PATH 를 미리 주면 그 경로도 모델 검색에 쓴다 (시험용 모델 사본)
 #   INSTANCE   PX4 인스턴스 번호 (기본 1. 0 은 UAV 몫). MAVLink 는 14540+INSTANCE 로 보낸다
 #   MODEL      차량 모델 adair_ugv (기본, airframe 51100) / adair_firetruck (airframe 51101). Gazebo 이름 = <MODEL>_<INSTANCE>
@@ -52,6 +53,11 @@ export GZ_SIM_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH:-}" GZ_SIM_SYSTEM_PLUGIN_PAT
 . "$BUILD/rootfs/gz_env.sh"
 export GZ_SIM_RESOURCE_PATH="$REPO/ugv/gazebo/models:$REPO/ugv/gazebo/worlds:$GZ_SIM_RESOURCE_PATH"
 # 시험용 모델 변형(예: 바퀴 충돌체 비교)을 원본보다 먼저 찾게 한다 — 원본 모델 파일은 고치지 않는다
+# 차량 후보: UGV_MODEL_VARIANT=<이름> → ugv/gazebo/variants/<이름> (make_vehicle_variant.py 생성물). GZ_MODEL_OVERRIDE 를 직접 주면 그것이 우선
+if [ -z "${GZ_MODEL_OVERRIDE:-}" ] && [ -n "${UGV_MODEL_VARIANT:-}" ]; then
+  GZ_MODEL_OVERRIDE="$REPO/ugv/gazebo/variants/$UGV_MODEL_VARIANT"
+  [ -d "$GZ_MODEL_OVERRIDE" ] || { echo "[ugv] 차량 후보 $UGV_MODEL_VARIANT 없음 ($GZ_MODEL_OVERRIDE)"; exit 1; }
+fi
 if [ -n "${GZ_MODEL_OVERRIDE:-}" ]; then export GZ_SIM_RESOURCE_PATH="$GZ_MODEL_OVERRIDE:$GZ_SIM_RESOURCE_PATH"; fi
 export GZ_PARTITION="${GZ_PARTITION:-adair_ugv}"
 export GZ_IP="${GZ_IP:-127.0.0.1}"

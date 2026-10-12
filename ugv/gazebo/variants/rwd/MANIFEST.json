@@ -1,0 +1,8 @@
+{
+ "variant": "rwd",
+ "model": "adair_ugv",
+ "source_sha1": "0669adace858aadc99f391539adc6d9485e46b0e",
+ "model_sdf_sha1": "c629f3ae52798d753b6f7686dcb3ed9e27db4d72",
+ "params": null,
+ "generator": "ugv/tools/make_vehicle_variant.py"
+}
