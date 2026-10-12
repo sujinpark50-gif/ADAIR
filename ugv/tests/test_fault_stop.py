@@ -85,3 +85,76 @@ def test_stall_away_conditions():
     assert not stall_away(ACCEPT_M + 1.0, ACCEPT_M)        # 아직 최소 거리 + 1.5 m 안 (다가오는 중·옆을 지나는 중)
     assert stall_away(ACCEPT_M + 2.5, ACCEPT_M)            # 놓치고 멀어짐
     assert not stall_away(10.0, 9.5)                       # 멀리서 다가오는 중이었다면 최소 거리 기준으로는 멀어짐 아님
+
+
+def test_timeline_stop_needs_continuous_low_speed():
+    from ugv.tools.failure_timeline import stop_phases
+    rows = [{"x": 0.0, "y": 0.0}] * 3
+    # 반례: 1 s 경계 표본에서 다시 빨라짐 → 정지 확인 아님
+    r = stop_phases([0.0, 0.5, 1.0], [0.1, 0.1, 1.0], rows, 0.0)
+    assert not r["stop_done"] and r["stop_low_start_sim_t"] == 0.0
+    T = [i * 0.1 for i in range(140)]
+    v = [1.0] * 10 + [0.1] * 120 + [0.5] * 10            # 1.0 s 에 저속 시작, 13.0 s 에 재이동
+    r = stop_phases(T, v, [{"x": 0.0, "y": 0.0}] * 140, 0.0)
+    assert r["stop_done"] and abs(r["stop_confirm_sim_t"] - 2.0) < 1e-6 and abs(r["re_motion_sim_t"] - 13.0) < 1e-6
+    assert r["observation_short"] is False or r["observed_after_confirm_s"] >= 10.0
+
+
+def _drv(monkeypatch, stall=True, skip=False):
+    import ugv.drivers.px4 as P
+    from ugv.drivers.base import Progress
+    monkeypatch.setattr(P, "STALL_DETECT", stall)
+    monkeypatch.setattr(P, "PASS_SKIP", skip)
+    d = P.Px4Driver("udp://x", None)
+    d._armed = True
+    sent = [(float(x), 0.0, 4.0, True) for x in range(0, 60, 2)]
+    d._sent = (1, sent, (0.0, 0.0))
+    d._prog = Progress(10, len(sent), False, 1)
+    state = {"x": 18.0, "y": 0.0, "age": 0.0}
+
+    class Tel:
+        def __init__(s):
+            s.x, s.y, s.heading_deg, s.speed_mps = state["x"], state["y"], 90.0, 4.0
+
+        def age_s(s):
+            return state["age"]
+    d.telemetry = lambda: Tel()
+    return d, state, P, Progress
+
+
+def test_stall_timer_lifecycle(monkeypatch):
+    """정체 타이머: 멀어지면 시작, 항목 변경·새 미션·텔레메트리 지연·시동 꺼짐이면 지운다 (검증 문서 단계 1)."""
+    d, st, P, Progress = _drv(monkeypatch)
+    run = lambda: asyncio.run(d._pass_step(0.0))
+    run()                                             # 항목 10(x=20) 2 m 앞 — 최소 거리 2
+    assert d.pass_blocked_since is None
+    st["x"], st["y"] = 21.0, 6.0                      # 옆으로 지나쳐 멀어짐 (6.1 m > 3.5, > 2 + 1.5)
+    run()
+    assert d.pass_blocked_since is not None
+    d._prog = Progress(11, d._prog.total, False, 1)  # PX4 가 다음 항목으로 넘김 → 지움
+    run()
+    assert d.pass_blocked_since is None
+    d._prog = Progress(10, d._prog.total, False, 1)
+    st["x"], st["y"] = 18.0, 0.0
+    run()
+    st["x"], st["y"] = 21.0, 6.0
+    run()
+    assert d.pass_blocked_since is not None
+    st["age"] = 5.0                                    # 텔레메트리 지연 → 지움
+    run()
+    assert d.pass_blocked_since is None
+    st["age"] = 0.0
+    d._armed = False                                   # 시동 꺼짐 → 지움
+    run()
+    assert d.pass_blocked_since is None
+    d._armed = True
+    d._sent = (2, d._sent[1], d._sent[2])              # 새 미션 번호인데 진행 보고는 옛 미션 → 판단 보류·지움
+    run()
+    assert d.pass_blocked_since is None
+
+
+def test_stall_detect_off_does_nothing(monkeypatch):
+    d, st, *_ = _drv(monkeypatch, stall=False, skip=False)
+    st["x"], st["y"] = 21.0, 6.0
+    asyncio.run(d._pass_step(0.0))
+    assert d.pass_blocked_since is None

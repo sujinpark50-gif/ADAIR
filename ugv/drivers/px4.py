@@ -128,7 +128,8 @@ PASS_HOLDOFF_S = 1.0        # 건너뛰기 명령 뒤 다음 판단까지
 PASS_TIE_M = 0.1            # 가장 가까운 구간이 여럿이면 이 차 안에서 경로 순서상 앞 (옆으로 밀린 차에는 1 m 면 앞 구간 끝점이 뽑힌다)
 STALL_AWAY_M = 1.5          # 정체: PX4 현재 항목이 그대로인데 차가 그 항목에서 (도착 반경 + 0.5 m 밖, 지금까지 최소 거리 + 이만큼) 멀어짐
 PASS_HEAD_MAX_DEG = 60.0    # 건너뛸 항목이 차 진행 방향 이 각도 안(앞)일 때만 — 아니면 보류(차량이 정체로 판단해 정지)
-PASS_SKIP = os.getenv("UGV_PX4_PASS_SKIP", "0") == "1"   # 지나침 감시 (1 = 켜기. 시험 검증 전 기본 끔)
+PASS_SKIP = os.getenv("UGV_PX4_PASS_SKIP", "0") == "1"          # 자동 건너뛰기 (안전 조건 통과 때만)
+STALL_DETECT = os.getenv("UGV_PX4_STALL_DETECT", "0") == "1"    # 정체 감지(→ 차량이 MISSION_STALL 고장·정지). 건너뛰기와 따로 켠다
 
 
 def passed_item(sent, here, cur: int, pos, v_mps: float = 0.0):
@@ -251,7 +252,7 @@ class Px4Driver(Driver):
         if not self.connected:
             raise DriverError("PX4_NO_POSITION")
         self._tasks.append(asyncio.create_task(self._park_watch()))
-        if PASS_SKIP:
+        if PASS_SKIP or STALL_DETECT:
             self._tasks.append(asyncio.create_task(self._pass_watch()))
 
     async def test_link(self, cut: bool) -> dict:
@@ -297,55 +298,65 @@ class Px4Driver(Driver):
                 self.last_error = f"park: {type(e).__name__}: {e}"
 
     async def _pass_watch(self):
-        """주행 중 지나친 미션 항목 건너뛰기 (passed_item). PX4 가 지나친 항목으로 되돌아가 도는 것을 막는다."""
+        """주행 중 감시 (PASS_SKIP: 지나친 항목 건너뛰기, STALL_DETECT: 정체 감지). 한 번 분량은 _pass_step."""
         hold_until = 0.0
         while True:
             await asyncio.sleep(PASS_EVERY_S)
             try:
-                sent, prog, tel = self._sent, self._prog, self.telemetry()
-                if (sent is None or tel is None or tel.age_s() > 1.0 or not self._armed or prog.finished
-                        or prog.mission_seq != sent[0] or prog.total != len(sent[1]) or time.monotonic() < hold_until):
-                    continue
-                # 정체 판단은 지나침 판정과 따로: 현재 항목에서 계속 멀어지면 (PX4 로버는 항목을 지나쳤다는 판정이 없다 —
-                # navigator passed_curr_wp 는 고정익만. 도착 반경 밖으로 지나치면 그 항목에 계속 머문다)
-                key = (sent[0], prog.current)
-                dcur = math.dist((tel.x, tel.y), sent[1][prog.current][:2])
-                if key != self._stall_key:
-                    self._stall_key, self._stall_dmin = key, dcur
-                self._stall_dmin = min(self._stall_dmin, dcur)
-                away = stall_away(dcur, self._stall_dmin)
-                k = passed_item(sent[1], sent[2], prog.current, (tel.x, tel.y), tel.speed_mps)
-                ok, dh, inside = False, None, None
-                if k is not None:
-                    # 안전 조건: 건너뛸 항목이 차 앞(진행 방향 ±PASS_HEAD_MAX_DEG), 차체가 도로 띠 안. 아니면 건너뛰지 않는다
-                    inside = True if self.pass_guard is None else bool(self.pass_guard(tel))
-                    ok, dh = pass_allowed(sent[1][k][:2], (tel.x, tel.y), tel.heading_deg, inside)
-                if not ok:
-                    if away and self.pass_blocked_since is None:
-                        self.pass_blocked_since = time.monotonic()
-                        self.pass_skips.append({"wall": round(time.time(), 2), "mission_seq": sent[0], "from": prog.current,
-                                                "to": k, "blocked": True, "dist_m": round(dcur, 2), "dmin_m": round(self._stall_dmin, 2),
-                                                "heading_diff_deg": None if dh is None else round(dh, 1), "body_inside": inside,
-                                                "xy": [round(tel.x, 1), round(tel.y, 1)]})
-                    elif not away:
-                        self.pass_blocked_since = None
-                    continue
-                self.pass_blocked_since = None
-                async with self._cmd:
-                    if self._prog.mission_seq != sent[0] or self._prog.current != prog.current:
-                        continue
-                    await self._mis.set_current_mission_item(k)
-                    hold_until = time.monotonic() + PASS_HOLDOFF_S
-                    rec = {"wall": round(time.time(), 2), "mission_seq": sent[0], "from": prog.current, "to": k,
-                           "dist_m": round(math.dist((tel.x, tel.y), sent[1][prog.current][:2]), 2), "xy": [round(tel.x, 1), round(tel.y, 1)]}
-                    self.pass_skips.append(rec)
-                    if isinstance(getattr(self, "last_sent", None), dict):
-                        self.last_sent.setdefault("pass_skips", []).append(rec)
+                hold_until = await self._pass_step(hold_until)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
                 self.last_error = f"pass_watch: {type(e).__name__}: {e}"
                 hold_until = time.monotonic() + PASS_HOLDOFF_S
+
+    async def _pass_step(self, hold_until: float) -> float:
+        sent, prog, tel = self._sent, self._prog, self.telemetry()
+        if (sent is None or tel is None or tel.age_s() > 1.0 or not self._armed or prog.finished
+                or prog.mission_seq != sent[0] or prog.total != len(sent[1])):
+            # 판단할 수 없는 동안(텔레메트리 지연·시동 꺼짐·미션 끝·미션 교체 중)은 정체 타이머를 지운다 —
+            # 재개 직후 이전 타이머로 오작동하지 않게
+            self.pass_blocked_since, self._stall_key = None, None
+            return hold_until
+        if time.monotonic() < hold_until:
+            return hold_until
+        # 정체 판단은 지나침 판정과 따로: 현재 항목에서 계속 멀어지면 (PX4 로버는 항목을 지나쳤다는 판정이 없다 —
+        # navigator passed_curr_wp 는 고정익만. 도착 반경 밖으로 지나치면 그 항목에 계속 머문다)
+        key = (sent[0], prog.current)
+        dcur = math.dist((tel.x, tel.y), sent[1][prog.current][:2])
+        if key != self._stall_key:
+            self._stall_key, self._stall_dmin, self.pass_blocked_since = key, dcur, None
+        self._stall_dmin = min(self._stall_dmin, dcur)
+        away = stall_away(dcur, self._stall_dmin)
+        k = passed_item(sent[1], sent[2], prog.current, (tel.x, tel.y), tel.speed_mps) if PASS_SKIP else None
+        ok, dh, inside = False, None, None
+        if k is not None:
+            # 안전 조건: 건너뛸 항목이 차 앞(진행 방향 ±PASS_HEAD_MAX_DEG), 차체가 도로 띠 안. 아니면 건너뛰지 않는다
+            inside = True if self.pass_guard is None else bool(self.pass_guard(tel))
+            ok, dh = pass_allowed(sent[1][k][:2], (tel.x, tel.y), tel.heading_deg, inside)
+        if not ok:
+            if not STALL_DETECT:
+                return hold_until
+            if away and self.pass_blocked_since is None:
+                self.pass_blocked_since = time.monotonic()
+                self.pass_skips.append({"wall": round(time.time(), 2), "mission_seq": sent[0], "from": prog.current,
+                                        "to": k, "blocked": True, "dist_m": round(dcur, 2), "dmin_m": round(self._stall_dmin, 2),
+                                        "heading_diff_deg": None if dh is None else round(dh, 1), "body_inside": inside,
+                                        "xy": [round(tel.x, 1), round(tel.y, 1)]})
+            elif not away:
+                self.pass_blocked_since = None
+            return hold_until
+        self.pass_blocked_since = None
+        async with self._cmd:
+            if self._prog.mission_seq != sent[0] or self._prog.current != prog.current:
+                return hold_until
+            await self._mis.set_current_mission_item(k)
+            rec = {"wall": round(time.time(), 2), "mission_seq": sent[0], "from": prog.current, "to": k,
+                   "dist_m": round(dcur, 2), "xy": [round(tel.x, 1), round(tel.y, 1)]}
+            self.pass_skips.append(rec)
+            if isinstance(getattr(self, "last_sent", None), dict):
+                self.last_sent.setdefault("pass_skips", []).append(rec)
+        return time.monotonic() + PASS_HOLDOFF_S
 
     async def _pump(self, name, stream):
         import time
