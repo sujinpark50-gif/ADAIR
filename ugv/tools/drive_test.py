@@ -49,16 +49,30 @@ def to_wsl_path(p: Path) -> str:
 
 
 # ---------------------------------------------------------------------------- 기록
-def start_tracker(out_csv: Path, duration_s: float, world="adair_flat", model="adair_ugv_1"):
-    cmd = ["wsl.exe", "-d", WSL_DISTRO, "--", "env", f"GZ_PARTITION={os.getenv('UGV_GZ_PARTITION', 'adair_ugv')}", "GZ_IP=127.0.0.1",
-           "python3", to_wsl_path(ROOT / "ugv" / "tools" / "gz_track.py"), "--world", world, "--model", model,
+def start_tracker(out_csv: Path, duration_s: float, world="adair_flat", model="adair_ugv_1", detail=False):
+    """detail=True 면 gz_detail (바퀴 접촉·서스펜션 관절, 접촉 센서 있는 후보 모델) — 아니면 gz_track (자세만)."""
+    tool = ["-m", "ugv.tools.gz_detail"] if detail else [to_wsl_path(ROOT / "ugv" / "tools" / "gz_track.py")]
+    cmd = ["wsl.exe", "-d", WSL_DISTRO, "--cd", to_wsl_path(ROOT), "--exec", "env",
+           f"GZ_PARTITION={os.getenv('UGV_GZ_PARTITION', 'adair_ugv')}", "GZ_IP=127.0.0.1",
+           "python3", *tool, "--world", world, "--model", model,
            "--out", to_wsl_path(out_csv), "--duration", str(duration_s)]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
 def load_track(path: Path):
     with open(path, newline="") as f:
-        return [{k: float(v) for k, v in r.items()} for r in csv.DictReader(f)]
+        rows = []
+        for r in csv.DictReader(f):
+            d = {}
+            for k, v in r.items():       # gz_detail 기록의 문자열 열(접촉 상태)·빈칸은 건너뛴다
+                try:
+                    d[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+            if "steer_rad" not in d and "steer_l" in d and "steer_r" in d:
+                d["steer_rad"] = (d["steer_l"] + d["steer_r"]) / 2      # gz_detail: 좌우 조향 평균 = gz_track 의 조향
+            rows.append(d)
+        return rows
 
 
 # ---------------------------------------------------------------------------- 분석
@@ -198,10 +212,14 @@ SCENARIOS = {
     "straight": ([(1200.0, 0.0)], 16.7),
     "brake": ([(1500.0, 0.0)], 16.7),
     "curve": ([(400.0, 0.0), (400.0, 400.0), (683.0, 683.0), (283.0, 683.0)], 16.7),
+    # 2026-10-12 차량 개조 검증 (계획 4.4 S3·6.2 T4): 요철 월드 adair_flat_susp 의 x=+30 m 띠를 5 m/s 로 지나 80 m 에서 정지 /
+    # 30 km/h 직선 300 m 끝 정지
+    "bump": ([(80.0, 0.0)], 5.0),
+    "stop30": ([(300.0, 0.0)], 8.33),
 }
 
 
-async def run(name: str, address: str, track_s: float):
+async def run(name: str, address: str, track_s: float, world="adair_flat", detail=False, tag=""):
     from mavsdk.asyncio.plugins.action import ActionAsync
     from mavsdk.asyncio.plugins.mission import MissionAsync
     from mavsdk.asyncio.plugins.telemetry import TelemetryAsync
@@ -209,7 +227,7 @@ async def run(name: str, address: str, track_s: float):
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    out_csv = LOG_DIR / f"{name}_{stamp}.csv"
+    out_csv = LOG_DIR / f"{tag or name}_{stamp}.csv"
     sdk, system = await connect(address)
     tel, act, mis = TelemetryAsync(system), ActionAsync(system), MissionAsync(system)
     pos = await first(tel.subscribe_position)
@@ -230,13 +248,13 @@ async def run(name: str, address: str, track_s: float):
         h1, h2 = math.atan2(b[1] - a[1], b[0] - a[0]), math.atan2(c[1] - b[1], c[0] - b[0])
         turn = abs(math.degrees((h2 - h1 + math.pi) % (2 * math.pi) - math.pi))
         corners.append((f"C{k}", b, round(turn)))
-    (LOG_DIR / f"{name}_{stamp}.plan.json").write_text(json.dumps(
+    out_csv.with_suffix(".plan.json").write_text(json.dumps(
         {"scenario": name, "speed_mps": speed, "plan_xy": plan_xy, "corners": corners,
          "start_latlon": [pos.latitude_deg, pos.longitude_deg]}, ensure_ascii=False, indent=1), encoding="utf-8")
 
     health = await first(tel.subscribe_health)
     print(f"[{name}] 시작 위치 gz≈({e0:.1f},{n0:.1f}) health local_ok={health.is_local_position_ok}")
-    tracker = start_tracker(out_csv, track_s)
+    tracker = start_tracker(out_csv, track_s, world=world, detail=detail)
     await asyncio.sleep(3.0)                      # 기록기가 구독을 시작할 시간
     await mis.clear_mission()
     await mis.set_return_to_launch_after_mission(False)
@@ -249,6 +267,15 @@ async def run(name: str, address: str, track_s: float):
             print(f"[{name}] arm 재시도: {e}")
             await asyncio.sleep(2.0)
     await start_mission(mis)
+    if speed < 16.7:
+        # 미션 항목의 speed_m_s 만으로는 rover 가 RO_SPEED_LIM 까지 가속한다 (2026-10-12 bump 5 m/s 지정 → 실측 12.6 m/s)
+        # → MAV_CMD_DO_CHANGE_SPEED(set_current_speed) 를 몇 번 보낸다
+        for _ in range(5):
+            try:
+                await act.set_current_speed(speed)
+            except Exception as e:  # noqa: BLE001
+                print(f"[{name}] set_current_speed 실패: {e}")
+            await asyncio.sleep(0.2)
     t_start = time.time()
     braked = False
     while time.time() - t_start < track_s - 8:
@@ -287,7 +314,7 @@ def report(csv_path: Path, plan_path: Path):
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     res = analyze(load_track(csv_path), plan["plan_xy"], [(c[0], tuple(c[1]), c[2]) for c in plan["corners"]])
     res = {"scenario": plan["scenario"], "commanded_speed_mps": plan["speed_mps"], "measured_from": "gazebo_pose+sim_time",
-           "track_csv": str(csv_path.relative_to(ROOT)), **res}
+           "track_csv": str(csv_path.resolve().relative_to(ROOT) if csv_path.resolve().is_relative_to(ROOT) else csv_path), **res}
     csv_path.with_suffix(".json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     print(json.dumps(res, ensure_ascii=False, indent=1))
     return res
@@ -300,13 +327,16 @@ def main():
     ap.add_argument("--track-s", type=float, default=200.0, help="기록 최대 시간 (벽시계 초)")
     ap.add_argument("--analyze", type=Path)
     ap.add_argument("--plan", type=Path)
+    ap.add_argument("--world", default="adair_flat", help="Gazebo 월드 이름 (px4-start 의 WORLD 와 같게)")
+    ap.add_argument("--detail", action="store_true", help="gz_detail 상세 기록 (접촉 센서 있는 후보 모델)")
+    ap.add_argument("--tag", default="", help="결과 파일 이름 앞부분 (기본 = 시나리오)")
     a = ap.parse_args()
     if a.analyze:
         report(a.analyze, a.plan or a.analyze.with_suffix(".plan.json"))
         return
     if not a.scenario:
         ap.error("scenario 또는 --analyze 필요")
-    out = asyncio.run(run(a.scenario, a.address, a.track_s))
+    out = asyncio.run(run(a.scenario, a.address, a.track_s, world=a.world, detail=a.detail, tag=a.tag))
     report(out, out.with_suffix(".plan.json"))
 
 
