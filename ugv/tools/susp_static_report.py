@@ -76,7 +76,8 @@ def judge(csv_path):
     zl = [float(r["z"]) for r in rows if tl - float(r["sim_t"]) <= 20.0]
     q = {s: (statistics.median([fnum(r[f"{s}_q"]) for r in rows if fnum(r[f"{s}_q"]) is not None])
              if any(fnum(r[f"{s}_q"]) is not None for r in rows) else None) for s in SUSP}
-    has_susp = variant.startswith("susp")
+    sdf = ET.fromstring((ROOT / "ugv" / "gazebo" / "variants" / variant / model / "model.sdf").read_text(encoding="utf-8")).find("model")
+    has_susp = any(j.get("type") == "prismatic" for j in sdf.findall("joint"))   # 이름(susp*)이 아니라 SDF 로 (fire_v2 도 서스펜션)
     out = {"tag": tag, "model": model, "variant": variant, "world": world, "mass_kg": mass, "mg_N": round(mg, 1), "samples": len(rows),
            "all4_valid_samples": len(all4), "valid_ratio": {w: round(v, 4) for w, v in valid_ratio.items()},
            "fn_median_N": {w: (None if v is None else round(v, 1)) for w, v in fn_med.items()},

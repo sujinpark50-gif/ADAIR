@@ -12,8 +12,8 @@
  T3 제동 60→0 (straight 끝): 감속 시작(안정 구간 끝 이후 속도가 최대보다 0.5 m/s 떨어진 첫 시각 — 명령 속도 기록이 없어 실측 기준) → 0.2 m/s 미만
     거리 30~60 m, 정지 확인(1 s 연속 < 0.2 m/s) 뒤 10 s 재이동(≥ 0.3 m/s) 없음, 바퀴 잠김(바퀴 각속도·반지름 < 0.3 m/s 인데 차속 > 1 m/s) 연속 ≤ 1 s.
  T4 제동 30→0 (stop30): 같은 방식, 거리 ≤ 20 m.
- 소방차 (태그 앞 ft-, 계획 8.1, 별도 합격표): straight50 — 48~52 km/h ≥ 10 s·52 초과 없음, 가속 0→48 km/h 8~13 s·≤ 110 m, 임무 끝 정지 50→0 ≤ 55 m,
-    바퀴 반지름 0.5 m. 나머지 항목(표준편차·조향·yaw rate·횡편차·roll/pitch·잠김·재이동)은 UGV 와 같은 기준.
+ 소방차 (태그 앞 ft-, 계획 8.1, 별도 합격표): straight50 — 48~52 km/h ≥ 10 s·52 초과 없음, 가속 0→48 km/h 8~13 s·≤ 110 m, 임무 끝 정지 50→0 ≤ 55 m.
+    바퀴 반지름·앞축 위치·축간·서스펜션 유무는 후보 SDF 에서 읽는다. 나머지 항목(표준편차·조향·yaw rate·횡편차·roll/pitch·잠김·재이동)은 UGV 와 같은 기준.
 """
 import argparse
 import csv
@@ -21,7 +21,10 @@ import json
 import math
 import re
 import statistics
+import xml.etree.ElementTree as ET
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
 
 W = ["wheel_front_left", "wheel_front_right", "wheel_rear_left", "wheel_rear_right"]
 SUSP = ["susp_front_left", "susp_front_right", "susp_rear_left", "susp_rear_right"]
@@ -35,6 +38,15 @@ def fnum(v):
         return None if math.isnan(x) else x
     except (TypeError, ValueError):
         return None
+
+
+def sdf_geometry(variant, model):
+    """후보 SDF 에서 앞축 x·축간·바퀴 반지름·서스펜션(prismatic) 유무 — 후보마다 다르다 (fire_v2: 2.795·4.3·0.42)."""
+    m = ET.fromstring((ROOT / "ugv" / "gazebo" / "variants" / variant / model / "model.sdf").read_text(encoding="utf-8")).find("model")
+    xs = {l.get("name"): float(l.find("pose").text.split()[0]) for l in m.findall("link") if l.get("name") in ("wheel_front_left_link", "wheel_rear_left_link")}
+    wl = [l for l in m.findall("link") if l.get("name") == "wheel_front_left_link"][0]
+    return {"front_x": xs["wheel_front_left_link"], "wheelbase": round(xs["wheel_front_left_link"] - xs["wheel_rear_left_link"], 4),
+            "wheel_r": float(wl.find(".//collision//radius").text), "has_susp": any(j.get("type") == "prismatic" for j in m.findall("joint"))}
 
 
 def load(p):
@@ -87,11 +99,17 @@ def stop_after(T, spd, k0):
 
 
 def brake_metrics(rows, T, X, Y, spd, vmax_ref):
+    # 감속 시작 = 정지 전에 속도가 (최대 − 0.5 m/s) 이상이던 마지막 표본의 다음 시각. 최대·문턱은 첫 구현과 같다.
+    # 첫 구현은 그 문턱 아래로 '처음' 내려간 시각이라, 가속 초과(spike) 뒤 순항 요동을 감속 시작으로 잡았다 (ft-susp_a straight50_a 597 m).
     kmax = max(range(len(spd)), key=lambda i: spd[i])
-    k0 = next((i for i in range(kmax, len(spd)) if spd[i] < spd[kmax] - 0.5), None)
+    k1 = next((i for i in range(kmax, len(spd)) if spd[i] < 0.2), None)
+    kend = k1 if k1 is not None else len(spd)
+    win = range(kend)
+    vloc = spd[kmax]
+    hi = [i for i in win if spd[i] >= vloc - 0.5]
+    k0 = (hi[-1] + 1) if hi and hi[-1] + 1 < len(spd) else None
     if k0 is None:
         return {"brake": "감속 없음"}
-    k1 = next((i for i in range(k0, len(spd)) if spd[i] < 0.2), None)
     out = {"brake_start_t": round(T[k0], 2), "brake_start_speed_mps": round(spd[k0], 2)}
     if k1 is None:
         out["brake"] = "정지 전 기록 끝"
@@ -115,19 +133,20 @@ def judge(p):
         return None
     variant, world, sc, rep = m.groups()
     global WHEEL_R
-    WHEEL_R = 0.5 if ft else 0.35
+    geo = sdf_geometry(variant, "adair_firetruck" if ft else "adair_ugv")
+    WHEEL_R = geo["wheel_r"]
     lo_kmh, hi_kmh, acc_kmh, acc_s, acc_m, brake_lim = ((48, 52, 48, (8.0, 13.0), 110.0, (0.0, 55.0)) if sc == "straight50"
                                                         else (58, 62, 58, (6.0, 10.0), 90.0, (30.0, 60.0)))
     rows, T, X, Y, spd = load(p)
-    out = {"file": p.name, "model": "adair_firetruck" if ft else "adair_ugv", "variant": variant, "world": world, "scenario": sc, "rep": rep, "rows": len(rows)}
+    out = {"file": p.name, "model": "adair_firetruck" if ft else "adair_ugv", "variant": variant, "world": world, "scenario": sc, "rep": rep, "rows": len(rows), "geometry": geo}
     checks = {}
     if sc == "bump":
-        front, wb = (2.2, 3.8) if ft else (1.35, 2.7)        # 앞축 위치·축간 (SDF)
+        front, wb = geo["front_x"], geo["wheelbase"]        # 앞축 위치·축간 (후보 SDF)
         k_cross = next((i for i in range(len(X)) if X[i] >= BUMP_X - front + wb + 0.6), None)   # 뒷바퀴까지 띠를 지난 시각
         nc = {w: runs_of([r[f"{w}_c_state"] == "NO_CONTACT" for r in rows], T) for w in W}
         out["no_contact_max_s"] = nc
         checks["no_contact_le_0.2s"] = all(v <= 0.2 for v in nc.values())
-        if variant.startswith("susp"):
+        if geo["has_susp"]:
             qs = {s: [fnum(r.get(f"{s}_q")) for r in rows] for s in SUSP}
             qmax = max((abs(v) for s in SUSP for v in qs[s] if v is not None), default=None)
             out["susp_q_abs_max_m"] = None if qmax is None else round(qmax, 4)
@@ -241,7 +260,7 @@ def main():
         bad = [k for k, v in r["checks"].items() if not v]
         keys = [k for k in ("stable_58_62_s", "max_kmh", "accel_0_58_s", "accel_0_58_m", "brake_dist_m", "brake_start_speed_mps", "wheel_lock_max_s",
                             "susp_q_abs_max_m", "q_residual_ratio_1s_after", "no_contact_max_s", "lateral_dev_max_m", "yaw_rate_max_0.5s_dps") if k in r]
-        print(f"{r['variant']}/{r['scenario']}/{r['rep']}: {'합격' if r['pass'] else '불합격 ' + str(bad)} | " + ", ".join(f"{k}={r[k]}" for k in keys))
+        print(f"{'ft-' if r['model'] == 'adair_firetruck' else ''}{r['variant']}/{r['scenario']}/{r['rep']}: {'합격' if r['pass'] else '불합격 ' + str(bad)} | " + ", ".join(f"{k}={r[k]}" for k in keys))
     if a.out:
         Path(a.out).write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
 
