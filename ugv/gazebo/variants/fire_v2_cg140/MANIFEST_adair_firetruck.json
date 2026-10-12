@@ -1,0 +1,8 @@
+{
+ "variant": "fire_v2_cg140",
+ "model": "adair_firetruck",
+ "source_sha1": "f7374787677ea384f0aca60175b0d7b55f700ac8",
+ "model_sdf_sha1": "540bc2f2bc30a6409e43c43a3c2fe186ea267d8b",
+ "params": null,
+ "generator": "ugv/tools/make_vehicle_variant.py"
+}

@@ -9,6 +9,8 @@
 #   PX4_DIR    PX4-Autopilot 경로 (기본 ~/PX4-Autopilot, 빌드 build/px4_sitl_default 필요)
 #   WORLD      ugv/gazebo/worlds/<WORLD>.sdf (기본 adair_flat). 월드 파일 안의 world name 과 같아야 한다
 #   WORLD_FILE 월드 파일 경로를 직접 줄 때 (시험용 사본 등). 기본 ugv/gazebo/worlds/<WORLD>.sdf
+#   NO_PX4     1 이면 월드·차량 스폰까지만 (PX4·MAVLink 없음)
+#   UGV_MODEL_VARIANT 차량 후보 이름 (ugv/gazebo/variants/<이름>, 예: susp_a). 없으면 정식 모델
 #   GZ_SIM_RESOURCE_PATH 를 미리 주면 그 경로도 모델 검색에 쓴다 (시험용 모델 사본)
 #   INSTANCE   PX4 인스턴스 번호 (기본 1. 0 은 UAV 몫). MAVLink 는 14540+INSTANCE 로 보낸다
 #   MODEL      차량 모델 adair_ugv (기본, airframe 51100) / adair_firetruck (airframe 51101). Gazebo 이름 = <MODEL>_<INSTANCE>
@@ -44,7 +46,10 @@ esac
 mkdir -p "$STATE_DIR/px4-$INSTANCE"
 
 # 1) airframe 설치 (Windows 에서 편집해 CRLF 가 섞여도 sh 가 읽게 LF 로)
-if [ -n "$AIRFRAME" ]; then sed 's/\r$//' "$REPO/ugv/px4/airframes/$AIRFRAME" > "$BUILD/etc/init.d-posix/airframes/$AIRFRAME"; fi
+# 차량 후보 폴더에 airframe 사본이 있으면 그것 (예: fire_v2 의 RA_WHEEL_BASE 4.3). 없으면 저장소 원본
+VDIR="${GZ_MODEL_OVERRIDE:-}"; [ -z "$VDIR" ] && [ -n "${UGV_MODEL_VARIANT:-}" ] && VDIR="$REPO/ugv/gazebo/variants/$UGV_MODEL_VARIANT"
+AF_SRC="$REPO/ugv/px4/airframes/$AIRFRAME"; [ -n "$AIRFRAME" ] && [ -n "$VDIR" ] && [ -f "$VDIR/airframes/$AIRFRAME" ] && AF_SRC="$VDIR/airframes/$AIRFRAME"
+if [ -n "$AIRFRAME" ]; then sed 's/\r$//' "$AF_SRC" > "$BUILD/etc/init.d-posix/airframes/$AIRFRAME"; echo "[ugv] airframe $AF_SRC"; fi
 
 # 2) Gazebo 환경: PX4 기본 설정 + 우리 모델·월드 경로. 파티션을 나눠 UAV Gazebo 와 섞이지 않게 한다
 export GZ_SIM_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH:-}" GZ_SIM_SYSTEM_PLUGIN_PATH="${GZ_SIM_SYSTEM_PLUGIN_PATH:-}"
@@ -52,24 +57,41 @@ export GZ_SIM_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH:-}" GZ_SIM_SYSTEM_PLUGIN_PAT
 . "$BUILD/rootfs/gz_env.sh"
 export GZ_SIM_RESOURCE_PATH="$REPO/ugv/gazebo/models:$REPO/ugv/gazebo/worlds:$GZ_SIM_RESOURCE_PATH"
 # 시험용 모델 변형(예: 바퀴 충돌체 비교)을 원본보다 먼저 찾게 한다 — 원본 모델 파일은 고치지 않는다
+# 차량 후보: UGV_MODEL_VARIANT=<이름> → ugv/gazebo/variants/<이름> (make_vehicle_variant.py 생성물). GZ_MODEL_OVERRIDE 를 직접 주면 그것이 우선
+if [ -z "${GZ_MODEL_OVERRIDE:-}" ] && [ -n "${UGV_MODEL_VARIANT:-}" ]; then
+  GZ_MODEL_OVERRIDE="$REPO/ugv/gazebo/variants/$UGV_MODEL_VARIANT"
+  [ -d "$GZ_MODEL_OVERRIDE" ] || { echo "[ugv] 차량 후보 $UGV_MODEL_VARIANT 없음 ($GZ_MODEL_OVERRIDE)"; exit 1; }
+fi
 if [ -n "${GZ_MODEL_OVERRIDE:-}" ]; then export GZ_SIM_RESOURCE_PATH="$GZ_MODEL_OVERRIDE:$GZ_SIM_RESOURCE_PATH"; fi
 export GZ_PARTITION="${GZ_PARTITION:-adair_ugv}"
 export GZ_IP="${GZ_IP:-127.0.0.1}"
 
 world_up() { gz service -i --service "/world/$WORLD/scene/info" 2>&1 | grep -q "Service providers"; }
+# 띄운 프로세스 기록 (px4-stop.sh 가 이것만 TERM→대기→KILL→확인으로 끈다): 역할[:실행ID] PID 시작시각 파티션 명령
+RUN_ID="${ADAIR_RUN_ID:-}"
+record_proc() {  # $1 역할 $2 pid
+  local st; st=$(awk '{print $22}' "/proc/$2/stat" 2>/dev/null) || return 0
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1${RUN_ID:+:$RUN_ID}" "$2" "$st" "$GZ_PARTITION" "$(tr '\0' ' ' < "/proc/$2/cmdline" | cut -c1-200)" >> "$STATE_DIR/procs.tsv"
+}
+# 실행 ID 가 있으면 다른 실행이 남긴 월드·PX4 재사용을 거부 (실행 오염). 같은 실행(여러 대 차례 기동)의 재사용은 허용
+own_run() { [ -n "$RUN_ID" ] && grep -q "^$1:$RUN_ID	" "$STATE_DIR/procs.tsv" 2>/dev/null; }
+contaminated() { echo "[ugv] CONTAMINATED: $1 — 앞 실행이 남긴 것 (px4-stop.sh 로 정리하거나 GZ_REUSE_WORLD=1)"; exit 6; }
 
-# 3) 월드 (이미 떠 있으면 그대로 쓴다)
+# 3) 월드 (이미 떠 있으면 그대로 쓴다 — 단 ADAIR_RUN_ID 가 있고 이 실행이 띄운 월드가 아니면 거부)
+if world_up && [ -n "$RUN_ID" ] && ! own_run gz && [ "${GZ_REUSE_WORLD:-0}" != 1 ]; then contaminated "월드 $WORLD 이미 떠 있음"; fi
 if ! world_up; then
   echo "[ugv] Gazebo 월드 시작: $WORLD"
   # 앞 실행의 서버 로그는 시각을 붙여 남긴다 (로그 없는 서버 종료 재발 확인용, 2026-10-10)
   [ -f "$STATE_DIR/gz-server.log" ] && mv "$STATE_DIR/gz-server.log" "$STATE_DIR/gz-server.$(date -r "$STATE_DIR/gz-server.log" +%Y%m%d_%H%M%S).log"
-  nohup gz sim --verbose="${GZ_VERBOSE:-1}" -r -s "$WORLD_FILE" > "$STATE_DIR/gz-server.log" 2>&1 &
+  setsid nohup gz sim --verbose="${GZ_VERBOSE:-1}" -r -s "$WORLD_FILE" > "$STATE_DIR/gz-server.log" 2>&1 &
   echo $! > "$STATE_DIR/gz-server.pid"
+  sleep 0.2; record_proc gz "$(cat "$STATE_DIR/gz-server.pid")"
   for _ in $(seq 60); do world_up && break; sleep 1; done
   world_up || { echo "[ugv] Gazebo 월드가 뜨지 않음 ($STATE_DIR/gz-server.log)"; exit 1; }
 fi
 if [[ ${GUI:-0} == 1 ]] && ! pgrep -f "gz sim -g" >/dev/null; then       # 창은 하나만
-  nohup gz sim -g > "$STATE_DIR/gz-gui.log" 2>&1 &
+  setsid nohup gz sim -g > "$STATE_DIR/gz-gui.log" 2>&1 &
+  GPID=$!; sleep 0.2; record_proc gui "$GPID"
 fi
 
 # 4) 차량 스폰 (같은 이름이 있으면 건너뜀)
@@ -83,18 +105,23 @@ else
   echo "[ugv] 차량 스폰: $MODEL_NAME @ $POSE"
 fi
 
+# NO_PX4=1: 월드·차량만 (서스펜션 정지·대각 시험처럼 PX4 가 필요 없는 계측)
+if [ "${NO_PX4:-0}" = 1 ]; then echo "[ugv] NO_PX4=1 — PX4 없이 월드·차량만"; exit 0; fi
+
 # 5) PX4 (이미 떠 있으면 건너뜀)
 if pgrep -f "px4 -i $INSTANCE " > /dev/null; then
+  if [ -n "$RUN_ID" ] && ! own_run "px4-$INSTANCE" && [ "${GZ_REUSE_WORLD:-0}" != 1 ]; then contaminated "PX4 인스턴스 $INSTANCE 이미 실행 중"; fi
   echo "[ugv] PX4 인스턴스 $INSTANCE 이미 실행 중"
 else
   (
     cd "$STATE_DIR/px4-$INSTANCE"
     PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=$AUTOSTART PX4_GZ_MODEL_NAME="$MODEL_NAME" PX4_GZ_WORLD="$WORLD" \
     PX4_SIM_SPEED_FACTOR="${SPEED:-1}" HEADLESS=1 \
-      nohup "$BUILD/bin/px4" -i "$INSTANCE" -d -w "$STATE_DIR/px4-$INSTANCE" "$BUILD/etc" \
+      setsid nohup "$BUILD/bin/px4" -i "$INSTANCE" -d -w "$STATE_DIR/px4-$INSTANCE" "$BUILD/etc" \
       > "$STATE_DIR/px4-$INSTANCE.log" 2>&1 &
     echo $! > "$STATE_DIR/px4-$INSTANCE.pid"
   )
+  sleep 0.2; record_proc "px4-$INSTANCE" "$(cat "$STATE_DIR/px4-$INSTANCE.pid")"
   for _ in $(seq 60); do grep -q "Ready for takeoff\|home set\|ekf2.*local position" "$STATE_DIR/px4-$INSTANCE.log" 2>/dev/null && break; sleep 1; done
 fi
 
