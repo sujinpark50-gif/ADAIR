@@ -223,6 +223,14 @@ def judge(p):
     out = {"key": f"{model}|{variant}|{world}|{sc}|{rep}|{stamp}", "file": p.name, "csv_sha1": vc.sha1_file(p), "model": model, "variant": variant,
            "world": world, "scenario": sc, "rep": rep, "rows": len(rows), "geometry": geo, "judge_version": JUDGE_VERSION}
     markers, evidence = vc.run_markers(p.parent, tag)
+    tj = p.with_suffix(".tracker.json")   # drive_test 기록기 종료 코드 (2026-10-13 이후 실행만 있음 — 없으면 '기록 없음'으로 표시만)
+    if tj.exists():
+        tr = json.loads(tj.read_text(encoding="utf-8"))
+        out["tracker"] = {k: tr.get(k) for k in ("rc", "timeout", "ok", "tool")}
+        if not tr.get("ok"):
+            markers = {**markers, ".tracker_rc": f"기록기 rc={tr.get('rc')} timeout={tr.get('timeout')}"}
+    else:
+        out["tracker"] = "기록 없음 (2026-10-13 이전 실행 — 기록기 rc 미확인)"
     out["run_markers"], out["run_evidence"] = markers, evidence
     checks = {}
     q_i0, q_i1 = 0, len(rows)

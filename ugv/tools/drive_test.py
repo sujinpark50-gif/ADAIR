@@ -446,8 +446,19 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
     except Exception:  # noqa: BLE001
         await act.hold()
     print(f"[{name}] 주행 끝, 기록기 종료 대기")
-    tracker.wait(timeout=track_s + 30)
-    print(tracker.stdout.read().decode(errors="replace").strip())
+    # 기록기 종료 코드 확인 (2026-10-13 Codex 검토): 0 이 아니거나 시간 초과면 <기록>.tracker.json 에 남기고 판정은 무효 (vehicle_drive_report)
+    try:
+        trc, tout = tracker.wait(timeout=track_s + 30), False
+    except subprocess.TimeoutExpired:
+        tracker.kill()
+        trc, tout = tracker.wait(), True
+    tracker_out = tracker.stdout.read().decode(errors="replace").strip()
+    print(tracker_out)
+    out_csv.with_suffix(".tracker.json").write_text(json.dumps(
+        {"rc": trc, "timeout": tout, "ok": trc == 0 and not tout, "tool": "gz_detail" if detail else "gz_track",
+         "output_tail": tracker_out[-2000:]}, ensure_ascii=False, indent=1), encoding="utf-8")
+    if trc != 0 or tout:
+        print(f"[{name}] 기록기 rc={trc} timeout={tout} — 기록 무효로 판정", flush=True)
     sdk.destroy()
     return out_csv
 
