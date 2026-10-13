@@ -562,6 +562,7 @@ class Px4Driver(Driver):
                     self.last_sent["start_reach_m"] = round(reach, 1)
                 else:
                     k0 = 0
+                self.last_sent["start_item"] = k0          # 0 도 기록 (2026-10-14: 0 이면 키가 없어 판정에서 '미확인' 이 되던 기록 결함)
                 if k0 > 0:
                     # 업로드 동안 지나친 항목은 건너뛰고 차 앞 항목부터 (뒤에 남은 항목으로 되돌아가지 않게)
                     try:
