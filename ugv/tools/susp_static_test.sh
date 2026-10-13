@@ -37,7 +37,17 @@ for spec in "$@"; do
     echo "  증거 검사 실패 — 시험 안 함: $(tail -1 "$OUT/verify_$TAG.txt")" | tee "$OUT/$TAG.invalid_evidence"; bash "$REPO/ugv/tools/px4-stop.sh" >/dev/null 2>&1; continue
   fi
   ( cd "$REPO" && python3 -m ugv.tools.gz_detail --world "$WNAME" --model ${MDL}_1 --out "$OUT/$TAG.csv" --duration "$DUR" ) > "$OUT/${TAG}_gz_detail.log" 2>&1
-  echo "gz_detail_rc=$?" >> "$OUT/${TAG}_gz_detail.log"; tail -2 "$OUT/${TAG}_gz_detail.log"
+  GRC=$?
+  echo "gz_detail_rc=$GRC" >> "$OUT/${TAG}_gz_detail.log"; tail -2 "$OUT/${TAG}_gz_detail.log"
+  # 기록기 실패·기록 시간 부족은 무효 (정리는 아래에서 항상 수행). 시뮬레이션 기록 구간 ≥ 예정(벽시계 DUR)의 95 %
+  SPAN=$(python3 -c "import csv,sys
+r=list(csv.DictReader(open(sys.argv[1])))
+print(round(float(r[-1]['sim_t'])-float(r[0]['sim_t']),2) if len(r)>1 else 0)" "$OUT/$TAG.csv" 2>/dev/null || echo 0)
+  if [ "$GRC" != 0 ]; then
+    echo "  기록기 비정상 종료 (gz_detail rc=$GRC) — 무효" | tee "$OUT/$TAG.invalid"
+  elif ! python3 -c "import sys; sys.exit(0 if float('$SPAN') >= 0.95*float('$DUR') else 1)"; then
+    echo "  기록 시간 부족 (sim ${SPAN} s < 예정 ${DUR} s × 0.95) — 무효" | tee "$OUT/$TAG.invalid"
+  fi
   cp "$STATE_DIR/gz-server.log" "$OUT/${TAG}_gz-server.log" 2>/dev/null
   STOP_STRICT=1 bash "$REPO/ugv/tools/px4-stop.sh"; rc=$?
   cp "$STATE_DIR/stop_last.json" "$OUT/${TAG}_stop.json"
