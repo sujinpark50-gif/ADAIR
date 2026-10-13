@@ -329,6 +329,13 @@ class Px4Driver(Driver):
                     if not fresh or tel.speed_mps >= 0.3:
                         self.last_error = (f"park: 미션 끝 뒤 {RUNAWAY_PARK_S:g} s 상한 → 시동 끔 "
                                            f"(속도 {tel.speed_mps:.1f} m/s)" if fresh else "park: 미션 끝 상한 → 시동 끔 (속도 미확인)")
+                    now = time.monotonic()
+                    # 시동 끔 사유 계측 (E4 ③d 분석, 2026-10-14): 정상(저속 연속 after_s 채움) / RUNAWAY(미션 끝 상한, 속도 무관 — 저속이어도 상한이 먼저면 RUNAWAY)
+                    normal = still_since is not None and now - still_since >= (self.park_policy.get("after_s") or PARK_AFTER_S)
+                    self.park_log = {"mission_seq": prog.mission_seq, "reason": "NORMAL" if normal else "RUNAWAY",
+                                     "wall": round(time.time(), 3), "after_finished_s": round(now - fin_since, 3),
+                                     "still_for_s": None if still_since is None else round(now - still_since, 3),
+                                     "speed_mps": round(tel.speed_mps, 3) if fresh else None, "fresh": fresh}
                     await self._act.disarm()
                     self.parked_seq = prog.mission_seq
             except asyncio.CancelledError:
