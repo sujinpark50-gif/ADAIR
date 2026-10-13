@@ -128,6 +128,9 @@ STOP_GRADE_MODE = os.getenv("UGV_STOP_GRADE", "0") == "1"
 SPEED_TERRAIN_CMD = os.getenv("UGV_SPEED_TERRAIN_CMD", "0") == "1"
 SPEED_CMD_DELTA = 0.5
 SPEED_CMD_MIN_S = 1.0
+SPEED_CMD_TIMEOUT_S = 2.0          # ACK 대기 (그동안 차량 잠금 점유 — 정지 요청 지연 예산에 포함)
+SPEED_CMD_BACKOFF_MAX_S = 8.0
+SPEED_CMD_MAX_FAILS = 5
 # 지형 표면은 terrain_speed.surface() 로 일원화 (UGV_TERRAIN_TILES)
 HOLD_FAIL_MAX = 2         # 양보 정지 명령이 연속 이만큼 실패하면 고장(STOP_COMMAND_FAILED)으로 처리
 STOP_RETRY_S = 2.0        # 정지 명령이 실패한 차(명령 불확실)는 이 간격으로 정지를 다시 보낸다
@@ -860,7 +863,8 @@ class Vehicle:
         self.state = state
         self.stop_path_pts, self.command_uncertain, self._hold_failures = None, False, 0
         self._stop_sup = None                       # 새 주행 미션 — 주행 감독이 맡는다
-        self._spd_cmd = None                        # UGV_SPEED_TERRAIN_CMD: 새 미션 — 마지막 보낸 값 초기화
+        self._spd_cmd = self._spd_ok = None         # UGV_SPEED_TERRAIN_CMD: 새 미션 — 마지막 시도·성공값·실패 수 초기화
+        self._spd_fails = 0
         self._off_since, self._near_i, self._offroad_since = None, 0, None
         self._move_ref = (self.clock.now(), t.x, t.y) if t else None
         self._drive_started_sim = self.clock.now()
@@ -1217,7 +1221,13 @@ class Vehicle:
             await self._speed_cmd_tick(now, tel, i)
 
     async def _speed_cmd_tick(self, now, tel, i):
-        """UGV_SPEED_TERRAIN_CMD (머리말). 목표 = min(sp.v[j] : s_now ≤ cum[j] ≤ s_now + v·τ + 여유). 잠금이 잡혀 있으면 이번 틱은 건너뛴다."""
+        """UGV_SPEED_TERRAIN_CMD (머리말). 목표 = min(sp.v[j] : s_now ≤ cum[j] ≤ s_now + v·τ + 여유).
+        성공 적용값(_spd_ok)과 마지막 시도(_spd_cmd)를 나눈다 (Codex 답변 1436: 실패한 같은 목표가 다시 안 가던 결함):
+          - 성공한 같은 목표(±SPEED_CMD_DELTA)는 생략, 바뀐 목표는 SPEED_CMD_MIN_S 간격 이상에서 보냄
+          - 실패·시간 초과(ack False/None)는 SPEED_CMD_MIN_S·2^(연속 실패−1) (상한 SPEED_CMD_BACKOFF_MAX_S) 뒤 재시도,
+            연속 SPEED_CMD_MAX_FAILS 회면 이 미션에서 중단하고 SPEED_CMD_GIVEUP 기록 — 감독은 그대로 (disarm·무제한 재전송 없음)
+          - 시간 초과(None) 는 '적용 여부 불명' (늦은 ACK 가능) 으로 따로 표시
+        잠금이 잡혀 있으면 건너뛰고, 잡은 뒤 seq·양보·정지 감독을 다시 확인한다. 잠금 점유 시간(lock_held_s)을 남긴다 — 정지 요청이 이만큼 기다릴 수 있다."""
         from . import terrain_speed as TS
         sp = self.speed
         if self.hold is not None or self._stop_sup is not None or self.state not in ("DRIVING", "EVADING") or self.lock.locked():
@@ -1226,23 +1236,41 @@ class Vehicle:
         look = tel.speed_mps * TS.TAU_S + config.STOP_MARGIN_M
         ahead = [sp.v[j] for j in range(i, len(sp.v)) if sp.cum[j] <= s0 + look] or [sp.v[min(i, len(sp.v) - 1)]]
         target = round(max(min(ahead), 0.5), 2)
-        last = getattr(self, "_spd_cmd", None)
-        if last is not None and (abs(target - last["v"]) < SPEED_CMD_DELTA or now - last["t"] < SPEED_CMD_MIN_S):
+        last, ok_v = getattr(self, "_spd_cmd", None), getattr(self, "_spd_ok", None)
+        fails = getattr(self, "_spd_fails", 0)
+        if fails >= SPEED_CMD_MAX_FAILS:
             return
+        if last is not None:
+            if fails:
+                if now - last["t"] < min(SPEED_CMD_MIN_S * 2 ** (fails - 1), SPEED_CMD_BACKOFF_MAX_S):
+                    return
+            elif (ok_v is not None and abs(target - ok_v["v"]) < SPEED_CMD_DELTA) or now - last["t"] < SPEED_CMD_MIN_S:
+                return
         seq = self.seq
         async with self.lock:
-            if self.seq != seq or self.hold is not None or self._stop_sup is not None:
+            if self.seq != seq or self.hold is not None or self._stop_sup is not None or self.state not in ("DRIVING", "EVADING"):
                 return                               # 그 사이 재계획·양보·정지 — 지난 미션 값을 보내지 않는다
+            t_l = time.monotonic()
             try:
-                ok = await asyncio.wait_for(self.driver.set_speed_cap(target), min(STOP_CMD_TIMEOUT_S, 2.0))
+                ok = await asyncio.wait_for(self.driver.set_speed_cap(target), min(STOP_CMD_TIMEOUT_S, SPEED_CMD_TIMEOUT_S))
             except asyncio.TimeoutError:
                 ok = None
-        self._spd_cmd = {"v": target, "t": now, "seq": seq, "ok": ok}
+            held = time.monotonic() - t_l
+            # 상태 갱신도 잠금 안에서 — 기다리던 새 미션(_drive)의 초기화가 이 뒤에 오도록
+            self._spd_cmd = {"v": target, "t": now, "seq": seq, "ok": ok}
+            if ok:
+                self._spd_ok, self._spd_fails = {"v": target, "t": now, "seq": seq}, 0
+            else:
+                self._spd_fails = fails + 1
         self._event("SPEED_CMD", sim_t=round(now, 2), s_m=round(s0, 1), lookahead_m=round(look, 1), target_mps=target,
-                    actual_mps=round(tel.speed_mps, 2), mission_seq=seq, ack=ok,
-                    prev_mps=None if last is None else last["v"], basis="UGV_SPEED_TERRAIN_CMD 계획 속도 v·τ 앞 최소")
+                    actual_mps=round(tel.speed_mps, 2), mission_seq=seq, ack=ok, ack_basis="True 성공 / False 거절·예외 / None 시간 초과(적용 불명)",
+                    lock_held_s=round(held, 3), prev_ok_mps=None if ok_v is None else ok_v["v"], consecutive_fails=self._spd_fails,
+                    basis="UGV_SPEED_TERRAIN_CMD 계획 속도 v·τ 앞 최소")
         if not ok:
-            self.last_error = f"SPEED_CMD 실패 (ack={ok}) — 감독 유지"
+            self.last_error = f"SPEED_CMD 실패 (ack={ok}, 연속 {self._spd_fails}) — 감독 유지"
+            if self._spd_fails >= SPEED_CMD_MAX_FAILS:
+                self._event("SPEED_CMD_GIVEUP", sim_t=round(now, 2), mission_seq=seq, fails=self._spd_fails,
+                            note="이 미션에서 구간 속도 명령 중단 — 주행·정지 감독은 그대로")
 
     # ------------------------------------------------------------------ 차량 간 충돌 방지 (ugv/traffic.py 가 부른다)
     def _s_now(self) -> float:
