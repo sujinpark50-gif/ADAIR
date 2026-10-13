@@ -380,7 +380,7 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
                                "px4_en": [round(e, 3), round(n, 3)], "px4_speed_mps": round(vh, 3), "stop_en": [round(se, 3), round(sn, 3)],
                                "dist_m": round(d, 2), "decel_mps2": dec, "item_speed_mps": round(isp, 2), "profile": profile,
                                # 텔레메트리 수신 시각 (위치·속도는 순차 수신 → 명령 wall 과의 차 = 표본 나이 하한. PX4 표본 자체 시각은 MAVSDK 가 주지 않음)
-                               "vel_request_wall": round(tv0, 3), "vel_recv_wall": round(tv1, 3), "px4_sample_wall": round(tp1, 3),
+                               "vel_request_wall": round(tv0, 3), "vel_recv_wall": round(tv1, 3), "px4_pos_recv_wall": round(tp1, 3),
                                "frame": "FRAME (ugv.geo 지역 TM) — 평탄 월드 원점 근처에서 GZ_FRAME 과 mm 수준"})
                 print(f"[{name}] 정지 명령({cmd_kind}): {d:.1f} m 앞 정지점, 감속 가정 {dec} m/s², PX4 속도 {vh:.2f} m/s")
         else:

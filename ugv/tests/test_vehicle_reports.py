@@ -188,3 +188,39 @@ def test_curve_judge_computes_expected(tmp_path):
     r = vdr.judge(f)
     assert r["missing_checks"] == [] and r["status"] == "PASS"
     assert r["body_cg_height_m"] == pytest.approx(1.2) and r["static_rollover_g_est"] == pytest.approx(1.8 / 2.4, rel=1e-3)
+
+
+# ---- 명령 정지: 정차 정책이 켜졌는데 시동 끔 이벤트가 없으면 미확인, 정지 구간 시작과 확인 완료는 1 s 차
+def _estop_track(tmp_path, events):
+    xs, x = [], 0.0
+    n_cruise, n_dec = int(30 / DT), int(4 / DT)
+    for k in range(n_cruise):
+        x += 8.0 * DT
+        xs.append(x)
+    k_cmd = len(xs)
+    for k in range(n_dec):
+        x += max(8.0 - 2.0 * k * DT, 0.0) * DT
+        xs.append(x)
+    xs += [x] * int(20 / DT)
+    f = stamp_name(tmp_path, "susp_a_adair_flat_estop30_pa")
+    write_track(f, xs, q=lambda i: -0.03)
+    wall_cmd = 1000.0 + k_cmd * DT
+    ev = [{"ev": "mission_start", "wall": 1000.0, "park_mode": "server"},
+          {"ev": "stop_command", "kind": "estop", "wall": wall_cmd, "wall_started": wall_cmd + 0.02, "px4_en": [xs[k_cmd], 0.0],
+           "stop_en": [xs[k_cmd] + 17.0, 0.0], "dist_m": 17.0, "decel_mps2": 3.5, "item_speed_mps": 1.0}] + events
+    f.with_suffix(".events.json").write_text(json.dumps(ev), encoding="utf-8")
+    f.with_suffix(".plan.json").write_text(json.dumps({"plan_xy": [[0, 0], [600, 0]], "corners": []}), encoding="utf-8")
+    return f
+
+
+def test_policy_on_without_disarm_event_is_unverified(tmp_path):
+    r = vdr.judge(_estop_track(tmp_path, [{"ev": "mission_finished_seen", "wall": 1040.0}]))
+    assert r["checks"]["park_disarm_ok"] is None and r["status"] == "UNVERIFIED"
+
+
+def test_stop_confirm_is_one_second_after_segment_start(tmp_path):
+    r = vdr.judge(_estop_track(tmp_path, [{"ev": "mission_finished_seen", "wall": 1040.0},
+                                          {"ev": "park_disarm", "why": "still_1s", "wall": 1041.0, "px4_speed_mps": 0.0}]))
+    cb = r["command_brake"]
+    assert cb["park_mode"] == "server" and r["checks"]["park_disarm_ok"] is True
+    assert cb["stop_confirm_cmd_s"] - cb["stop_segment_start_cmd_s"] == pytest.approx(1.0, abs=0.01)
