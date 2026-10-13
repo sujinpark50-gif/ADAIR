@@ -186,13 +186,15 @@ def main():
         raise SystemExit("pose 구독 실패")
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     t0 = time.time()
+    interrupted = False
     try:
         while time.time() - t0 < a.duration:
             time.sleep(0.5)
             with lock:
                 f.flush()
     except KeyboardInterrupt:
-        pass
+        interrupted = True
+    elapsed = time.time() - t0
     with lock:
         f.close()
         dts = [b - c for b, c in zip(stamps[1:], stamps[:-1])]
@@ -206,24 +208,31 @@ def main():
                 "susp_joints_published": any(j.startswith("susp_") for j in seen_joints),
                 "force_frame": "body_1_wrench.force (월드 좌표 가정 — 평탄 정지 Σfz≈m·g 로 확인할 것)",
                 "link_pose_basis": "dynamic_pose/info 링크 자세 = 모델 기준 가정 (원본 fable_gz_track 과 같음)",
+                "completed": (not interrupted) and elapsed >= a.duration * 0.99, "interrupted": interrupted, "elapsed_wall_s": round(elapsed, 2),
                 "states": {VALID: f"나이 ≤ {2 / SENSOR_HZ:.3f} s 이고 wrench 있음", STALE: f"≤ {STALE_MAX_S} s", NO_CONTACT: f"> {STALE_MAX_S} s (받은 적 있음)",
                            NO_MSG: "한 번도 못 받음"}}
-    with open(a.out[:-4] + "_meta.json" if a.out.endswith(".csv") else a.out + "_meta.json", "w") as mf:
-        json.dump(meta, mf, ensure_ascii=False, indent=1)
-    print(len(stamps), "rows ->", a.out)
-    # 2026-10-13: 기록·메타를 모두 쓴 뒤 인터프리터 종료 중 gz-transport 정리에서 가끔 'terminate called without an active exception'
-    # (rc 134, chain_ft3·ft4 정적 각 1회 — CSV 는 60 s 완전). 구독을 해제하고 출력을 비운 뒤 정리 과정을 거치지 않고 끝낸다 (기록 내용 불변)
+    import os as _os
+    import sys as _sys
+    write_ok = True
+    try:
+        with open(a.out[:-4] + "_meta.json" if a.out.endswith(".csv") else a.out + "_meta.json", "w") as mf:
+            json.dump(meta, mf, ensure_ascii=False, indent=1)
+    except Exception as e:  # noqa: BLE001
+        write_ok = False
+        print("메타 쓰기 실패:", e)
+    print(len(stamps), "rows ->", a.out, "" if meta["completed"] else f"(미완료: interrupted={interrupted}, elapsed {elapsed:.1f} s)")
+    # 2026-10-13 우회책 (근본 원인 해결 아님): 기록·메타를 모두 쓴 뒤 인터프리터·gz-transport 종료 정리에서 'terminate called without an active
+    # exception' (rc 134) 가 난 적이 있다 (chain_ft4 정적 1회 원본 로그 확인. chain_ft3 경고가 같은 원인인지는 미확정). 구독을 해제하고 출력을
+    # 비운 뒤 정리 과정을 거치지 않고 끝낸다. 종료 코드: 0 = 정상 완료(예정 시간 기록·CSV 닫힘·메타 작성), 3 = 중단(SIGTERM 등), 4 = 메타 쓰기 실패
     for topic in (f"/world/{a.world}/dynamic_pose/info", f"/world/{a.world}/model/{a.model}/joint_state") + tuple(
             f"/world/{a.world}/model/{a.model}/link/{w}_link/sensor/{w}_link_contact/contact" for w in W):
         try:
             node.unsubscribe(topic)
         except Exception:  # noqa: BLE001
             pass
-    import os as _os
-    import sys as _sys
     _sys.stdout.flush()
     _sys.stderr.flush()
-    _os._exit(0)
+    _os._exit(0 if (write_ok and meta["completed"]) else (4 if not write_ok else 3))
 
 
 if __name__ == "__main__":
