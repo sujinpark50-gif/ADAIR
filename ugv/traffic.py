@@ -374,12 +374,18 @@ class TrafficManager:
                     sent.append(self._dispatch(rid, [lambda v=v: v.clear_hold()]))
             else:
                 self.waits.pop(rid, None)
-        # 빠른 명령(보통)은 이 주기 안에 끝나게 잠깐만 기다린다. 느린 명령은 그대로 두고 다음 주기 판단을 막지 않는다
+        # 판단을 마친 시각 = 지금 (명령 완료를 기다리기 전). 예전에는 명령 대기(벽시계 최대 0.2 s) 뒤에 기록해, 배속 30 에서 막힘 재계획
+        # 명령을 기다리는 사이 시뮬 3.6~6 s 가 지나 차량 감시(TRAFFIC_STALE_S 3 s)가 '판단 멈춤' 으로 오판했다 (2026-10-13 sim 고정 장면
+        # 30배 STALE — Fable 미해결 4절). 판단 자체는 0.3~3 ms 로 멈추지 않았다
+        self.last_tick_sim = self.clock.now()
+        # 빠른 명령(보통)은 이 주기 안에 끝나게 잠깐만 기다린다. 느린 명령은 그대로 두고 다음 주기 판단을 막지 않는다.
+        # 대기 상한 = min(TRAFFIC_CMD_WAIT_S, 판단 주기의 벽시계 길이) — 배속이 커도 판단 주기를 넘겨 기다리지 않는다
         sent = [t for t in sent if t is not None]
         if sent:
-            await asyncio.wait(sent, timeout=TRAFFIC_CMD_WAIT_S)
+            to_wall = getattr(self.clock, "to_wall", None)
+            wait_s = TRAFFIC_CMD_WAIT_S if to_wall is None else min(TRAFFIC_CMD_WAIT_S, to_wall(TRAFFIC_PERIOD_S))
+            await asyncio.wait(sent, timeout=wait_s)
         self.last_tick_wall_ms = round((time.perf_counter() - w0) * 1000, 1)
-        self.last_tick_sim = self.clock.now()
 
     def _busy(self, rid) -> bool:
         t = self._inflight.get(rid)

@@ -78,3 +78,39 @@ def test_stalled_traffic_supervision_stops_driving_vehicle(tmp_path):
             await A.tick()
         assert any(e["event"] == "TRAFFIC_SUPERVISION_STALE" for e in A.events) and A.state != "DRIVING"
     asyncio.run(go())
+
+
+def test_judgement_time_recorded_before_command_wait_at_scale_30(tmp_path):
+    """배속 30: 막힘 재계획 같은 느린 명령을 기다려도 판단 시각(last_tick_sim)은 판단 직후 값 — 명령 대기 시간만큼 늦게 찍혀 차량 감시가
+    STALE 로 오판하지 않는다. 명령 대기 상한은 판단 주기의 벽시계 길이 이하 (2026-10-13 sim 고정 장면 30배 STALE, Fable 미해결 4절)."""
+    from ugv import traffic as TR
+    from ugv.clock import SimClock
+
+    async def go():
+        f, _ = make_fleet(tmp_path, FLEET_CFG[:2])
+        tm = f.traffic
+        tm.clock = SimClock(scale=30.0)
+        X = f.vehicles["A-ugv1"]
+        gate = asyncio.Event()
+
+        async def slow_clear():                 # 느린 명령 (벽시계 수백 ms — 재계획 0.12~0.18 s 실측보다 길게)
+            await gate.wait()
+        X.clear_hold = slow_clear
+        X.hold = {"s": 0.0, "other": "Y", "kind": "STATIC"}
+        measured = None
+        for _ in range(TR.TRAFFIC_RELEASE_TICKS + 2):     # 해제 명령은 대기가 RELEASE_TICKS 연속 풀린 틱에 나간다 — 그 틱을 잰다
+            busy0 = tm._busy("A-ugv1")
+            t_before = tm.clock.now()
+            w0 = time.perf_counter()
+            await tm.tick()
+            wall = time.perf_counter() - w0
+            if not busy0 and tm._busy("A-ugv1"):
+                measured = (wall, tm.last_tick_sim - t_before)
+                break
+        assert measured is not None, "느린 명령이 나가지 않음 — 시험 구성 확인"
+        wall, lag = measured
+        assert wall < tm.clock.to_wall(TR.TRAFFIC_PERIOD_S) + 0.05         # 판단 주기(0.5 s sim = 16.7 ms 벽시계) 넘게 기다리지 않음 (예전 0.2 s)
+        assert lag < config.TRAFFIC_STALE_S / 2                              # 판단 시각이 명령 대기만큼 밀리지 않음 (예전 30배에서 약 6 s)
+        gate.set()
+        await asyncio.sleep(0)
+    asyncio.run(go())
