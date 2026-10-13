@@ -55,6 +55,7 @@ _MARGIN_TLS = threading.local()      # 계획 스레드별 추종 여유 덮어�
 LOW_MARGIN_TURN_PENALTY_S = 90.0   # 추종 여유(track_margin_m)가 모자란 회전의 탐색 비용 (다른 길이 있으면 그쪽)
 R_STEPS = (1.0, 1.15, 1.3, 1.5, 1.8, 2.2, 3.0, 4.0, 6.0, 9.0, 14.0, 20.0, 30.0)
 STRAIGHT_DEG = 5.0
+TURN_ALT_MAX = 3            # 회전마다 보존하는 대안 원호 수 (S6 짧은 도로 연속 회전)
 STRIP_LEN_M = 60.0
 DIR_LEN_M = 15.0
 TURN_TANGENT_MAX_M = 25.0       # 교차로 회전 원호가 노드 앞뒤로 차지하는 길이 상한
@@ -87,6 +88,15 @@ class Turn:
     radius_m: Optional[float]   # 경로에 실제로 그리는 원호 반경 (차체 검사를 통과한 값). 직진이면 None
     tangent_m: float = 0.0      # 그 원호가 노드 앞뒤로 차지하는 길이
     margin_m: Optional[float] = None   # 원호 + 앞뒤 방향선 구간에서 차체가 도로 띠 안쪽으로 들어온 최소 거리 (추종 여유 비교용)
+    # 같은 차체 검사(turn_fit 의 원호 + 방향선, 추종 여유 이상)를 통과하고 접선이 더 짧은 대안 원호 (반경, 접선, 여유, 회전 속도).
+    # 짧은 도로의 연속 회전(_lab_ok)에서 기본(가장 큰) 반경 조합이 겹칠 때만 쓴다 — 기준 완화 아님 (2026-10-13 S6, Codex 1626)
+    alts: Tuple[Tuple[float, float, float, float], ...] = ()
+
+    alt_used = False                                   # choose_turn_variants 가 대안 원호로 바꾼 사본이면 True (클래스 기본값)
+
+    @property
+    def tangent_min(self) -> float:
+        return min([self.tangent_m] + [a[1] for a in self.alts])
 
 
 @dataclass
@@ -132,10 +142,14 @@ class DriveGraph:
         self._build_turns()
         self.rev: Dict[State, List[State]] = {}
         self.tan: Dict[Tuple[State, State], float] = {}     # (지금 상태, 다음 상태) → 회전 원호가 노드 앞뒤로 차지하는 길이
+        # 같은 회전의 대안 원호 중 가장 짧은 접선. 탐색 비용은 회전 반경과 무관하고 _lab_ok 는 접선이 짧을수록 쉬우므로 연결 가능성은
+        # 이 값으로 판단하고, 실제 원호는 경로를 만들 때 사슬 전체에서 고른다 (choose_turn_variants)
+        self.tan_min: Dict[Tuple[State, State], float] = {}
         for s, ts in self.turns.items():
             for t in ts:
                 self.rev.setdefault(t.to, []).append(s)
                 self.tan[(s, t.to)] = t.tangent_m
+                self.tan_min[(s, t.to)] = t.tangent_min
 
     # ------------------------------------------------------------------ 정적 속성
     def states(self) -> List[State]:
@@ -355,17 +369,11 @@ class DriveGraph:
                 return m
         return m
 
-    def turn_fit(self, u, w, strips, Lin, Lout, margin_out: Optional[list] = None):
-        """(가능 여부, 고른 반경, 꺾임각°). 차체 검사 범위 = 원호 + 원호 앞뒤 방향선 직선 구간 (노드에서 DIR_LEN_M 까지, _smooth 가
-        그리는 것과 같은 선형 — 예전에는 원호만 봐서 방향선·이음매에서 차체 여유가 0.03~0.13 m 로 남았다, 2026-10-11 검토).
-        추종 여유(track_margin_m) 이상인 가장 큰 반경을 고른다. 없으면 여유가 가장 큰 반경 (그 여유를 margin_out 에 — 탐색이 피한다)."""
+    def _fit_candidates(self, u, w, strips, Lin, Lout):
+        """turn_fit 의 반경 후보 검사 (큰 반경부터). 원호 차체 검사를 통과한 후보마다 (반경, 방향선 포함 여유) 를 낸다."""
         D = math.atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1])
         ad = abs(D)
-        if math.degrees(ad) < STRAIGHT_DEG:
-            return True, math.inf, math.degrees(ad)
         sg = 1 if D > 0 else -1
-        need = self.p.track_margin_m
-        best = None
         hu, hw = math.atan2(u[1], u[0]), math.atan2(w[1], w[0])
         for f in reversed(R_STEPS):
             R = self.p.r_min * f
@@ -396,6 +404,19 @@ class DriveGraph:
             while dd <= dl_out and m > -1.0:
                 m = min(m, self._pose_clear(dd * w[0], dd * w[1], hw, strips, -1.0))
                 dd += 1.0
+            yield R, m
+
+    def turn_fit(self, u, w, strips, Lin, Lout, margin_out: Optional[list] = None):
+        """(가능 여부, 고른 반경, 꺾임각°). 차체 검사 범위 = 원호 + 원호 앞뒤 방향선 직선 구간 (노드에서 DIR_LEN_M 까지, _smooth 가
+        그리는 것과 같은 선형 — 예전에는 원호만 봐서 방향선·이음매에서 차체 여유가 0.03~0.13 m 로 남았다, 2026-10-11 검토).
+        추종 여유(track_margin_m) 이상인 가장 큰 반경을 고른다. 없으면 여유가 가장 큰 반경 (그 여유를 margin_out 에 — 탐색이 피한다)."""
+        D = math.atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1])
+        ad = abs(D)
+        if math.degrees(ad) < STRAIGHT_DEG:
+            return True, math.inf, math.degrees(ad)
+        need = self.p.track_margin_m
+        best = None
+        for R, m in self._fit_candidates(u, w, strips, Lin, Lout):
             if m >= need:
                 if margin_out is not None:
                     margin_out.append(m)
@@ -407,6 +428,60 @@ class DriveGraph:
                 margin_out.append(best[0])
             return True, best[1], math.degrees(ad)
         return False, None, math.degrees(ad)
+
+    def _turn_fit_from(self, u, w, gen, margin_out: Optional[list] = None):
+        """turn_fit 과 같은 규칙을 이미 만든 후보 생성기 gen 으로 (gen 은 기본 반경 다음 후보부터 이어서 쓸 수 있다)."""
+        D = math.atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1])
+        ad = abs(D)
+        if math.degrees(ad) < STRAIGHT_DEG:
+            return True, math.inf, math.degrees(ad)
+        need = self.p.track_margin_m
+        best = None
+        for R, m in gen:
+            if m >= need:
+                if margin_out is not None:
+                    margin_out.append(m)
+                return True, R, math.degrees(ad)
+            if best is None or m > best[0]:
+                best = (m, R)
+        if best is not None:
+            if margin_out is not None:
+                margin_out.append(best[0])
+            return True, best[1], math.degrees(ad)
+        return False, None, math.degrees(ad)
+
+    def _alternatives_from(self, gen, R0: float, deg: float, vmax: float):
+        """turn_alternatives 와 같은 결과를, 기본 반경 다음부터 이어지는 생성기로 (큰 반경 순이라 단계별 첫 일치를 차례로 고르면 같다)."""
+        need = self.p.track_margin_m
+        th = math.tan(math.radians(deg) / 2)
+        T0 = R0 * th
+        fracs, out = (0.75, 0.5, 0.25), []
+        i = 0
+        for R, m in gen:
+            if i >= len(fracs):
+                break
+            T = R * th
+            if not (R < R0 - 1e-6 and m >= need and T < T0 - 0.5):
+                continue
+            if T <= T0 * fracs[i]:
+                out.append((R, T, m, min(vmax, math.sqrt(self.p.lat_accel_mps2 * R))))
+                i += 1
+        return tuple(out[:TURN_ALT_MAX])
+
+    def turn_alternatives(self, u, w, strips, Lin, Lout, R0: float, deg: float, vmax: float):
+        """기본 반경 R0 보다 작고 같은 기준(추종 여유 이상)을 통과하는 대안 (반경, 접선, 여유, 회전 속도) — 최대 TURN_ALT_MAX 개.
+        기본 접선의 3/4·1/2·1/4 이하 중 가장 큰 반경씩 (꼬리표 폭증 없이 짧은 도로 조합만 연다). 기본의 벌점 정책은 그대로."""
+        need = self.p.track_margin_m
+        th = math.tan(math.radians(deg) / 2)
+        T0 = R0 * th
+        cands = [(R, R * th, m) for R, m in self._fit_candidates(u, w, strips, Lin, Lout)
+                 if R < R0 - 1e-6 and m >= need and R * th < T0 - 0.5]
+        out = []
+        for frac in (0.75, 0.5, 0.25):
+            c = next((x for x in cands if x[1] <= T0 * frac and all(abs(x[0] - o[0]) > 1e-6 for o in out)), None)
+            if c is not None:
+                out.append((c[0], c[1], c[2], min(vmax, math.sqrt(self.p.lat_accel_mps2 * c[0]))))
+        return tuple(out[:TURN_ALT_MAX])
 
     def _build_turns(self):
         net = self.net
@@ -422,7 +497,8 @@ class DriveGraph:
                         continue
                     w = self._dir(rout, n, out=True)
                     mo = []
-                    ok, R, deg = self.turn_fit(u, w, strips, net.roads[rin].length, net.roads[rout].length, mo)
+                    gen = self._fit_candidates(u, w, strips, net.roads[rin].length, net.roads[rout].length)
+                    ok, R, deg = self._turn_fit_from(u, w, gen, mo)
                     if not ok:
                         self.blocked_turns.append({"node": n, "from_road": rin, "to_road": rout,
                                                    "deflect_deg": round(deg, 1), "entry_legal": self.allowed(rin, frm)})
@@ -430,8 +506,9 @@ class DriveGraph:
                     vmax = min(self.road_speed(net.roads[rin]), self.road_speed(net.roads[rout]))
                     v = vmax if math.isinf(R) else min(vmax, math.sqrt(self.p.lat_accel_mps2 * R))
                     T = 0.0 if math.isinf(R) else R * math.tan(math.radians(deg) / 2)
+                    alts = () if math.isinf(R) else self._alternatives_from(gen, R, deg, vmax)
                     lst.append(Turn((rout, to), v, round(deg, 1), None if math.isinf(R) else round(R, 2), round(T, 2),
-                                    round(mo[0], 3) if mo else None))
+                                    round(mo[0], 3) if mo else None, alts))
 
     # ------------------------------------------------------------------ 위치·방향
     def dirpos(self, pos: RoadPos, heading_deg: float) -> Optional[DirPos]:
@@ -529,16 +606,19 @@ class DriveGraph:
         t0 = d0 / self.road_speed(net.roads[start.road_id])
         dist: Dict[tuple, float] = {}
         prev: Dict[tuple, Optional[tuple]] = {}
+        first_tin: Dict[tuple, float] = {}       # 첫 회전 꼬리표: 출발 감속 조건을 통과한 후보 중 최소 접선 (S6)
         pq = []
         for t in self.turns.get(s0, ()):
             if not road_ok(t.to[0]) or not turn_ok(s0, t.to):
                 continue
             # 첫 교차로: 회전 원호가 시작하는 곳(노드 앞 tangent_m)까지 회전 속도로 줄일 거리가 있어야 한다
-            if d0 - t.tangent_m < self.brake_need(v0, t.v_turn):
+            okT = [T_ for T_, v_ in [(t.tangent_m, t.v_turn)] + [(a[1], a[3]) for a in t.alts] if d0 - T_ >= self.brake_need(v0, v_)]
+            if not okT:
                 continue
             lab = (t.to, s0)
             if t0 < dist.get(lab, math.inf):
                 dist[lab], prev[lab] = t0, None
+                first_tin[lab] = min(okT)
                 heapq.heappush(pq, (t0, lab))
         done = set()
         while pq:
@@ -548,10 +628,10 @@ class DriveGraph:
             done.add(lab)
             s, pin = lab
             r = net.roads[s[0]]
-            tin = self.tan.get((pin, s), 0.0)
+            tin = first_tin[lab] if lab in first_tin else self.tan_min.get((pin, s), 0.0)
             Tn = T + r.length / self.road_speed(r)
             for t in self.turns.get(s, ()):
-                if not road_ok(t.to[0]) or not turn_ok(s, t.to) or not self._lab_ok(tin, t.tangent_m, r.length):
+                if not road_ok(t.to[0]) or not turn_ok(s, t.to) or not self._lab_ok(tin, t.tangent_min, r.length):
                     continue
                 nl = (t.to, s)
                 if t.margin_m is not None and t.margin_m < self.p.track_margin_m:
@@ -585,7 +665,7 @@ class DriveGraph:
             s = (p.road_id, toward)
             run = abs(p.s - frm_s)
             for T, lab in tree["labels"].get(s, ()):
-                if self.tan.get((lab[1], s), 0.0) <= run and seg_ok(p.road_id, frm_s, p.s):
+                if self.tan_min.get((lab[1], s), 0.0) <= run and seg_ok(p.road_id, frm_s, p.s):
                     out.append(Arrival(T + run / v, "VIA", lab, toward))
                     break
         return out
@@ -627,17 +707,80 @@ class DriveGraph:
             rid, to = chain[-1]
             r = net.roads[rid]
             add(net.polyline(rid, 0.0 if to == r.b else r.length, p.s), self.road_speed(r), rid, self.other(rid, to), to)
+        sel = self.choose_turn_variants(legs, st, tree["v0"], p) if arr.kind != "DIRECT" else []
+        fail = None
+        if sel is None:
+            fail = dict(self._chain_fail or {})
+            sel = []
         if len(pts) == 1:
             pts.append(pts[0])
             vlim.append(vlim[0])
         else:
-            pts, vlim = self._smooth(pts, vlim, legs, relax)
+            pts, vlim = self._smooth(pts, vlim, legs, relax, sel)
         route = Route(pts, vlim, rids, st.pos, p, arr.time_s)
         route.legs, route.arrive_toward = legs, arr.toward
+        route.turn_variants = [(str(t.to), t.radius_m, t.tangent_m) for t in sel if t.alt_used]
+        route.turn_chain_fail = fail
         return route
 
     # ------------------------------------------------------------------ 주행 선형 다듬기
-    def _smooth(self, pts, vlim, legs, relax=frozenset()):
+    def choose_turn_variants(self, legs, start: DirPos, v0: float, dest: RoadPos) -> dict:
+        """경로 사슬의 각 회전에 쓸 원호 (기본 또는 대안). 도로마다 진입 접선 + 진출 접선 ≤ 도로 길이(_lab_ok), 첫 회전은 출발 감속 조건,
+        마지막 회전 원호는 목적지 앞에서 끝. 가능한 조합 중 앞 회전부터 가장 큰 반경 (기본 조합이 되면 기존과 같다).
+        반환 [Turn] — 회전 발생 순번 (같은 전이를 다시 지나도 덮이지 않게), 대안을 쓴 회전은 그 원호 값으로 바꾼 사본 (alt_used=True).
+        가능한 조합이 없으면 None — 기본 원호로 넘기지 않는다 (verify_route 가 TURN_CHAIN_INFEASIBLE 로 거절하고 기존 재탐색으로)."""
+        pairs = [((r1, t1), (r2, t2)) for (r1, _, t1), (r2, _, t2) in zip(legs, legs[1:])]
+        if not pairs:
+            return []
+        opts = []
+        for a, b in pairs:
+            t = next((x for x in self.turns.get(a, ()) if x.to == b), None)
+            if t is None:
+                return None
+            opts.append((t, [(t.radius_m, t.tangent_m, t.margin_m, t.v_turn)] + list(t.alts)))
+        d0 = self.ahead_m(start)
+        last_state = pairs[-1][1]
+        rl = self.net.roads[last_state[0]]
+        run_last = abs(dest.s - (0.0 if last_state[1] == rl.b else rl.length))
+        n = len(opts)
+        ok = [[False] * len(v) for _, v in opts]        # 뒤에서부터: i 번째 회전에 j 번째 원호를 쓰면 끝까지 이을 수 있나
+        for i in range(n - 1, -1, -1):
+            for j, o in enumerate(opts[i][1]):
+                Tj = o[1] or 0.0
+                if i == n - 1:
+                    ok[i][j] = Tj <= run_last + 1e-6
+                else:
+                    Lnext = self.net.roads[pairs[i][1][0]].length
+                    ok[i][j] = any(ok[i + 1][k] and self._lab_ok(Tj, o2[1] or 0.0, Lnext) for k, o2 in enumerate(opts[i + 1][1]))
+        sel, prevT = [], None
+        self._chain_fail = None
+        for i, (t, v) in enumerate(opts):
+            Lcur = self.net.roads[pairs[i][0][0]].length
+            pick = None
+            for j, o in enumerate(v):                       # 큰 반경(기본) 부터
+                Tj = o[1] or 0.0
+                if not ok[i][j]:
+                    continue
+                if i == 0 and o[0] is not None and d0 - Tj < self.brake_need(v0, o[3]):
+                    continue
+                if prevT is not None and not self._lab_ok(prevT, Tj, Lcur):
+                    continue
+                pick = j
+                break
+            if pick is None:
+                self._chain_fail = {"index": i, "pair": pairs[i], "node": pairs[i][0][1]}
+                return None                                 # 조합 없음 — 거절 (기본 원호로 대신하지 않는다)
+            o = v[pick]
+            prevT = o[1] or 0.0
+            if pick == 0:
+                sel.append(t)
+            else:
+                c = Turn(t.to, o[3], t.deflect_deg, o[0], o[1], o[2], t.alts)
+                c.alt_used = True
+                sel.append(c)
+        return sel
+
+    def _smooth(self, pts, vlim, legs, relax=frozenset(), sel=None):
         """도로 중심선 꺾인 점을 차가 따라갈 수 있는 원호로 바꾼다 (2026-10-10).
         PX4 는 꺾인 점에서 스스로 모서리를 질러가는데(RA_ACC_RAD_*) 좁은 도로에서 차체가 도로 밖으로 나갔다 →
         계획에서 원호를 그리고 PX4 질러가기는 끈다 (airframe RA_ACC_RAD_MAX -1).
@@ -701,11 +844,11 @@ class DriveGraph:
         # 1) 교차로 원호: 노드에서 진입·진출 방향선(노드 ~ 도로를 따라 DIR_LEN_M 떨어진 점을 이은 직선) 위 접점 사이 원호.
         #    원호 앞뒤도 그 방향선을 따라 DIR_LEN_M 점까지 곧게 잇는다 (원호 끝에서 꺾이지 않게). 그 점에서 도로 선형으로 돌아간다
         J = []
-        for (r1, _, t1), (r2, _, t2) in zip(legs, legs[1:]):
-            turn = next((t for t in self.turns.get((r1, t1), ()) if t.to == (r2, t2)), None)
+        for k_turn, ((r1, _, t1), (r2, _, t2)) in enumerate(zip(legs, legs[1:])):
+            pair = ((r1, t1), (r2, t2))
+            turn = sel[k_turn] if sel and k_turn < len(sel) else next((t for t in self.turns.get((r1, t1), ()) if t.to == (r2, t2)), None)
             if turn is None or turn.radius_m is None:
                 continue
-            pair = ((r1, t1), (r2, t2))
             # relax 원소: 회전 쌍 (1단계) 또는 (회전 쌍, 단계)
             relaxed = 2 if (pair, 2) in relax else (1 if pair in relax or (pair, 1) in relax else 0)
             u_, w_ = self._dir(r1, t1, out=False), self._dir(r2, t1, out=True)
@@ -1120,20 +1263,20 @@ class DriveGraph:
                 if not self.allowed(access.road_id, self.other(access.road_id, to)):
                     continue
                 for pin in self.rev.get(s, ()):
-                    if turn_ok(pin, s) and self.tan[(pin, s)] <= abs(access.s - frm_s):
+                    if turn_ok(pin, s) and self.tan_min[(pin, s)] <= abs(access.s - frm_s):
                         good.add((s, pin))
                         stack.append((s, pin))
         while stack:
             t, s = stack.pop()                      # 도로 s 에서 t 로 도는 회전 다음은 복귀 가능
             rs_ = self.net.roads[s[0]]
-            tout = self.tan[(s, t)]
+            tout = self.tan_min[(s, t)]
             if not road_ok(s[0]):
                 continue
             for q in self.rev.get(s, ()):
                 lab = (s, q)
                 if lab in good or not turn_ok(q, s) or not road_ok(q[0]):
                     continue
-                if self._lab_ok(self.tan[(q, s)], tout, rs_.length):
+                if self._lab_ok(self.tan_min[(q, s)], tout, rs_.length):
                     good.add(lab)
                     stack.append(lab)
         return {"access": access, "labels": good}
@@ -1147,7 +1290,7 @@ class DriveGraph:
             return True
         ahead = r.length - s if toward == r.b else s
         st = (rid, toward)
-        return any((t.to, st) in rs["labels"] and t.tangent_m <= ahead for t in self.turns.get(st, ()))
+        return any((t.to, st) in rs["labels"] and t.tangent_min <= ahead for t in self.turns.get(st, ()))
 
     # ------------------------------------------------------------------ 도로를 따르는 정지 경로
     def stop_path(self, start: DirPos, dist_m: float, prefer: Optional[List[Tuple[float, float]]] = None):

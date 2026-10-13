@@ -106,6 +106,11 @@ APPROACH_SEARCH_M = 2000.0                  # 목표 주변 이 거리 안의 �
 APPROACH_NEAR_M = float(os.getenv("UGV_APPROACH_NEAR_M", "1000"))            # 기준 도착 시간을 정하는 '목표 근처' 범위
 APPROACH_ETA_SLACK_RATIO = float(os.getenv("UGV_APPROACH_ETA_SLACK_RATIO", "0.25"))  # 기준보다 이 비율까지 늦어도 더 가까운 지점
 APPROACH_ETA_SLACK_S = float(os.getenv("UGV_APPROACH_ETA_SLACK_S", "60"))   #   (최소 여유 초)
+# 도착 시간 상한 (2026-10-13 사용자 결정, 임계값 잠정): 목표에 가까워지는 후보 중 가장 빠른 도착 t_best 보다 max(비율·t_best, t_best + 초) 넘게 느린 후보는 접근 지점 후보에서 뺀다.
+# S6 대안 원호로 짧은 도로 연속 회전이 열리자 1 km 안 정확한 목표까지 29.7 km·2,035 s 우회가 '목표 근처 우선' 으로 골라졌다 (기존: 1.7 km 지점 133 s)
+APPROACH_ETA_CAP_RATIO = float(os.getenv("UGV_APPROACH_ETA_CAP_RATIO", "3.0"))
+APPROACH_ETA_CAP_S = float(os.getenv("UGV_APPROACH_ETA_CAP_S", "600"))
+APPROACH_IMPROVE_M = float(os.getenv("UGV_APPROACH_IMPROVE_M", "100"))   # 상한 기준 후보 = 출발 위치보다 목표에 이만큼 이상 가까워지는 후보
 TARGET_SNAP_M = float(os.getenv("UGV_TARGET_SNAP_M", "2000"))   # 목표에서 가장 가까운 도로가 이보다 멀면 도달 불가
 ROAD_SAMPLE_M = 25.0                        # 접근 후보·안전 검사용 도로 표본 간격
 EVADE_SEARCH_M = 3000.0                     # 안전거리 위반 시 이탈 지점을 찾는 범위

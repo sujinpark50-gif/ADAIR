@@ -287,7 +287,8 @@ def test_return_feasibility_does_not_use_overlapping_turn_arcs():
         if s[0] == acc_road:
             continue
         r = NET.roads[s[0]]
-        assert any((t.to, s) in rs["labels"] and G.tan[(pin, s)] + t.tangent_m <= r.length + 1e-6
+        # S6 (2026-10-13): 같은 차체 검사를 통과한 대안 원호 중 가장 짧은 접선으로 겹침을 본다 (실제 원호는 경로 사슬에서 선택)
+        assert any((t.to, s) in rs["labels"] and G.tan_min[(pin, s)] + t.tangent_min <= r.length + 1e-6
                    for t in G.turns.get(s, ())), (pin, s)
 
 

@@ -53,7 +53,9 @@ class ApproachPlan:
                                 "eta_basis": "ROAD_SPEED_ONLY (곡선 감속·가감속 미반영. 최종 도착 예정은 eta_sec)",
                                 "ref_eta_s": _r(self.detail.get("_ref_eta_s")),
                                 "limit_eta_s": _r(self.detail.get("_limit_eta_s")),
-                                "chosen_eta_s": _r(self.detail.get("_chosen_eta_s"))},
+                                "chosen_eta_s": _r(self.detail.get("_chosen_eta_s")),
+                                "eta_cap": {"ratio": config.APPROACH_ETA_CAP_RATIO, "min_extra_s": config.APPROACH_ETA_CAP_S,
+                                            "cap_s": _r(self.detail.get("_eta_cap_s")), "excluded": self.detail.get("_eta_capped_out")}},
              **{k: v for k, v in self.detail.items() if not k.startswith("_")}}
         if self.dest:
             lat, lon = self.dest.ll()
@@ -135,6 +137,15 @@ def verify_route(net: RoadNetwork, route: Route, graph=None) -> dict:
     {"ok", "route": 검사 결과, "mission": 검사 결과, "issue": 첫 실패}"""
     from .roads import plan_speeds
     g = graph or net.graph
+    cf = getattr(route, "turn_chain_fail", None)
+    if cf:
+        # S6 (Codex 1705): 짧은 도로 연속 회전에서 대안 원호 조합(진입+진출 접선 ≤ 도로 길이·첫 회전 감속·목적지 앞 끝)이 없으면 거절 —
+        # 기본 원호로 대신 그려 최종 차체 검사만으로 통과시키지 않는다
+        nx, ny = net.nodes[cf["node"]]
+        issue = {"kind": "TURN_CHAIN_INFEASIBLE", "x": nx, "y": ny, "s_m": 0.0, "detail": f"회전 사슬 {cf['index']}번째 {cf['pair']}"}
+        out = {"ok": False, "route": {"ok": False, "issues": [issue]}, "mission": None, "issue": issue}
+        _note_issue(issue)
+        return out
     chk = g.check_route(route)
     out = {"ok": chk["ok"], "route": chk, "mission": None, "issue": chk["issues"][0] if chk["issues"] else None}
     _note_issue(out["issue"])
@@ -407,6 +418,17 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
     # 기준 시간 = 목표 APPROACH_NEAR_M 안 후보 중 가장 빠른 도착 (없으면 전체). 그보다 최대 ETA 여유만큼 늦는
     # 후보 중 목표에 가장 가까운 지점. 목표에 150 m 더 가까워지려고 수십 분 돌아가는 일을 막는다 (2026-10-09 실측:
     # 트윈 화재에서 271 m·27 km 우회 36분 대신 523 m·5 km 6분). 비교 시간은 방향을 반영한 도로 시간이다
+    # 도착 시간 상한 (config.APPROACH_ETA_CAP_*, 2026-10-13 사용자 결정, 임계값 잠정): 기준 = 출발 위치보다 목표에 APPROACH_IMPROVE_M 이상
+    # 가까워지는 후보 중 가장 빠른 도착. 그보다 max(비율·기준, 기준 + 초) 넘게 느린 후보는 뺀다 — S6 로 열린 29.7 km·2,035 s 우회가
+    # '목표 근처 우선' 으로 골라지던 것 방지. 출발점 바로 앞 지점(목표에 가까워지지 않음)은 기준이 되지 않는다 (전체 최소를 기준으로 하면
+    # 2026-10-11 '먼 목표가 12 m 앞 지점으로 풀림' 결함이 되살아났다 — test_far_target_does_not_collapse_to_point_ahead). 가까워지는 후보가 없으면 상한 없음.
+    d_start = math.hypot(start.pos.x - tx, start.pos.y - ty)
+    improving = [o[3] for o in ok if o[1] <= d_start - config.APPROACH_IMPROVE_M]
+    t_best = min(improving) if improving else None
+    eta_cap = math.inf if t_best is None else max(config.APPROACH_ETA_CAP_RATIO * t_best, t_best + config.APPROACH_ETA_CAP_S)
+    capped_out = sum(1 for o in ok if o[3] > eta_cap)
+    if capped_out < len(ok):
+        ok = [o for o in ok if o[3] <= eta_cap]
     near_set = [o for o in ok if o[1] <= config.APPROACH_NEAR_M]
     if not near_set:
         # 목표 APPROACH_NEAR_M 안에 갈 수 있는 지점이 없으면 기준을 '목표에 가장 가까운 후보(25 m 단위)' 로. 예전에는 전체 중 가장 빠른 후보
@@ -417,7 +439,7 @@ def _plan_once(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: floa
     limit = t_ref + max(config.APPROACH_ETA_SLACK_S, config.APPROACH_ETA_SLACK_RATIO * t_ref)
     dest, d, c, t, arr = min((o for o in ok if o[3] <= limit), key=lambda o: (round(o[1] / 25.0), o[3]))
     c = safety.clearance(dest.x, dest.y)                     # 고른 지점만 정확한 이격 (보고용)
-    sel = {"_ref_eta_s": t_ref, "_limit_eta_s": limit, "_chosen_eta_s": t}
+    sel = {"_ref_eta_s": t_ref, "_limit_eta_s": limit, "_chosen_eta_s": t, "_eta_cap_s": None if math.isinf(eta_cap) else eta_cap, "_eta_capped_out": capped_out, "_eta_cap_ref_s": t_best}
     route = g.build_route(tree, dest, arr, relax)
     # 출발 도로에서 벗어나기 전 구간은 검사에서 뺀다 (이미 있는 곳). 그 뒤 구간의 최소 이격을 기록한다
     route_clear = fire.clearance_along(route.pts[1:]) if len(fire) else math.inf

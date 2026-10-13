@@ -371,7 +371,7 @@ def test_route_corners_are_smoothed_into_drivable_arcs():
         tight = outside = worst = 0.0
         orig = DriveGraph._smooth
         if not smooth:
-            DriveGraph._smooth = lambda self, pts, vlim, legs, relax=frozenset(): (pts, vlim)
+            DriveGraph._smooth = lambda self, pts, vlim, legs, *a, **k: (pts, vlim)   # S6: _smooth(..., relax, sel)
         try:
             for _ in range(30):
                 rid, to = rnd.choice(states)
