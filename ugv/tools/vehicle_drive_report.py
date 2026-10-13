@@ -37,7 +37,7 @@ from ugv.tools import vehicle_report_common as vc
 from ugv.tools.drive_test import command_brake
 
 ROOT = Path(__file__).resolve().parents[2]
-JUDGE_VERSION = "vdr-3.3 (2026-10-13: vdr-3.2 + 서스펜션 최대 변위 바퀴·q/q−spring_reference/q−정지 평형 기록 — 판정 불변) vdr-3.2 (2026-10-13: vdr-3.1 + 확인 완료 시점 위치·거리, 최초 저속·구간 시작·확인·최종 위치 분리, 정책 켬 증거 누락 표시, armed 해제 확인 분리)"
+JUDGE_VERSION = "vdr-3.4 (2026-10-13: vdr-3.3 + 요철 감쇠 포락선·수렴 시간, 명령 정지 구간 분리(지연·감속·임무 끝 뒤 이동) — 판정 불변) vdr-3.3 (2026-10-13: vdr-3.2 + 서스펜션 최대 변위 바퀴·q/q−spring_reference/q−정지 평형 기록 — 판정 불변) vdr-3.2 (2026-10-13: vdr-3.1 + 확인 완료 시점 위치·거리, 최초 저속·구간 시작·확인·최종 위치 분리, 정책 켬 증거 누락 표시, armed 해제 확인 분리)"
 EXPECTED = {
     "bump": ["no_contact_le_0.2s"], "bump_susp": ["no_contact_le_0.2s", "q_abs_max_lt_0.08", "no_divergence", "settle_1s_le_10pct"],
     "straight": ["stable_ge_10s", "no_over_limit", "speed_std_le_0.3", "steer_mean_le_1.5_std_le_0.5", "yaw_rate_le_2dps", "lateral_le_0.3m",
@@ -141,6 +141,40 @@ def susp_breakdown(rows, T, spd, variant, model):
             "note": "판정은 q (관절 위치) 그대로. 정지 평형 = 출발 전(속도 0.3 m/s 이하) 2 s 이후 표본 중앙값"}
 
 
+def bump_decay(rows, T, joint, t_from):
+    """요철 통과 뒤 서스펜션 진동 포락선 (기록용, 판정 불변 — 감쇠비 추정만으로 단정하지 않기 위해):
+    평형 = 마지막 3 s 중앙값, 피크 = 평형 대비 극값 (부호 바뀔 때마다 하나), 연속 같은 부호 피크 비의 대수 감쇠율, 수렴 시간 = 이후 계속 |q−평형| ≤ 첫 피크의 10 % 가 되는 시각."""
+    qs = [(T[i], fnum(rows[i].get(f"{joint}_q"))) for i in range(len(rows)) if T[i] >= t_from]
+    qs = [(t, q) for t, q in qs if q is not None]
+    if len(qs) < 20:
+        return None
+    tl = qs[-1][0]
+    eq = statistics.median([q for t, q in qs if t >= tl - 3.0])
+    peaks, cur = [], None
+    for t, q in qs:
+        d = q - eq
+        sg = 1 if d > 0 else -1 if d < 0 else 0
+        if sg == 0:
+            continue
+        if cur is None or sg != cur[0]:
+            if cur is not None:
+                peaks.append(cur)
+            cur = [sg, t, d]
+        elif abs(d) > abs(cur[2]):
+            cur[1], cur[2] = t, d
+    if cur is not None:
+        peaks.append(cur)
+    peaks = [pk for pk in peaks if abs(pk[2]) > 1e-4][:8]
+    if not peaks:
+        return {"eq": round(eq, 5), "peaks": []}
+    a0 = abs(peaks[0][2])
+    t_settle = next((t for t, q in qs if all(abs(q2 - eq) <= 0.1 * a0 for t2, q2 in qs if t2 >= t)), None)
+    same = [abs(pk[2]) for pk in peaks[::2]]
+    logdec = [round(__import__("math").log(same[i] / same[i + 1]), 3) for i in range(len(same) - 1) if same[i + 1] > 0]
+    return {"joint": joint, "eq": round(eq, 5), "peaks": [[round(pk[1], 2), round(pk[2], 5)] for pk in peaks],
+            "log_decrement_same_sign": logdec, "settle_time_from_first_peak_s": None if t_settle is None else round(t_settle - peaks[0][1], 2)}
+
+
 def brake_metrics(rows, T, X, Y, spd, vmax_ref):
     # 감속 시작 = 정지 전에 속도가 (최대 − 0.5 m/s) 이상이던 마지막 표본의 다음 시각. 최대·문턱은 첫 구현과 같다.
     # 첫 구현은 그 문턱 아래로 '처음' 내려간 시각이라, 가속 초과(spike) 뒤 순항 요동을 감속 시작으로 잡았다 (ft-susp_a straight50_a 597 m).
@@ -211,6 +245,8 @@ def judge(p):
             out["susp_q_abs_max_m"] = None if qmax is None else round(qmax, 4)
             out["susp_q_abs_max_raw_m"] = qmax                          # 반올림 전 원시값 (판정은 원시값으로)
             out["susp_max_breakdown"] = susp_breakdown(rows, T, spd, variant, model)
+            if out["susp_max_breakdown"].get("max_wheel") and k_cross is not None:
+                out["susp_decay"] = bump_decay(rows, T, out["susp_max_breakdown"]["max_wheel"], T[k_cross])
             if qmax is not None:
                 kq = max((i for i in range(len(T)) for s_ in SUSP if qs[s_][i] is not None and abs(qs[s_][i]) == qmax), default=None)
                 out["susp_q_abs_max_at"] = None if kq is None else {"sim_t": T[kq], "x": X[kq]}
@@ -394,6 +430,16 @@ def judge(p):
                            "body_front_basis": "직선 근사 (진행 방향 = 차체 방향, 평지 직선 시험 참고값) — 회전·경사는 yaw/pose 로 충돌 모서리 투영 필요"})
             # 기준점 분리: 명령 때 Gazebo 위치(실제 거리의 시작)와 PX4 보고 위치(계획 거리의 시작)의 진행 방향·횡방향 차.
             # PX4 위치·속도는 순차 수신 뒤 명령 wall 시각을 찍으므로 텔레메트리 지연·표본 시각 차도 포함될 수 있다 (추정 오차로 단정하지 않음)
+            # 정지 구간 분리 (기록용): 명령→감속 시작 지연 거리 / 감속 시작→임무 끝(드라이버 보고) 거리 / 임무 끝→정지 확인 거리
+            fin = next((e for e in events if e["ev"] == "mission_finished_seen"), None)
+            k_fin = None if fin is None else next((i for i, r in enumerate(rows_f) if (r.get("wall_t") or 0) >= fin["wall"]), None)
+            k_dec = next((i for i in range(k_c, len(spd)) if spd[i] < spd[k_c] - 0.3), None)
+            k_cf = None if cb.get("stop_confirm_cmd_s") is None else next((i for i in range(k_c, len(T)) if T[i] >= T[k_c] + cb["stop_confirm_cmd_s"]), None)
+            seg = lambda a, b: None if a is None or b is None or b < a else round(sum(math.hypot(X[q + 1] - X[q], Y[q + 1] - Y[q]) for q in range(a, b)), 2)   # noqa: E731
+            cb["phase_split_m"] = {"cmd_to_decel_start": seg(k_c, k_dec), "decel_start_to_mission_finished": seg(k_dec, k_fin),
+                                   "mission_finished_to_stop_confirm": seg(k_fin, k_cf),
+                                   "speed_at_mission_finished_mps": None if k_fin is None else round(spd[k_fin], 2),
+                                   "basis": "mission_finished = drive_test 가 PX4 미션 끝을 본 wall 시각 (폴링 0.2 s 간격 — 근사)"}
             cb["gz_minus_px4_along_at_command_m"] = round(((X[k_c] - cmd["px4_en"][0]) * ux + (Y[k_c] - cmd["px4_en"][1]) * uy) / L, 3)
             cb["planned_dist_from_gz_origin_m"] = round(-along(k_c), 3)
             recv = cmd.get("px4_pos_recv_wall") or cmd.get("px4_sample_wall")   # 위치 '수신' 시각 (PX4 표본 생성 시각 아님)
