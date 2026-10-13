@@ -37,7 +37,7 @@ from ugv.tools import vehicle_report_common as vc
 from ugv.tools.drive_test import command_brake
 
 ROOT = Path(__file__).resolve().parents[2]
-JUDGE_VERSION = "vdr-3.1 (2026-10-13: vdr-3 + 정책 켬인데 시동 끔 이벤트 없음 = 미확인, 정지 구간 시작/확인 완료 분리, 차체 앞끝 직선 근사 표시, 위치 수신 시각 명칭)"
+JUDGE_VERSION = "vdr-3.2 (2026-10-13: vdr-3.1 + 확인 완료 시점 위치·거리, 최초 저속·구간 시작·확인·최종 위치 분리, 정책 켬 증거 누락 표시, armed 해제 확인 분리)"
 EXPECTED = {
     "bump": ["no_contact_le_0.2s"], "bump_susp": ["no_contact_le_0.2s", "q_abs_max_lt_0.08", "no_divergence", "settle_1s_le_10pct"],
     "straight": ["stable_ge_10s", "no_over_limit", "speed_std_le_0.3", "steer_mean_le_1.5_std_le_0.5", "yaw_rate_le_2dps", "lateral_le_0.3m",
@@ -321,10 +321,15 @@ def judge(p):
             mode = mode if mode in ("server", "immediate") else "none"
             cb["park_mode"] = mode
             cb["park_policy"] = (f"{mode} ({pk['why']})" if pk else
+                                 f"{mode} (증거 누락 — 시동 끔 이벤트 없음)" if mode in ("server", "immediate") else
                                  "none — PX4 단독: 미션 끝 뒤 시험 도구가 기록 대기 후 시동 끔 (시스템 정지거리 아님, 서버는 미션 끝 1 s 정차·4 s 상한에 시동 끔)")
             # 정책이 켜졌으면 시동 끔 이벤트가 있어야 한다: 없음 = 미확인(None), 명령 예외 = 실패. armed 해제 확인은 기록에 없음 (텔레메트리 미수집)
             cb["park_disarm_failed"] = (None if (mode in ("server", "immediate") and pk is None) else bool(pk and "실패" in str(pk.get("why"))))
-            cb["park_disarm_armed_check"] = "미수집 (disarm 명령 성공만 확인)"
+            # 구동 차단 증거 3단계: 명령 성공(park_disarm 이벤트) / armed 해제 확인(armed_false_wall, 신규 회차만) / 물리 정지(아래 연속 정지)
+            arm = next((e for e in events if e["ev"] == "armed_check"), None)
+            cb["park_disarm_armed_check"] = ("미수집 (과거 회차 — disarm 명령 성공만 기록)" if arm is None else
+                                             {"armed_false_after_disarm_s": arm.get("armed_false_after_s"), "last_armed": arm.get("last_armed"),
+                                              "samples": arm.get("n")})
             if pk:
                 fin = next((e for e in events if e["ev"] == "mission_finished_seen"), None)
                 cb["finished_to_disarm_s"] = None if fin is None else round(pk["wall"] - fin["wall"], 2)
@@ -341,13 +346,19 @@ def judge(p):
             along = lambda i: ((X[i] - cmd["stop_en"][0]) * ux + (Y[i] - cmd["stop_en"][1]) * uy) / L   # noqa: E731
             lat = lambda i: ((X[i] - cmd["stop_en"][0]) * uy - (Y[i] - cmd["stop_en"][1]) * ux) / L      # noqa: E731
             front = geo.get("body_front_x")
+            k_low = next((i for i in range(k_c, len(spd)) if spd[i] < 0.1), None)          # 최초 저속 표본 (일시 저속 포함 가능)
             if k_conf is not None:
-                cb.update({"stop_segment_start_cmd_s": round(T[k_conf] - T[k_c], 2), "stop_confirm_cmd_s": round(T[k_conf] + 1.0 - T[k_c], 2),
-                           "total_travel_cmd_to_confirm_m": round(sum(math.hypot(X[q + 1] - X[q], Y[q + 1] - Y[q]) for q in range(k_c, k_conf)), 2),
-                           "along_track_at_confirm_m": round(along(k_conf), 3), "lateral_at_confirm_m": round(lat(k_conf), 3),
+                # 확인 완료 = 연속 정지 구간 시작 + 1 s 인 실제 표본 (vdr-3.1 은 위치·거리를 구간 시작 표본으로 계산했다)
+                k_done = next((i for i in range(k_conf, len(T)) if T[i] >= T[k_conf] + 1.0), len(T) - 1)
+                trav = lambda a, b: round(sum(math.hypot(X[q + 1] - X[q], Y[q + 1] - Y[q]) for q in range(a, b)), 2)   # noqa: E731
+                cb.update({"stop_segment_start_cmd_s": round(T[k_conf] - T[k_c], 2), "stop_confirm_cmd_s": round(T[k_done] - T[k_c], 2),
+                           "total_travel_cmd_to_segment_start_m": trav(k_c, k_conf), "total_travel_cmd_to_confirm_m": trav(k_c, k_done),
+                           "along_track_first_low_m": None if k_low is None else round(along(k_low), 3),
+                           "along_track_segment_start_m": round(along(k_conf), 3),
+                           "along_track_at_confirm_m": round(along(k_done), 3), "lateral_at_confirm_m": round(lat(k_done), 3),
                            "along_track_final_m": round(along(len(X) - 1), 3),
-                           "along_track_max_after_confirm_m": round(max(along(i) for i in range(k_conf, len(X))), 3),
-                           "body_front_along_track_at_confirm_m": None if front is None else round(along(k_conf) + front, 3),
+                           "along_track_max_after_confirm_m": round(max(along(i) for i in range(k_done, len(X))), 3),
+                           "body_front_along_track_at_confirm_m": None if front is None else round(along(k_done) + front, 3),
                            "body_front_basis": "직선 근사 (진행 방향 = 차체 방향, 평지 직선 시험 참고값) — 회전·경사는 yaw/pose 로 충돌 모서리 투영 필요"})
             # 기준점 분리: 명령 때 Gazebo 위치(실제 거리의 시작)와 PX4 보고 위치(계획 거리의 시작)의 진행 방향·횡방향 차.
             # PX4 위치·속도는 순차 수신 뒤 명령 wall 시각을 찍으므로 텔레메트리 지연·표본 시각 차도 포함될 수 있다 (추정 오차로 단정하지 않음)

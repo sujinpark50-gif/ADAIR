@@ -235,6 +235,24 @@ def mission_item(lat, lon, speed, through=True):
                        camera_photo_distance_m=0.0, vehicle_action=MissionItem.VehicleAction.NONE)
 
 
+async def armed_check(tel, t_disarm, timeout_s=3.0):
+    """시동 끔 명령 뒤 PX4 armed 보고가 False 가 되는지 (명령 성공 ≠ 해제 확인). 수신 시각 기준."""
+    last, n, t_false = None, 0, None
+    end = time.time() + timeout_s
+    while time.time() < end:
+        try:
+            last = await first(tel.subscribe_armed, timeout=1.0)
+        except Exception:  # noqa: BLE001
+            break
+        n += 1
+        if last is False:
+            t_false = time.time()
+            break
+        await asyncio.sleep(0.1)
+    return {"ev": "armed_check", "wall": round(time.time(), 3), "last_armed": last, "n": n,
+            "armed_false_after_s": None if t_false is None else round(t_false - t_disarm, 3)}
+
+
 async def start_mission(mis, tries=20):
     """업로드 직후에는 PX4 가 미션 검증을 끝내지 않아 시작을 거부할 수 있다 ('Switching to Mission is currently
     not available', 2026-10-09 실측) → 짧게 재시도한다."""
@@ -396,7 +414,9 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
                         why = "immediate"
                     except Exception as e:  # noqa: BLE001
                         why = f"immediate (disarm 실패: {e})"
-                    events.append({"ev": "park_disarm", "why": why, "wall": round(time.time(), 3), "px4_speed_mps": round(vh, 3)})
+                    t_dis = time.time()
+                    events.append({"ev": "park_disarm", "why": why, "wall": round(t_dis, 3), "px4_speed_mps": round(vh, 3)})
+                    events.append(await armed_check(tel, t_dis))
                     print(f"[{name}] 정차 유지(즉시): PX4 속도 {vh:.2f} m/s")
                 elif PARK_MODE == "server":
                     slow_since = None
@@ -413,6 +433,7 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
                             except Exception as e:  # noqa: BLE001
                                 why += f" (disarm 실패: {e})"
                             events.append({"ev": "park_disarm", "why": why, "wall": round(now, 3), "px4_speed_mps": round(vh, 3)})
+                            events.append(await armed_check(tel, now))
                             print(f"[{name}] 정차 유지(서버 규칙): {why}, PX4 속도 {vh:.2f} m/s")
                             break
                         await asyncio.sleep(0.1)
