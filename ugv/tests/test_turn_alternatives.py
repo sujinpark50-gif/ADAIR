@@ -116,3 +116,26 @@ def test_built_route_carries_selected_radius_into_smoothing(monkeypatch):
     used = [t for t in seen["sel"] if t.alt_used]
     assert any(abs(t.radius_m - 93.53) < 0.01 and t.to[0] == C for t in used)
     assert any(abs(r_ - 93.53) < 0.01 for _, r_, _ in route.turn_variants)
+
+
+def test_arc_omit_eligibility_boundary_and_record():
+    """이음매 완화 3단계 자격 = 방향선 어긋남 ≥ JUNCTION_ARC_OMIT_MIN_DEG (경계 포함) — 19.9 아니오 / 20.0 예 / 20.1 예, 판단 기록 (Codex 2100)."""
+    from types import SimpleNamespace
+    from ugv.approach import arc_omit_eligible
+    from ugv.drive_graph import JUNCTION_ARC_OMIT_MIN_DEG
+    assert JUNCTION_ARC_OMIT_MIN_DEG == 20.0
+    pair = (("r1", "n"), ("r2", "m"))
+    log = []
+    for deg, want in ((19.9, False), (20.0, True), (20.1, True)):
+        g = SimpleNamespace(junction_dirline_mismatch_deg=lambda p, d=deg: d)
+        assert arc_omit_eligible(g, pair, log) is want
+    assert [x["eligible"] for x in log] == [False, True, True]
+    assert [x["mismatch_deg"] for x in log] == [19.9, 20.0, 20.1] and log[0]["pair"] == [["r1", "n"], ["r2", "m"]]
+
+
+def test_arc_omit_mismatch_known_turns():
+    """실제 도로망: 확인 사례(굽은 진출 도로) 32° → 자격, 회귀 사례(직선 도로 87.7° 회전) 0° → 자격 없음."""
+    from ugv.approach import arc_omit_eligible
+    assert arc_omit_eligible(G, (("682600487", "495178"), ("682501903", "495053")))
+    assert not arc_omit_eligible(G, (("683400306", "495666"), ("683400364", "x")))
+    assert abs(G.junction_dirline_mismatch_deg((("682600487", "495178"), ("682501903", "495053"))) - 32.0) < 0.5

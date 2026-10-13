@@ -231,6 +231,16 @@ LOW_MARGIN_SPEED_MPS = 2.5      # 추종 여유가 모자란 구간 속도 상�
 LOW_MARGIN_SPAN_M = 20.0        # 여유 부족 지점 앞뒤로 상한을 거는 거리
 
 
+def arc_omit_eligible(g, pair, log: Optional[list] = None) -> bool:
+    """이음매 완화 3단계(교차로 원호 생략) 자격: 진입·진출 방향선 어긋남 최대 ≥ JUNCTION_ARC_OMIT_MIN_DEG (경계 포함).
+    판단마다 log 에 {pair, mismatch_deg, eligible} 를 남긴다 (Codex 2100: 경계 19.9/20.0/20.1° 회귀·기록 필드)."""
+    deg = g.junction_dirline_mismatch_deg(pair)
+    ok = deg >= JUNCTION_ARC_OMIT_MIN_DEG
+    if log is not None:
+        log.append({"pair": [list(pair[0]), list(pair[1])], "mismatch_deg": round(deg, 2), "min_deg": JUNCTION_ARC_OMIT_MIN_DEG, "eligible": ok})
+    return ok
+
+
 def plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: float, target_lon: float, **kw) -> ApproachPlan:
     """추종 여유(차종 track_margin_m) 포함 계획 → 실패했고 원인에 여유 부족(차체는 도로 안, 여유만 모자람)이 있으면
     차체 도로 포함만 요구해 다시 계획하고, 찾은 경로의 여유 부족 구간 앞뒤 LOW_MARGIN_SPAN_M 에 속도 상한 LOW_MARGIN_SPEED_MPS
@@ -296,6 +306,7 @@ def _plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: 
     (결과 detail.arrive_direction 에 남긴다)."""
     g = graph or net.graph
     banned_turns, banned_roads, tried, relaxed = set(), set(), [], set()
+    omit_checks = []                     # 이음매 완화 3단계 자격 판단 기록 [{pair, mismatch_deg, eligible}]
     bans = 0
     while bans < ROUTE_CHECK_TRIES:
         plan = _plan_once(net, fire, start, target_lat, target_lon, v0=v0, access=access, standoff=standoff,
@@ -327,6 +338,8 @@ def _plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: 
                     plan.detail["junction_joins_relaxed_long"] = sorted([list(a), list(b)] for a, b in lv2)   # 24 m 연결 곡선
                 if lv3:
                     plan.detail["junction_arc_omitted"] = sorted([list(a), list(b)] for a, b in lv3)         # 교차로 원호 생략 (3단계)
+            if omit_checks:
+                plan.detail["junction_arc_omit_checks"] = omit_checks       # 3단계 자격 판단 기록 (어긋남 각·적용 여부)
             return plan
         # 실패 원인이 교차로 회전이면 먼저 그 회전의 이음매만 다르게 다듬어 다시 검사한다 (drive_graph.build_route relax).
         # 다듬은 선형의 이음매 꺾임 때문에 실제로 지날 수 있는 회전을 빼던 문제 (2026-10-10: 국도 31 내린천로·덕산로 교차로 —
@@ -343,8 +356,8 @@ def _plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: 
             relaxed.discard(pair)
             relaxed.add((pair, 2))
             continue
-        if (pair is not None and (pair, 2) in relaxed and (pair, 3) not in relaxed
-                and g.junction_dirline_mismatch_deg(pair) >= JUNCTION_ARC_OMIT_MIN_DEG):
+        if pair is not None and (pair, 2) in relaxed and (pair, 3) not in relaxed and \
+                arc_omit_eligible(g, pair, omit_checks):
             # 3단계 (2026-10-13 S6): 방향선이 굽은 도로와 어긋나는 회전(어긋남 ≥ JUNCTION_ARC_OMIT_MIN_DEG)만 — 직선 도로 회전에 쓰면 도착 도로가
             # 바뀌어 복귀 계획이 끊겼다 (Fable 7절, test_separate_routes_… 회귀). 교차로 원호를 생략하고 도로 선형을 따라 다듬어 한 번 더. 기준은 그대로 —
             # 다듬은 선형이 최종 검사를 통과할 때만 쓴다. 지금 통과하는 경로는 이 분기에 오지 않는다
@@ -356,7 +369,7 @@ def _plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: 
             break
     tx, ty = FRAME.to_xy(target_lat, target_lon)
     return ApproachPlan("TARGET_UNREACHABLE", "NO_DRIVABLE_ROUTE (다듬은 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함)",
-                        target_xy=(tx, ty), detail={"route_check_rejected": tried,
+                        target_xy=(tx, ty), detail={"route_check_rejected": tried, **({"junction_arc_omit_checks": omit_checks} if omit_checks else {}),
                                                     "direction": _direction_report(start, v0, None, None, access)})
 
 
