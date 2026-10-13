@@ -129,3 +129,12 @@ def test_timeout_marks_unknown_and_retries():
         assert st.events[-1]["ack"] is True and st._spd_fails == 0
     finally:
         V.SPEED_CMD_TIMEOUT_S = old
+
+
+def test_stop_cap_first_sent_before_upload(monkeypatch):
+    """UGV_STOP_CAP_FIRST: 정지 경로 업로드(follow) 전에 min(지금 속도, 첫 구간 계획 속도) 상한을 보낸다 (Fable F1)."""
+    import inspect
+    src = inspect.getsource(Vehicle._safe_stop)
+    i_cap, i_follow = src.index("STOP_CAP_FIRST and tel is not None"), src.index("self.driver.follow(items)")
+    assert i_cap < i_follow
+    assert "min(tel.speed_mps, float(items[0][2]))" in src

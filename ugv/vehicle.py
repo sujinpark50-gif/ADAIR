@@ -126,6 +126,12 @@ STOP_GRADE_MODE = os.getenv("UGV_STOP_GRADE", "0") == "1"
 #   양보·정지 감독·취소·재계획 중에는 보내지 않는다 (정지 속도 명령과 경쟁 금지). 실패해도 감독 유지 (문제 기록만).
 #   DO_CHANGE_SPEED 는 목표 속도 명령이지 실제 속도 상한 보장이 아니다 — 보낸 시각·순번·값·ACK·그때 실제 속도를 SPEED_CMD 이벤트로 남긴다.
 SPEED_TERRAIN_CMD = os.getenv("UGV_SPEED_TERRAIN_CMD", "0") == "1"
+# 정지 후보 F1 (2026-10-13 Fable 원인 검토 `UGV_경사정지_속도명령_페이블원인검토_20261013.md` R1·R2, 오퍼스 소스 대조 확인). 기본 off.
+#   활성 미션 중 새 미션 업로드(onMissionUpdate)는 순항 속도를 리셋하지 않아, 정지 경로 첫 구간(선행 지점까지 — 속도 항목은 지점 뒤에
+#   붙는다)이 직전 주행 항목 속도(예 13.88)를 상속해 가속했다. 외부 DO_CHANGE_SPEED 는 순항 속도 대입 + ACK 만 하므로 업로드 '뒤'에는
+#   무효, 업로드 '전'에 보내면 set_mission_items 가 그 값을 첫 구간에 읽는다 (소스 근거, 실측 미확인 — 최소 실험 E1 로 확인).
+#   UGV_STOP_CAP_FIRST=1 : 정지 경로 업로드 전에 min(지금 속도, 첫 구간 계획 속도) 를 DO_CHANGE_SPEED 로 보내고 ACK 를 기다린 뒤 업로드.
+STOP_CAP_FIRST = os.getenv("UGV_STOP_CAP_FIRST", "0") == "1"
 SPEED_CMD_DELTA = 0.5
 SPEED_CMD_MIN_S = 1.0
 SPEED_CMD_TIMEOUT_S = 2.0          # ACK 대기 (그동안 차량 잠금 점유 — 정지 요청 지연 예산에 포함)
@@ -946,6 +952,15 @@ class Vehicle:
                         "length_m": round(d, 1), "needed_m": round(d, 1), "speed_mps": round(v, 2), "drivable": None,
                         "decel_mps2": self.profile.emergency_decel_mps2}
             if items:
+                if STOP_CAP_FIRST and tel is not None:
+                    v_cap = max(min(tel.speed_mps, float(items[0][2])), 0.5)
+                    t_c = time.monotonic()
+                    try:
+                        ok_c = await asyncio.wait_for(self.driver.set_speed_cap(v_cap), 2.0)
+                    except asyncio.TimeoutError:
+                        ok_c = None
+                    info["speed_cap_first"] = {"v": round(v_cap, 2), "ok": ok_c, "ack_s": round(time.monotonic() - t_c, 3),
+                                               "basis": "업로드 전 min(지금 속도, 첫 구간 계획 속도) — Fable R1/F1"}
                 self.seq = await self._send_stop(self.driver.follow(items))
                 self.stop_path_pts = [tuple(q) for q in pts]
                 if STOP_SPEED_CMD and tel is not None:
