@@ -138,13 +138,20 @@ def test_closed_loop_blocked_vehicle_is_released_not_faulted(tmp_path, monkeypat
         att = out["attempt_id"]
         assert _until(orch, lambda: A.state == "DRIVING" and 0.3 < (A.driver.telemetry().speed_mps or 0) < 4, 20, every=0.05)
         # 막 출발한 차(저속, 정지 거리 짧음) 앞 30 m(같은 출발 도로)에 임무 없는 차를 세운다 → 즉시 되짚기 금지라 우회 경로 없음
+        # 경로 선분 위에서 보간해 정확히 30 m 앞 (예전: 누적거리 30 m 를 넘는 다음 경유점 — 경유점 간격만큼 더 멀 수 있었다)
         sp = A.speed
         s_blk = A._s_now() + 30.0
+        assert s_blk < sp.cum[-1], "막는 차 위치가 경로 끝을 넘음"
         k = next(i for i, c in enumerate(sp.cum) if c >= s_blk)
         (x0, y0), (x1, y1) = sp.pts[k - 1], sp.pts[k]
-        BU.driver.x, BU.driver.y = x1, y1
+        f = (s_blk - sp.cum[k - 1]) / ((sp.cum[k] - sp.cum[k - 1]) or 1.0)
+        xb, yb = x0 + f * (x1 - x0), y0 + f * (y1 - y0)
+        BU.driver.x, BU.driver.y = xb, yb
         BU.driver.heading = bearing_deg(x1 - x0, y1 - y0)
-        assert NET.snap(x1, y1).road_id == A.access.road_id              # 출발 도로 위
+        assert NET.snap(xb, yb).road_id == A.access.road_id              # 출발 도로 위
+        ta = A.driver.telemetry()
+        assert 25.0 <= ((xb - ta.x) ** 2 + (yb - ta.y) ** 2) ** 0.5 <= 35.0   # 실제 간격 (배치 순간 A 진행분 포함)
+        assert BU.current_task() is None and (BU.driver.telemetry().speed_mps or 0) < 0.1   # 임무 없음·정지
         assert _until(orch, lambda: orch.ledger.get_attempt(att)["substatus"] in ("RELEASED", "FAULTED", "UNKNOWN"), 240)
         ut = [t for t in fleet.store.tasks.values() if t["resource_id"] == "A-ugv1"][-1]
         assert ut["status"] == "FAILED" and ut["error"].startswith("BLOCKED_BY_VEHICLE"), ut.get("error")
