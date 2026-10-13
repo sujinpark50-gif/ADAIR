@@ -404,6 +404,12 @@ def judge(p):
             checks["cmd_stop_within_planned"] = cb["cmd_to_stop_m"] <= cb["planned_stop_dist_m"]   # 원래 기준 (기준점 차 포함 — 보존)
         if cb and "park_disarm_failed" in cb:
             checks["park_disarm_ok"] = None if cb["park_disarm_failed"] is None else not cb["park_disarm_failed"]
+            # 구동 차단 증거 3단계 (기록용, 판정 기준 불변): 명령 성공 / armed 해제 확인 / 물리 정지 (연속 정지 확인)
+            ac = cb.get("park_disarm_armed_check")
+            cb["park_evidence"] = {"command_ok": None if cb["park_disarm_failed"] is None else not cb["park_disarm_failed"],
+                                   "armed_released": (None if not isinstance(ac, dict) else (ac.get("armed_false_after_disarm_s") is not None)),
+                                   "armed_basis": "미수집" if not isinstance(ac, dict) else "armed False 수신",
+                                   "physical_stop": cb.get("stop_confirm_cmd_s") is not None}
         elif cb and events:
             checks["park_disarm_ok"] = True   # 정책 없는 회차 (시험 도구 시동 끔 — 별도 표시)
             k_cmd = next((i for i, r in enumerate(rows_f) if (r.get("wall_t") or 0) >= next(e for e in events if e["ev"] == "stop_command")["wall"]), 0)
