@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import config
-from .drive_graph import DirPos
+from .drive_graph import DirPos, JUNCTION_ARC_OMIT_MIN_DEG
 from .fire import FireArea, densify
 from .geo import FRAME
 from .roads import RoadNetwork, RoadPos, Route
@@ -343,8 +343,10 @@ def _plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: 
             relaxed.discard(pair)
             relaxed.add((pair, 2))
             continue
-        if pair is not None and (pair, 2) in relaxed and (pair, 3) not in relaxed:
-            # 3단계 (2026-10-13 S6): 교차로 원호를 생략하고 도로 선형을 따라 다듬어 한 번 더 (회전을 빼기 전에). 기준은 그대로 —
+        if (pair is not None and (pair, 2) in relaxed and (pair, 3) not in relaxed
+                and g.junction_dirline_mismatch_deg(pair) >= JUNCTION_ARC_OMIT_MIN_DEG):
+            # 3단계 (2026-10-13 S6): 방향선이 굽은 도로와 어긋나는 회전(어긋남 ≥ JUNCTION_ARC_OMIT_MIN_DEG)만 — 직선 도로 회전에 쓰면 도착 도로가
+            # 바뀌어 복귀 계획이 끊겼다 (Fable 7절, test_separate_routes_… 회귀). 교차로 원호를 생략하고 도로 선형을 따라 다듬어 한 번 더. 기준은 그대로 —
             # 다듬은 선형이 최종 검사를 통과할 때만 쓴다. 지금 통과하는 경로는 이 분기에 오지 않는다
             relaxed.discard((pair, 2))
             relaxed.add((pair, 3))

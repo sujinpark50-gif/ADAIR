@@ -67,6 +67,8 @@ JOIN_BLEND_M = 12.0              # 교차로 원호 방향선과 도로 선형�
 JOIN_BLEND_MIN_M = 6.0          # 이보다 짧은 이음매 연결 곡선은 넣지 않는다 (짧은 곡선 = 급한 원호)
 JOIN_BLEND_M_2 = 24.0            # 재다듬기 2단계: 12 m 연결 곡선으로도 최종 검사에 걸리는 회전만 더 길게 (회전을 빼기 전에)
 JUNCTION_ARC_MIN_DEG = 20.0     # 교차로 진입·진출 방향 차이가 이보다 작으면(거의 직진 통과) 교차로 원호 대신 도로 선형을 다듬는다
+JUNCTION_ARC_OMIT_MIN_DEG = 20.0  # 이음매 완화 3단계(교차로 원호 생략)를 쓰는 회전: 방향선(노드→DIR_LEN_M 직선)과 그 점 도로 접선의 어긋남이 이 이상
+                                 # (2026-10-13 S6: 확인 사례 682600487→682501903 32°, 직선 도로 회전에 쓰면 도착 도로가 바뀌어 복귀 회귀 — Fable 7절)
 
 
 @dataclass(frozen=True)
@@ -724,6 +726,28 @@ class DriveGraph:
         return route
 
     # ------------------------------------------------------------------ 주행 선형 다듬기
+    def _dirline_mismatch_deg(self, rid: str, node: str) -> float:
+        """도로 rid 의 노드 쪽 방향선(노드 → DIR_LEN_M 점 직선)과 그 점에서 도로 접선의 각도 차 (°). 굽은 도로일수록 크다."""
+        net = self.net
+        r = net.roads[rid]
+        L = r.length
+        d = min(DIR_LEN_M, L)
+        nx, ny = net.nodes[node]
+        s_node, sgn = (0.0, 1.0) if r.a == node else (L, -1.0)
+        far = net.at(rid, s_node + sgn * d)
+        cx, cy = far.x - nx, far.y - ny
+        q1 = net.at(rid, min(max(s_node + sgn * (d - 1.0), 0.0), L))
+        q2 = net.at(rid, min(max(s_node + sgn * (d + 1.0), 0.0), L))
+        tx, ty = q2.x - q1.x, q2.y - q1.y
+        if math.hypot(cx, cy) < 1e-9 or math.hypot(tx, ty) < 1e-9:
+            return 0.0
+        return abs(math.degrees(math.atan2(cx * ty - cy * tx, cx * tx + cy * ty)))
+
+    def junction_dirline_mismatch_deg(self, pair) -> float:
+        """회전 pair ((진입 도로, 노드), (진출 도로, 다음 노드)) 의 진입·진출 방향선 어긋남 중 큰 값 (°) — 이음매 완화 3단계 자격 판단."""
+        (r1, n), (r2, _) = pair
+        return max(self._dirline_mismatch_deg(r1, n), self._dirline_mismatch_deg(r2, n))
+
     def choose_turn_variants(self, legs, start: DirPos, v0: float, dest: RoadPos) -> dict:
         """경로 사슬의 각 회전에 쓸 원호 (기본 또는 대안). 도로마다 진입 접선 + 진출 접선 ≤ 도로 길이(_lab_ok), 첫 회전은 출발 감속 조건,
         마지막 회전 원호는 목적지 앞에서 끝. 가능한 조합 중 앞 회전부터 가장 큰 반경 (기본 조합이 되면 기존과 같다).
