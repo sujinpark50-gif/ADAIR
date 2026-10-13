@@ -70,6 +70,7 @@ class SpeedPlan:
     v_max: float
     max_chord_dev_m: float = 0.0              # 미션 지점을 이은 직선과 계획 선형의 최대 차이
     items_on_path: Optional[List[Tuple[float, float, float]]] = None   # 곡선 보정 전 미션 지점 (계획 선형 위)
+    terrain: Optional[dict] = None            # UGV_SPEED_TERRAIN 후보 적용 요약 (없으면 미적용)
 
 
 class RoadNetwork:
@@ -318,16 +319,31 @@ def plan_speeds(route: Route, v0: float = 0.0, *, profile=None, lat_accel=None, 
     cum = [0.0]
     for p, q in zip(pts, pts[1:]):
         cum.append(cum[-1] + math.dist(p, q))
-    v = []
+    from . import terrain_speed as TS
+    terr = TS.profile_along(pts, cum, lambda i: _signed_curvature(pts, cum, i, config.CURVE_WINDOW_M)) if TS.ENABLED else None
+    v, dec_i, n_bank, n_down = [], [], 0, 0
     for i in range(len(pts)):
         k = _curvature(pts, cum, i, config.CURVE_WINDOW_M)
-        v.append(min(vl[i], profile.max_speed_mps, math.sqrt(lat_accel / k) if k > 1e-6 else math.inf))
+        lat_i, dec = lat_accel, decel
+        if terr is not None:
+            # 후보 (UGV_SPEED_TERRAIN): 불리 횡경사는 허용 횡가속을 줄이고, 하강 경사는 유효 감속을 줄여 정지거리가 평지보다 길지 않게
+            grade_down, adverse, _known = terr[i]
+            lat_i = max(lat_accel - TS.G * adverse, lat_accel * TS.LAT_MIN_RATIO)
+            dec = TS.a_eff(decel, grade_down)
+            n_bank += lat_i < lat_accel
+        vp = min(vl[i], profile.max_speed_mps, math.sqrt(lat_i / k) if k > 1e-6 else math.inf)
+        if terr is not None and dec < decel and math.isfinite(vp):
+            vd = TS.v_for_stop_dist(TS.stop_dist(vp, decel), dec)
+            n_down += vd < vp
+            vp = min(vp, vd)
+        v.append(vp)
+        dec_i.append(dec)
     v[0] = min(v[0], max(v0, 0.0)) if v0 > 0 else 0.0
     v[-1] = 0.0
     for i in range(1, len(v)):
         v[i] = min(v[i], math.sqrt(v[i - 1] ** 2 + 2 * accel * (cum[i] - cum[i - 1])))
     for i in range(len(v) - 2, -1, -1):
-        v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2 * decel * (cum[i + 1] - cum[i])))
+        v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2 * dec_i[i] * (cum[i + 1] - cum[i])))   # 하강 구간·곡선 진입 전에 감속
     eta = 0.0
     for i in range(1, len(v)):
         eta += (cum[i] - cum[i - 1]) / max((v[i] + v[i - 1]) / 2, 0.5)
@@ -360,7 +376,13 @@ def plan_speeds(route: Route, v0: float = 0.0, *, profile=None, lat_accel=None, 
             last_hd = hd
     comp = curve_compensate(pts, cum, idx, getattr(route, "item_comp_l", None))
     sent = [(x, y, it[2]) for (x, y), it in zip(comp, items)]
-    return SpeedPlan(pts, v, cum, eta, sent, max(v) if v else 0.0, round(max_dev, 3), items_on_path=items)
+    tinfo = None
+    if terr is not None:
+        tinfo = {"candidate": "UGV_SPEED_TERRAIN (보수적 계획 — ESC 아님)", "tau_s": TS.TAU_S, "points": len(terr),
+                 "terrain_known_ratio": round(sum(1 for t in terr if t[2]) / max(len(terr), 1), 3),
+                 "bank_limited_points": n_bank, "downhill_limited_points": n_down,
+                 "max_grade_down": round(max(t[0] for t in terr), 4), "max_adverse_bank": round(max(t[1] for t in terr), 4)}
+    return SpeedPlan(pts, v, cum, eta, sent, max(v) if v else 0.0, round(max_dev, 3), items_on_path=items, terrain=tinfo)
 
 
 def _seg_point_dist(q, a, b):
