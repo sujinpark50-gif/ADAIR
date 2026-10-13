@@ -596,7 +596,8 @@ def main():
         if aborted:
             st = c.get(f"/ugv/{a.rid}/state").json()
             if st.get("mission_state") == "IDLE" and (st.get("speed_mps") or 0) < 0.1 and time.time() - t_abort > 15:
-                time.sleep(10)          # 정지 뒤 다시 움직이지 않는지 더 본다
+                # 정지 뒤 다시 움직이지 않는지 더 본다 — 기본 10 s, --post-stop-s 를 주면 그만큼 (2026-10-14 경사 반복: 정지 확인 뒤 30 s 유지 판정에 22 s 만 남던 결함)
+                time.sleep(max(10.0, a.post_stop_s))
                 log["final"] = c.get(f"/ugv/{a.rid}/task/{active}").json()
                 break
         elif t["status"] in ("COMPLETED", "FAILED", "CANCELLED") and (second_sent or not a.second):
