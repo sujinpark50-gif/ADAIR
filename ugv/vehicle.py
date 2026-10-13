@@ -120,24 +120,7 @@ BLOCK_AVOID_MODE = os.getenv("UGV_BLOCK_AVOID", "origin")
 #                          (UGV_TERRAIN_TILES) 에서 진행 방향 필요거리 구간 고도차 + 불확실성 0.01. 타일이 없으면 경사 0 (지연 항만)
 STOP_SPEED_CMD = os.getenv("UGV_STOP_SPEED_CMD", "0") == "1"
 STOP_GRADE_MODE = os.getenv("UGV_STOP_GRADE", "0") == "1"
-STOP_GRADE_UNCERT = 0.01
-_TERRAIN = None
-
-
-def _terrain():
-    """UGV_TERRAIN_TILES 의 지형 표면 (없으면 None). 정지 거리 경사 반영 후보 전용."""
-    global _TERRAIN
-    if _TERRAIN is None:
-        d = os.getenv("UGV_TERRAIN_TILES")
-        if d:
-            try:
-                from .tools.terrain_compare import Surf
-                _TERRAIN = Surf(d)
-            except Exception:  # noqa: BLE001
-                _TERRAIN = False
-        else:
-            _TERRAIN = False
-    return _TERRAIN or None
+# 지형 표면은 terrain_speed.surface() 로 일원화 (UGV_TERRAIN_TILES)
 HOLD_FAIL_MAX = 2         # 양보 정지 명령이 연속 이만큼 실패하면 고장(STOP_COMMAND_FAILED)으로 처리
 STOP_RETRY_S = 2.0        # 정지 명령이 실패한 차(명령 불확실)는 이 간격으로 정지를 다시 보낸다
 STANDSTILL_ARMED_S = 5.0  # PX4 가 정차 유지(시동 끔)를 못 했을 때 정지로 보는 0.2 m/s 미만 지속 시간
@@ -411,26 +394,50 @@ class Vehicle:
         (ax, ay), (bx, by) = pts[i], pts[i + 1]
         return bearing_deg(bx - ax, by - ay) if math.hypot(bx - ax, by - ay) > 0 else None
 
-    def _stop_need_grade(self, v: float, tel):
-        """UGV_STOP_GRADE 후보: v·τ + v²/(2·max(a − g·하강경사, 0.5)) + 여유. 하강 경사 = 진행 방향 필요거리 구간 지형 고도차(두 번 반복) + 불확실성."""
-        tau = self.latency_s()
+    def _stop_need_grade(self, v: float, tel, path=None):
+        """UGV_STOP_GRADE 후보: 필요거리 = v·τ + v²/(2·a_eff) + 여유, a_eff = max(a − g·하강, A_EFF_MIN) (terrain_speed 와 같은 모델).
+        τ = max(서버 실측 명령 지연, TS.TAU_S — 2026-10-13 경사 중단 실측 명령→감속 시작 상한 3.0 s). 하강 = path(정지 경로 점)가 있으면 그 경로를
+        따라 10 m 창 국부 하강의 최대, 없으면 진행 방향 직선 근사. 지형 없음·NaN = TS.GRADE_UNKNOWN (보수값, 표시). 불확실성 TS.GRADE_UNC 가산.
+        raw 감속(a − g·하강)이 하한 이하면 insufficient 표시 — 정지 명령·감독은 그대로 (경로 거절로 끝내지 않음)."""
+        from . import terrain_speed as TS
+        tau = max(self.latency_s(), TS.TAU_S)
         a = self.profile.decel_mps2
-        surf = _terrain()
-        grade = 0.0
-        need = v * tau + v * v / (2 * a) + config.STOP_MARGIN_M
-        if surf is not None:
-            hd = math.radians(tel.heading_deg)
-            for _ in range(2):
-                x1, y1 = tel.x + need * math.sin(hd), tel.y + need * math.cos(hd)
+        surf = TS.surface()
+        grade, basis = None, None
+        if surf is not None and path and len(path) >= 2:
+            cum = [0.0]
+            for (x0, y0), (x1, y1) in zip(path, path[1:]):
+                cum.append(cum[-1] + math.hypot(x1 - x0, y1 - y0))
+            zs = []
+            for x, y in path:
                 try:
-                    z0, z1 = surf.z(tel.x, tel.y), surf.z(x1, y1)
+                    zs.append(surf.z(x, y))
                 except Exception:  # noqa: BLE001
-                    z0 = z1 = float("nan")
-                grade = 0.0 if (z0 != z0 or z1 != z1) else max(0.0, (z0 - z1) / max(need, 1.0)) + STOP_GRADE_UNCERT
-                a_eff = max(a - 9.8 * grade, 0.5)
-                need = v * tau + v * v / (2 * a_eff) + config.STOP_MARGIN_M
-        return need, {"model": "v*tau + v^2/(2*max(a-g*grade_down,0.5)) + margin", "tau_s": round(tau, 2), "decel_mps2": a,
-                      "grade_down": round(grade, 4), "terrain": surf is not None, "base_needed_m": round(self.profile.stop_distance(v), 1)}
+                    zs.append(float("nan"))
+            if all(z == z for z in zs):
+                worst = 0.0
+                for i in range(len(path)):
+                    j = next((k for k in range(i + 1, len(path)) if cum[k] - cum[i] >= 10.0), None)
+                    if j is not None:
+                        worst = max(worst, (zs[i] - zs[j]) / (cum[j] - cum[i]))
+                grade, basis = max(worst, 0.0) + TS.GRADE_UNC, "STOP_PATH 10 m 창 국부 하강 최대"
+        if grade is None and surf is not None:
+            hd = math.radians(tel.heading_deg)
+            d0 = v * tau + v * v / (2 * a) + config.STOP_MARGIN_M
+            try:
+                z0, z1 = surf.z(tel.x, tel.y), surf.z(tel.x + d0 * math.sin(hd), tel.y + d0 * math.cos(hd))
+            except Exception:  # noqa: BLE001
+                z0 = z1 = float("nan")
+            if z0 == z0 and z1 == z1:
+                grade, basis = max(0.0, (z0 - z1) / max(d0, 1.0)) + TS.GRADE_UNC, "진행 방향 직선 평균 (경로 전 근사)"
+        if grade is None:
+            grade, basis = TS.GRADE_UNKNOWN, "지형 없음·값 없음 — 보수값 (TS.GRADE_UNKNOWN)"
+        raw = a - TS.G * grade
+        a_eff = TS.a_eff(a, grade)
+        need = v * tau + v * v / (2 * a_eff) + config.STOP_MARGIN_M
+        return need, {"model": "v*tau + v^2/(2*max(a-g*grade_down,A_EFF_MIN)) + margin", "tau_s": round(tau, 2), "tau_basis": "max(latency_s, TS.TAU_S)",
+                      "decel_mps2": a, "grade_down": round(grade, 4), "grade_basis": basis, "raw_decel_mps2": round(raw, 3),
+                      "insufficient": raw <= TS.A_EFF_MIN, "base_needed_m": round(self.profile.stop_distance(v), 1)}
 
     def latency_s(self) -> float:
         """계획 출발점을 앞으로 옮길 명령 교체 지연: max(설정 하한, 최근 실측 상위 80 %). 상한 LATENCY_MAX_S.
@@ -896,6 +903,11 @@ class Vehicle:
                     info["stop_need_model"] = need_info
                 if prefer is not None or dp is not None:
                     pts, got = g.stop_path(dp, need, prefer)
+                    if STOP_GRADE_MODE and len(pts) >= 2:
+                        need2, need_info = self._stop_need_grade(v, tel, path=pts)
+                        if need2 > need + 0.5:
+                            need = need2
+                            pts, got = g.stop_path(dp, need, prefer)
                     if len(pts) >= 2 and got > 1.0:
                         # 속도 상한 = 지금 속도 (정지 경로는 감속만). 예전에는 최고 속도라 정지 거리 여유(STOP_MARGIN_M) 때문에 시작 구간에서
                         # 지금보다 빠른 속도를 허용해, 2026-10-11 Gazebo 재검증에서 취소·고장 정지 직후 1.3~2 m/s 가속했다
@@ -945,6 +957,8 @@ class Vehicle:
                 problems.append(f"정지 경로 {info['length_m']} m < 필요 {info['needed_m']} m")
             if info.get("drivable") is False:
                 problems.append("정지 경로가 회전반경·차체 도로 포함 검사를 통과하지 못함")
+            if (info.get("stop_need_model") or {}).get("insufficient"):
+                problems.append("경사로 유효 감속 부족 (후보 정지 모델) — 정지 감독 유지")
             if info.get("drivable") is None and ("DRIVER_DEFAULT" in str(info.get("basis")) or "EMERGENCY" in str(info.get("basis"))):
                 problems.append("도로 방향을 몰라 직선 정지")
             info["problems"] = problems

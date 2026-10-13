@@ -11,13 +11,13 @@
  - 유효 감속 부족: a − g·하강경사 ≤ A_EFF_MIN 인 지점이 있으면 approach.verify_route 가 경로 거절 (TERRAIN_DECEL_INSUFFICIENT).
  - 모델(평지 감속 − g·경사)은 확정이 아닌 후보다 — 실제 정지점·경계·정지 유지 측정(chain_slope3·chain_xslope)으로만 채택을 판단한다.
 영향: 불확실성 0.01 을 항상 더하므로 평지에서도 a_eff 가 약 0.1 m/s² 낮아져 계획 속도가 약 3 % 낮다 (보수 쪽, 비교 시험에서 확인).
-상수는 결과 전 고정. τ 2.5 s = 2026-10-13 경사 중단 실측 명령→감속 시작 2.4~3.0 s (속도 상한 명령 후보 검증 뒤 갱신 대상).
+τ 3.0 s = 실측 2.4~3.0 s 의 상한 (Codex 검토: 2.5 s 는 보수 상한이 아님). 불확실성 0.01·지형 없음 6 %/3 % 는 잠정 정책이며 실제 최악값의 증거가 아니다.
 """
 import math
 import os
 
 G = 9.8
-TAU_S = float(os.getenv("UGV_SPEED_TERRAIN_TAU_S", "2.5"))
+TAU_S = float(os.getenv("UGV_SPEED_TERRAIN_TAU_S", "3.0"))   # 2026-10-13 경사 중단 실측 명령→감속 시작 2.4~3.0 s 의 상한 (속도 상한 명령 검증 뒤 갱신)
 GRADE_UNC = 0.01
 GRADE_UNKNOWN = 0.06
 BANK_UNKNOWN = 0.03
