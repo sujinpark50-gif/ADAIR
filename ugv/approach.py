@@ -319,18 +319,22 @@ def _plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: 
                 plan.detail["route_check_rejected"] = tried
             if relaxed:
                 lv1 = [x for x in relaxed if not isinstance(x[1], int)]
-                lv2 = [x[0] for x in relaxed if isinstance(x[1], int)]
+                lv2 = [x[0] for x in relaxed if isinstance(x[1], int) and x[1] == 2]
+                lv3 = [x[0] for x in relaxed if isinstance(x[1], int) and x[1] == 3]
                 if lv1:
                     plan.detail["junction_joins_relaxed"] = sorted([list(a), list(b)] for a, b in lv1)
                 if lv2:
                     plan.detail["junction_joins_relaxed_long"] = sorted([list(a), list(b)] for a, b in lv2)   # 24 m 연결 곡선
+                if lv3:
+                    plan.detail["junction_arc_omitted"] = sorted([list(a), list(b)] for a, b in lv3)         # 교차로 원호 생략 (3단계)
             return plan
         # 실패 원인이 교차로 회전이면 먼저 그 회전의 이음매만 다르게 다듬어 다시 검사한다 (drive_graph.build_route relax).
         # 다듬은 선형의 이음매 꺾임 때문에 실제로 지날 수 있는 회전을 빼던 문제 (2026-10-10: 국도 31 내린천로·덕산로 교차로 —
         # B 거점 → A 지역 경로가 끊겼다). 지금 통과하는 경로는 바뀌지 않는다 (실패할 때만)
         unit = g.blame(plan.route, v["issue"])
         pair = (tuple(unit[1]), tuple(unit[2])) if unit[0] == "TURN" else None
-        if pair is not None and pair not in relaxed and (pair, 2) not in relaxed and len(relaxed) < JOIN_RELAX_MAX:
+        if pair is not None and pair not in relaxed and (pair, 2) not in relaxed and (pair, 3) not in relaxed \
+                and len(relaxed) < JOIN_RELAX_MAX:
             relaxed.add(pair)
             continue
         if pair is not None and pair in relaxed and (pair, 2) not in relaxed:
@@ -338,6 +342,12 @@ def _plan_approach(net: RoadNetwork, fire: FireArea, start: DirPos, target_lat: 
             # 복귀: 거점 진입 회전이 0.02 m 초과로 빠져 끊겼다 (24 m 에서 통과)
             relaxed.discard(pair)
             relaxed.add((pair, 2))
+            continue
+        if pair is not None and (pair, 2) in relaxed and (pair, 3) not in relaxed:
+            # 3단계 (2026-10-13 S6): 교차로 원호를 생략하고 도로 선형을 따라 다듬어 한 번 더 (회전을 빼기 전에). 기준은 그대로 —
+            # 다듬은 선형이 최종 검사를 통과할 때만 쓴다. 지금 통과하는 경로는 이 분기에 오지 않는다
+            relaxed.discard((pair, 2))
+            relaxed.add((pair, 3))
             continue
         bans += 1
         if not _ban(g, plan.route, v["issue"], start, banned_turns, banned_roads, tried):

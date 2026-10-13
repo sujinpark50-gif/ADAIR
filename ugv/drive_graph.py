@@ -850,6 +850,11 @@ class DriveGraph:
             if turn is None or turn.radius_m is None:
                 continue
             # relax 원소: 회전 쌍 (1단계) 또는 (회전 쌍, 단계)
+            if (pair, 3) in relax:
+                # 3단계 (2026-10-13 S6 소방차 A→B, Fable 해결안): 1·2단계 연결 곡선으로도 최종 검사를 못 넘은 회전 — 교차로 원호를 만들지
+                # 않고 노드를 일반 꺾인 점처럼 실제 도로 선형을 따라 다듬는다 (아래 2)). 원호 뒤 15 m 직선 방향선이 굽은 진출 도로를 벗어나던
+                # 경우 (682600487→682501903: 진출 도로가 노드 뒤 7 m 부터 굽어 방향선 끝에서 40° 어긋남). 다듬은 선형도 최종 검사를 다시 받는다
+                continue
             relaxed = 2 if (pair, 2) in relax else (1 if pair in relax or (pair, 1) in relax else 0)
             u_, w_ = self._dir(r1, t1, out=False), self._dir(r2, t1, out=True)
             if relaxed and abs(math.degrees(math.atan2(u_[0] * w_[1] - u_[1] * w_[0], u_[0] * w_[0] + u_[1] * w_[1]))) < JUNCTION_ARC_MIN_DEG:
