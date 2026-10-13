@@ -486,6 +486,19 @@ class Px4Driver(Driver):
                 raise DriverError(f"MISSION_START_FAILED: {e}") from e
             return seq
 
+    async def set_speed_cap(self, v: float) -> bool:
+        """MAV_CMD_DO_CHANGE_SPEED (mavsdk set_current_speed). 이 rover 는 미션 항목 speed_m_s 를 따르지 않고 RO_SPEED_LIM 까지 가속한다
+        (2026-10-12 drive_test bump 5 m/s 지정 → 12.6 m/s, 2026-10-13 경사 중단: 정지 경로 전송 뒤 9.4 → 13.4 m/s 가속 후 감속).
+        UGV_STOP_SPEED_CMD=1 후보에서 정지 경로 전송 직후 지금 속도를 상한으로 보낸다. 실패하면 False (호출 쪽 기록)."""
+        if self._act is None:
+            return False
+        try:
+            await self._act.set_current_speed(max(float(v), 0.5))
+            return True
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"set_speed_cap: {e}"
+            return False
+
     async def cut_drive(self) -> int:
         """구동 차단 (vehicle.py 정지 감독의 마지막 수단): 시동을 끈다. 시동 끄기가 거부되면 kill (강제 차단).
         시동이 꺼지면 바퀴 속도 명령이 0 이다. 다음 follow 가 다시 시동을 건다 — 정지 감독은 차단 중에 정지 미션을 다시 보내지 않는다."""

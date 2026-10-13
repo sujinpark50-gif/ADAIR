@@ -57,6 +57,10 @@ class Driver:
         """미션 교체 후 출발. 새 mission_seq 를 돌려준다."""
         raise NotImplementedError
 
+    async def set_speed_cap(self, v: float) -> bool:
+        """현재 미션의 속도 상한 명령 (PX4: MAV_CMD_DO_CHANGE_SPEED). 기본 드라이버는 없음 → False. UGV_STOP_SPEED_CMD 후보용."""
+        return False
+
     async def stop(self) -> int:
         """진행 방향 앞 제동거리 지점에서 멈추는 미션으로 교체 (PX4 rover HOLD 는 U턴하므로 쓰지 않는다)."""
         t = self.telemetry()

@@ -113,6 +113,31 @@ BLOCK_REPLAN_MAX = 3      # 한 임무에서 서 있는 차에 막혀 다시 계
 # 막힘 우회 때 피할 도로: origin = 상대 텔레메트리 원점 snap 도로 하나 (기본, 예전 동작) / footprint = 상대 차체(프로필 길이·폭)가
 # 도로 띠(drive_graph 반폭 추정)에 걸친 도로 전부. 2026-10-13 간헐 실패 비교 시험용 선택 — 기본값을 바꾸지 않는다.
 BLOCK_AVOID_MODE = os.getenv("UGV_BLOCK_AVOID", "origin")
+# 정지 후보 (2026-10-13 S4 경사 중단 시험: 5~6 % 하강 정지가 계획의 1.50~1.57 배 — 명령 뒤 감속 시작까지 2.4~3.0 s·26~34 m, 그 사이 PX4 가속).
+# 기본 off (예전 동작). 검증 전 운영 가능 선언 금지.
+#   UGV_STOP_SPEED_CMD=1 : 정지 경로 전송 직후 지금 속도를 속도 상한으로 (PX4 DO_CHANGE_SPEED) — 미션 항목 속도 무시로 인한 가속 방지
+#   UGV_STOP_GRADE=1     : 정지 필요거리 = v·τ + v²/(2·max(a − g·하강경사, 0.5)) + 여유. τ = latency_s(), 하강 경사 = 지형 타일
+#                          (UGV_TERRAIN_TILES) 에서 진행 방향 필요거리 구간 고도차 + 불확실성 0.01. 타일이 없으면 경사 0 (지연 항만)
+STOP_SPEED_CMD = os.getenv("UGV_STOP_SPEED_CMD", "0") == "1"
+STOP_GRADE_MODE = os.getenv("UGV_STOP_GRADE", "0") == "1"
+STOP_GRADE_UNCERT = 0.01
+_TERRAIN = None
+
+
+def _terrain():
+    """UGV_TERRAIN_TILES 의 지형 표면 (없으면 None). 정지 거리 경사 반영 후보 전용."""
+    global _TERRAIN
+    if _TERRAIN is None:
+        d = os.getenv("UGV_TERRAIN_TILES")
+        if d:
+            try:
+                from .tools.terrain_compare import Surf
+                _TERRAIN = Surf(d)
+            except Exception:  # noqa: BLE001
+                _TERRAIN = False
+        else:
+            _TERRAIN = False
+    return _TERRAIN or None
 HOLD_FAIL_MAX = 2         # 양보 정지 명령이 연속 이만큼 실패하면 고장(STOP_COMMAND_FAILED)으로 처리
 STOP_RETRY_S = 2.0        # 정지 명령이 실패한 차(명령 불확실)는 이 간격으로 정지를 다시 보낸다
 STANDSTILL_ARMED_S = 5.0  # PX4 가 정차 유지(시동 끔)를 못 했을 때 정지로 보는 0.2 m/s 미만 지속 시간
@@ -385,6 +410,27 @@ class Vehicle:
             return None
         (ax, ay), (bx, by) = pts[i], pts[i + 1]
         return bearing_deg(bx - ax, by - ay) if math.hypot(bx - ax, by - ay) > 0 else None
+
+    def _stop_need_grade(self, v: float, tel):
+        """UGV_STOP_GRADE 후보: v·τ + v²/(2·max(a − g·하강경사, 0.5)) + 여유. 하강 경사 = 진행 방향 필요거리 구간 지형 고도차(두 번 반복) + 불확실성."""
+        tau = self.latency_s()
+        a = self.profile.decel_mps2
+        surf = _terrain()
+        grade = 0.0
+        need = v * tau + v * v / (2 * a) + config.STOP_MARGIN_M
+        if surf is not None:
+            hd = math.radians(tel.heading_deg)
+            for _ in range(2):
+                x1, y1 = tel.x + need * math.sin(hd), tel.y + need * math.cos(hd)
+                try:
+                    z0, z1 = surf.z(tel.x, tel.y), surf.z(x1, y1)
+                except Exception:  # noqa: BLE001
+                    z0 = z1 = float("nan")
+                grade = 0.0 if (z0 != z0 or z1 != z1) else max(0.0, (z0 - z1) / max(need, 1.0)) + STOP_GRADE_UNCERT
+                a_eff = max(a - 9.8 * grade, 0.5)
+                need = v * tau + v * v / (2 * a_eff) + config.STOP_MARGIN_M
+        return need, {"model": "v*tau + v^2/(2*max(a-g*grade_down,0.5)) + margin", "tau_s": round(tau, 2), "decel_mps2": a,
+                      "grade_down": round(grade, 4), "terrain": surf is not None, "base_needed_m": round(self.profile.stop_distance(v), 1)}
 
     def latency_s(self) -> float:
         """계획 출발점을 앞으로 옮길 명령 교체 지연: max(설정 하한, 최근 실측 상위 80 %). 상한 LATENCY_MAX_S.
@@ -824,6 +870,9 @@ class Vehicle:
             if tel is not None and tel.speed_mps >= 0.3:
                 v = tel.speed_mps
                 need = self.profile.stop_distance(v)
+                need_info = None
+                if STOP_GRADE_MODE:
+                    need, need_info = self._stop_need_grade(v, tel)
                 g = self.graph
                 prefer = None
                 if self.speed is not None and self._plan_heading(tel) is not None:
@@ -843,6 +892,8 @@ class Vehicle:
                     # (2026-10-11 Gazebo: 도로 밖 46 m 에서 옆 도로로 향한 정지 경로 → 급회전·맴돌기). 진행 방향 직선 제동으로
                     dp = None
                 info = {"basis": "NO_ROAD_DIRECTION", "needed_m": round(need, 1), "speed_mps": round(v, 2)}
+                if need_info:
+                    info["stop_need_model"] = need_info
                 if prefer is not None or dp is not None:
                     pts, got = g.stop_path(dp, need, prefer)
                     if len(pts) >= 2 and got > 1.0:
@@ -853,6 +904,7 @@ class Vehicle:
                         chk = g.check_route(pts, label="STOP_PATH")
                         info = {"basis": "PLANNED_ROUTE" if prefer else "ROAD_AHEAD", "length_m": round(got, 1),
                                 "needed_m": round(need, 1), "short": got < need - 0.5, "speed_mps": round(v, 2),
+                                **({"stop_need_model": need_info} if need_info else {}),
                                 "drivable": chk["ok"], "steering_violations": chk["steering_violations"],
                                 "body_violations": chk["body_violations"], "worst_excess_m": chk["worst_excess_m"]}
                         if not chk["ok"] and OFFROAD_STOP_MODE == "emergency":
@@ -871,6 +923,8 @@ class Vehicle:
             if items:
                 self.seq = await self._send_stop(self.driver.follow(items))
                 self.stop_path_pts = [tuple(q) for q in pts]
+                if STOP_SPEED_CMD and tel is not None:
+                    info["speed_cap_cmd"] = {"v": round(tel.speed_mps, 2), "ok": await self.driver.set_speed_cap(tel.speed_mps)}
             else:
                 self.seq = await self._send_stop(self.driver.stop())
                 if tel is not None and tel.speed_mps >= 0.3:       # 드라이버 기본 정지 = 진행 방향 직선
