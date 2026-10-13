@@ -356,8 +356,11 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
                 braked = True
                 print(f"[{name}] 정지 명령: {d:.1f} m 앞 정지점 (PX4 속도 {vh:.2f} m/s, 참고용)")
         elif cmd_kind and not braked:
+            tv0 = time.time()
             v = await first(tel.subscribe_velocity_ned)
+            tv1 = time.time()
             p = await first(tel.subscribe_position)
+            tp1 = time.time()
             e, n = latlon_to_enu(p.latitude_deg, p.longitude_deg)
             vh = math.hypot(v.north_m_s, v.east_m_s)
             above = above + 1 if vh >= 0.95 * speed else 0
@@ -375,7 +378,10 @@ async def run(name: str, address: str, track_s: float, world="adair_flat", detai
                 braked = True
                 events.append({"ev": "stop_command", "kind": cmd_kind, "wall": round(tw, 3), "wall_started": round(time.time(), 3),
                                "px4_en": [round(e, 3), round(n, 3)], "px4_speed_mps": round(vh, 3), "stop_en": [round(se, 3), round(sn, 3)],
-                               "dist_m": round(d, 2), "decel_mps2": dec, "item_speed_mps": round(isp, 2), "profile": profile})
+                               "dist_m": round(d, 2), "decel_mps2": dec, "item_speed_mps": round(isp, 2), "profile": profile,
+                               # 텔레메트리 수신 시각 (위치·속도는 순차 수신 → 명령 wall 과의 차 = 표본 나이 하한. PX4 표본 자체 시각은 MAVSDK 가 주지 않음)
+                               "vel_request_wall": round(tv0, 3), "vel_recv_wall": round(tv1, 3), "px4_sample_wall": round(tp1, 3),
+                               "frame": "FRAME (ugv.geo 지역 TM) — 평탄 월드 원점 근처에서 GZ_FRAME 과 mm 수준"})
                 print(f"[{name}] 정지 명령({cmd_kind}): {d:.1f} m 앞 정지점, 감속 가정 {dec} m/s², PX4 속도 {vh:.2f} m/s")
         else:
             if await mis.is_mission_finished():

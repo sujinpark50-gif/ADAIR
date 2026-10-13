@@ -69,7 +69,20 @@ def sdf_info(variant, model):
     pris = [j for j in joints.values() if j.get("type") == "prismatic"]
     lim = {j.get("name"): (float(j.find("axis/limit/lower").text), float(j.find("axis/limit/upper").text)) for j in pris}
     x_cg = mx / mass if mass else None
-    return {"model_sdf": str(f.relative_to(ROOT)).replace("\\", "/"), "model_sha1": sha1_file(f),
+    # 차체 범위 (base_link 충돌 상자, 모델 원점 기준) — 정지 위치를 차체 앞끝으로도 보기 위해
+    bx, by = [], []
+    bl = links.get("base_link")
+    for c in (bl.findall("collision") if bl is not None else []):
+        box = c.find("geometry/box/size")
+        if box is None:
+            continue
+        sx, sy, _ = map(float, box.text.split())
+        pe = c.find("pose")
+        px, py = (map(float, pe.text.split()[:2]) if pe is not None else (0.0, 0.0))
+        bx += [frame_x("base_link") + px - sx / 2, frame_x("base_link") + px + sx / 2]
+        by += [py - sy / 2, py + sy / 2]
+    body = {"body_front_x": round(max(bx), 3), "body_rear_x": round(min(bx), 3), "body_half_width": round(max(abs(v) for v in by), 3)} if bx else {}
+    return {**body, "model_sdf": str(f.relative_to(ROOT)).replace("\\", "/"), "model_sha1": sha1_file(f),
             "front_x": round(xf, 4), "rear_x": round(xr, 4), "wheelbase": round(xf - xr, 4),
             "wheel_r": float(wl.find(".//collision//radius").text), "has_susp": bool(pris), "susp_joints": sorted(lim), "joint_limits": lim,
             "mass_kg": round(mass, 3), "x_cg": None if x_cg is None else round(x_cg, 4),

@@ -37,13 +37,13 @@ from ugv.tools import vehicle_report_common as vc
 from ugv.tools.drive_test import command_brake
 
 ROOT = Path(__file__).resolve().parents[2]
-JUDGE_VERSION = "vdr-2 (2026-10-13: SDF 제원·품질·상태·계획선 횡편차·명령 정지)"
+JUDGE_VERSION = "vdr-3 (2026-10-13: vdr-2 + 정차 정책 구분·연속 정지·계획점 부호/횡방향/차체 앞끝·기준점 분리·시동 끔 실패 연결)"
 EXPECTED = {
     "bump": ["no_contact_le_0.2s"], "bump_susp": ["no_contact_le_0.2s", "q_abs_max_lt_0.08", "no_divergence", "settle_1s_le_10pct"],
     "straight": ["stable_ge_10s", "no_over_limit", "speed_std_le_0.3", "steer_mean_le_1.5_std_le_0.5", "yaw_rate_le_2dps", "lateral_le_0.3m",
                  "roll_pitch_le_2deg", "accel_time_dist_ok", "brake_dist_ok", "stop_confirmed_no_remotion_10s", "wheel_lock_le_1s"],
     "stop30": ["brake_dist_ok", "stop_confirmed_no_remotion_10s", "wheel_lock_le_1s"],
-    "command": ["cmd_stop_within_planned", "stop_confirmed_no_remotion_10s", "wheel_lock_le_1s"],
+    "command": ["cmd_stop_within_planned", "stop_confirmed_no_remotion_10s", "wheel_lock_le_1s", "park_disarm_ok"],
     "curve": ["no_contact_le_0.2s", "stop_confirmed_no_remotion_10s"], "curve_susp": ["no_contact_le_0.2s", "stop_confirmed_no_remotion_10s", "q_abs_max_lt_0.08", "no_divergence"],
 }
 
@@ -316,11 +316,49 @@ def judge(p):
             cb["note_basis"] = "cmd_to_stop_m 은 Gazebo 위치 기준, planned_stop_dist_m 은 PX4 보고 위치 기준 — 비교 시 px4_vs_gz 오차 포함"
             cb["cmd_to_planned_point_s"] = None if kp is None else round(T[kp] - T[k_c], 2)
             pk = next((e for e in events if e["ev"] == "park_disarm"), None)
-            cb["park_policy"] = (f"server ({pk['why']})" if pk else
-                                 "없음 — PX4 단독: 미션 끝 뒤 시험 도구가 기록 대기 후 시동 끔 (시스템 정지거리 아님, 서버는 미션 끝 1 s 정차·4 s 상한에 시동 끔)")
+            # 정차 정책 = 시작 이벤트의 park_mode (server / immediate / 없음) + 시동 끔 사유. vdr-2 는 park_disarm 이 있으면 모두 server 로 표시했다
+            mode = str(next((e.get("park_mode") for e in events if e["ev"] == "mission_start"), "") or "")
+            mode = mode if mode in ("server", "immediate") else "none"
+            cb["park_mode"] = mode
+            cb["park_policy"] = (f"{mode} ({pk['why']})" if pk else
+                                 "none — PX4 단독: 미션 끝 뒤 시험 도구가 기록 대기 후 시동 끔 (시스템 정지거리 아님, 서버는 미션 끝 1 s 정차·4 s 상한에 시동 끔)")
+            cb["park_disarm_failed"] = bool(pk and "실패" in str(pk.get("why")))
+            if pk:
+                fin = next((e for e in events if e["ev"] == "mission_finished_seen"), None)
+                cb["finished_to_disarm_s"] = None if fin is None else round(pk["wall"] - fin["wall"], 2)
+            # 연속 정지 확인 (0.1 m/s 미만 1 s 연속 — 첫 저속 표본과 구분), 최종 위치, 확인 뒤 최대 진행
+            k_conf = None
+            for i in range(k_c, len(spd)):
+                if spd[i] < 0.1:
+                    j = i
+                    while j < len(spd) and spd[j] < 0.1:
+                        j += 1
+                    if T[j - 1] - T[i] >= 1.0:
+                        k_conf = i
+                        break
+            along = lambda i: ((X[i] - cmd["stop_en"][0]) * ux + (Y[i] - cmd["stop_en"][1]) * uy) / L   # noqa: E731
+            lat = lambda i: ((X[i] - cmd["stop_en"][0]) * uy - (Y[i] - cmd["stop_en"][1]) * ux) / L      # noqa: E731
+            front = geo.get("body_front_x")
+            if k_conf is not None:
+                cb.update({"stop_confirm_cmd_s": round(T[k_conf] - T[k_c], 2),
+                           "total_travel_cmd_to_confirm_m": round(sum(math.hypot(X[q + 1] - X[q], Y[q + 1] - Y[q]) for q in range(k_c, k_conf)), 2),
+                           "along_track_at_confirm_m": round(along(k_conf), 3), "lateral_at_confirm_m": round(lat(k_conf), 3),
+                           "along_track_final_m": round(along(len(X) - 1), 3),
+                           "along_track_max_after_confirm_m": round(max(along(i) for i in range(k_conf, len(X))), 3),
+                           "body_front_along_track_at_confirm_m": None if front is None else round(along(k_conf) + front, 3)})
+            # 기준점 분리: 명령 때 Gazebo 위치(실제 거리의 시작)와 PX4 보고 위치(계획 거리의 시작)의 진행 방향·횡방향 차.
+            # PX4 위치·속도는 순차 수신 뒤 명령 wall 시각을 찍으므로 텔레메트리 지연·표본 시각 차도 포함될 수 있다 (추정 오차로 단정하지 않음)
+            cb["gz_minus_px4_along_at_command_m"] = round(((X[k_c] - cmd["px4_en"][0]) * ux + (Y[k_c] - cmd["px4_en"][1]) * uy) / L, 3)
+            cb["planned_dist_from_gz_origin_m"] = round(-along(k_c), 3)
+            if cmd.get("px4_sample_wall"):
+                cb["px4_sample_age_at_command_s"] = round(cmd["wall"] - cmd["px4_sample_wall"], 3)
         out["command_brake"] = cb
         if cb and cb.get("cmd_to_stop_m") is not None and cb.get("planned_stop_dist_m") is not None:
-            checks["cmd_stop_within_planned"] = cb["cmd_to_stop_m"] <= cb["planned_stop_dist_m"]
+            checks["cmd_stop_within_planned"] = cb["cmd_to_stop_m"] <= cb["planned_stop_dist_m"]   # 원래 기준 (기준점 차 포함 — 보존)
+        if cb and "park_disarm_failed" in cb:
+            checks["park_disarm_ok"] = not cb["park_disarm_failed"]
+        elif cb and events:
+            checks["park_disarm_ok"] = True   # 정책 없는 회차 (시험 도구 시동 끔 — 별도 표시)
             k_cmd = next((i for i, r in enumerate(rows_f) if (r.get("wall_t") or 0) >= next(e for e in events if e["ev"] == "stop_command")["wall"]), 0)
             q_i0 = k_cmd
         br = brake_metrics(rows, T, X, Y, spd, None)
