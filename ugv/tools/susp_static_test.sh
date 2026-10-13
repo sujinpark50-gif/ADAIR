@@ -6,7 +6,8 @@
 # 바퀴 구동 명령이 없으므로 JointController 속도 0 = 바퀴 고정 상태에서 정지 하중을 잰다.
 # 2026-10-13 (S1·S3 독립 검증 P2): 사전 정지 실패·잔존 → 시험 안 함 (<TAG>.contaminated), 기동 실패 → <TAG>.invalid,
 #   실행 출처(run_provenance)·증거 검사(logs/ugv/stage6/verify_drive_evidence.py: 후보 모델 해시·Gazebo prismatic 수) 실패 → <TAG>.invalid_evidence,
-#   사후 정지 실패·잔존 → <TAG>.invalid_stop. 무효 표시 회차는 판정기(susp_static_report)가 INVALID 로 뺀다.
+#   사후 정지 실패·잔존 → <TAG>.invalid_stop. 코드 커밋 = VEHICLE_TREE_COMMIT (Windows 쪽에서 넘김 — WSL git 은 worktree gitdir C:/… 를 못 읽음).
+#   기록기(gz_detail) 출력·종료 코드는 <TAG>_gz_detail.log. 무효 표시 회차는 판정기(susp_static_report)가 INVALID 로 뺀다.
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$REPO/$1"; shift
@@ -32,10 +33,11 @@ for spec in "$@"; do
   printf '1 %s 0,0,%s,0 %s_1
 ' "$MDL" "$Z" "$MDL" > "$OUT/spawn_$TAG.txt"
   ( cd "$REPO" && python3 -m ugv.tools.run_provenance --run-id "$TAG" --spawn "$OUT/spawn_$TAG.txt" --out "$OUT/prov_$TAG.json" ) > "$OUT/prov_$TAG.txt" 2>&1
-  if ! python3 "$REPO/../ADAIR/logs/ugv/stage6/verify_drive_evidence.py" "$OUT/prov_$TAG.json" "$V" "$MDL" "$(git -C "$REPO" rev-parse --short HEAD)" > "$OUT/verify_$TAG.txt" 2>&1; then
+  if ! python3 "$REPO/../ADAIR/logs/ugv/stage6/verify_drive_evidence.py" "$OUT/prov_$TAG.json" "$V" "$MDL" "${VEHICLE_TREE_COMMIT:-$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'unknown(WSL 에서 Windows worktree git 해석 불가 — VEHICLE_TREE_COMMIT 로 넘길 것)')}" > "$OUT/verify_$TAG.txt" 2>&1; then
     echo "  증거 검사 실패 — 시험 안 함: $(tail -1 "$OUT/verify_$TAG.txt")" | tee "$OUT/$TAG.invalid_evidence"; bash "$REPO/ugv/tools/px4-stop.sh" >/dev/null 2>&1; continue
   fi
-  ( cd "$REPO" && python3 -m ugv.tools.gz_detail --world "$WNAME" --model ${MDL}_1 --out "$OUT/$TAG.csv" --duration "$DUR" ) 2>&1 | tail -1
+  ( cd "$REPO" && python3 -m ugv.tools.gz_detail --world "$WNAME" --model ${MDL}_1 --out "$OUT/$TAG.csv" --duration "$DUR" ) > "$OUT/${TAG}_gz_detail.log" 2>&1
+  echo "gz_detail_rc=$?" >> "$OUT/${TAG}_gz_detail.log"; tail -2 "$OUT/${TAG}_gz_detail.log"
   cp "$STATE_DIR/gz-server.log" "$OUT/${TAG}_gz-server.log" 2>/dev/null
   STOP_STRICT=1 bash "$REPO/ugv/tools/px4-stop.sh"; rc=$?
   cp "$STATE_DIR/stop_last.json" "$OUT/${TAG}_stop.json"
