@@ -321,7 +321,7 @@ def plan_speeds(route: Route, v0: float = 0.0, *, profile=None, lat_accel=None, 
         cum.append(cum[-1] + math.dist(p, q))
     from . import terrain_speed as TS
     terr = TS.profile_along(pts, cum, lambda i: _signed_curvature(pts, cum, i, config.CURVE_WINDOW_M)) if TS.ENABLED else None
-    v, dec_i, n_bank, n_down = [], [], 0, 0
+    v, dec_i, n_bank, n_down, n_floor = [], [], 0, 0, 0
     for i in range(len(pts)):
         k = _curvature(pts, cum, i, config.CURVE_WINDOW_M)
         lat_i, dec = lat_accel, decel
@@ -331,6 +331,7 @@ def plan_speeds(route: Route, v0: float = 0.0, *, profile=None, lat_accel=None, 
             lat_i = max(lat_accel - TS.G * adverse, lat_accel * TS.LAT_MIN_RATIO)
             dec = TS.a_eff(decel, grade_down)
             n_bank += lat_i < lat_accel
+            n_floor += (decel - TS.G * grade_down) <= TS.A_EFF_MIN       # 유효 감속 부족 (하한에 닿음) → 경로 거절 대상
         vp = min(vl[i], profile.max_speed_mps, math.sqrt(lat_i / k) if k > 1e-6 else math.inf)
         if terr is not None and dec < decel and math.isfinite(vp):
             vd = TS.v_for_stop_dist(TS.stop_dist(vp, decel), dec)
@@ -380,7 +381,7 @@ def plan_speeds(route: Route, v0: float = 0.0, *, profile=None, lat_accel=None, 
     if terr is not None:
         tinfo = {"candidate": "UGV_SPEED_TERRAIN (보수적 계획 — ESC 아님)", "tau_s": TS.TAU_S, "points": len(terr),
                  "terrain_known_ratio": round(sum(1 for t in terr if t[2]) / max(len(terr), 1), 3),
-                 "bank_limited_points": n_bank, "downhill_limited_points": n_down,
+                 "bank_limited_points": n_bank, "downhill_limited_points": n_down, "decel_floor_points": n_floor,
                  "max_grade_down": round(max(t[0] for t in terr), 4), "max_adverse_bank": round(max(t[1] for t in terr), 4)}
     return SpeedPlan(pts, v, cum, eta, sent, max(v) if v else 0.0, round(max_dev, 3), items_on_path=items, terrain=tinfo)
 

@@ -141,6 +141,13 @@ def verify_route(net: RoadNetwork, route: Route, graph=None) -> dict:
     if not chk["ok"]:
         return out
     sp = plan_speeds(route, profile=g.p)
+    if sp.terrain and sp.terrain.get("decel_floor_points", 0) > 0:
+        # UGV_SPEED_TERRAIN 후보: 하강 경사로 유효 감속이 하한(A_EFF_MIN)에 닿는 구간 — 속도 제한만으로 정지 능력을 보장할 수 없어 경로 거절
+        out.update({"ok": False, "terrain": sp.terrain,
+                    "issue": {"kind": "TERRAIN_DECEL_INSUFFICIENT", "detail": f"유효 감속 하한 지점 {sp.terrain['decel_floor_points']}개 "
+                              f"(최대 하강 {sp.terrain['max_grade_down']})"}})
+        _note_issue(out["issue"])
+        return out
     first = g.check_route([route.pts[0]] + [(x, y) for x, y, _ in (sp.items_on_path or sp.items)], check_radius=False,
                           label="MISSION_ITEMS")
     if not first["ok"] and getattr(route, "item_chord_tol", None) is None:
