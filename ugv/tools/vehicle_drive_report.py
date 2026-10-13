@@ -37,7 +37,7 @@ from ugv.tools import vehicle_report_common as vc
 from ugv.tools.drive_test import command_brake
 
 ROOT = Path(__file__).resolve().parents[2]
-JUDGE_VERSION = "vdr-3.2 (2026-10-13: vdr-3.1 + 확인 완료 시점 위치·거리, 최초 저속·구간 시작·확인·최종 위치 분리, 정책 켬 증거 누락 표시, armed 해제 확인 분리)"
+JUDGE_VERSION = "vdr-3.3 (2026-10-13: vdr-3.2 + 서스펜션 최대 변위 바퀴·q/q−spring_reference/q−정지 평형 기록 — 판정 불변) vdr-3.2 (2026-10-13: vdr-3.1 + 확인 완료 시점 위치·거리, 최초 저속·구간 시작·확인·최종 위치 분리, 정책 켬 증거 누락 표시, armed 해제 확인 분리)"
 EXPECTED = {
     "bump": ["no_contact_le_0.2s"], "bump_susp": ["no_contact_le_0.2s", "q_abs_max_lt_0.08", "no_divergence", "settle_1s_le_10pct"],
     "straight": ["stable_ge_10s", "no_over_limit", "speed_std_le_0.3", "steer_mean_le_1.5_std_le_0.5", "yaw_rate_le_2dps", "lateral_le_0.3m",
@@ -110,6 +110,37 @@ def stop_after(T, spd, k0):
     return {"stop_confirm_t": None}
 
 
+def susp_breakdown(rows, T, spd, variant, model):
+    """서스펜션 최대 변위의 바퀴와 세 가지 값 (기록용, 판정 불변 — 소방차 회전 실패 독립 검토 2-C):
+    q = 관절 위치(판정 대상, 기준 0.08 m·관절 한계 ±0.10 m 그대로), q − spring_reference(SDF 스프링 기준 대비 변형), q − 정지 평형(출발 전 정지 표본 중앙값 대비 추가 변위)."""
+    f = ROOT / "ugv" / "gazebo" / "variants" / variant / model / "model.sdf"
+    m = ET.fromstring(f.read_text(encoding="utf-8")).find("model")
+    ref = {}
+    for j in m.findall("joint"):
+        if j.get("type") == "prismatic" and j.get("name", "").startswith("susp_"):
+            r = j.find("axis/dynamics/spring_reference")
+            ref[j.get("name")[:-len("_joint")]] = float(r.text) if r is not None else 0.0
+    k_go = next((i for i in range(len(spd)) if spd[i] > 0.3), len(spd))
+    t0 = T[0] + 2.0
+    out = {}
+    best = None
+    for s_ in SUSP:
+        qs = [(i, fnum(rows[i].get(f"{s_}_q"))) for i in range(len(rows))]
+        qs = [(i, q) for i, q in qs if q is not None]
+        if not qs:
+            continue
+        eqv = [q for i, q in qs if i < k_go and T[i] >= t0]
+        eq = statistics.median(eqv) if eqv else None
+        i_m, q_m = max(qs, key=lambda iq: abs(iq[1]))
+        out[s_] = {"q_max_abs": round(abs(q_m), 5), "q_at_max": round(q_m, 5), "q_minus_spring_ref": round(q_m - ref.get(s_, 0.0), 5),
+                   "q_eq_before_start": None if eq is None else round(eq, 5), "q_minus_eq": None if eq is None else round(q_m - eq, 5),
+                   "sim_t": T[i_m]}
+        if best is None or abs(q_m) > best[1]:
+            best = (s_, abs(q_m))
+    return {"max_wheel": best[0] if best else None, "joints": out, "spring_reference": ref,
+            "note": "판정은 q (관절 위치) 그대로. 정지 평형 = 출발 전(속도 0.3 m/s 이하) 2 s 이후 표본 중앙값"}
+
+
 def brake_metrics(rows, T, X, Y, spd, vmax_ref):
     # 감속 시작 = 정지 전에 속도가 (최대 − 0.5 m/s) 이상이던 마지막 표본의 다음 시각. 최대·문턱은 첫 구현과 같다.
     # 첫 구현은 그 문턱 아래로 '처음' 내려간 시각이라, 가속 초과(spike) 뒤 순항 요동을 감속 시작으로 잡았다 (ft-susp_a straight50_a 597 m).
@@ -179,6 +210,7 @@ def judge(p):
             qmax = max((abs(v) for s in SUSP for v in qs[s] if v is not None), default=None)
             out["susp_q_abs_max_m"] = None if qmax is None else round(qmax, 4)
             out["susp_q_abs_max_raw_m"] = qmax                          # 반올림 전 원시값 (판정은 원시값으로)
+            out["susp_max_breakdown"] = susp_breakdown(rows, T, spd, variant, model)
             if qmax is not None:
                 kq = max((i for i in range(len(T)) for s_ in SUSP if qs[s_][i] is not None and abs(qs[s_][i]) == qmax), default=None)
                 out["susp_q_abs_max_at"] = None if kq is None else {"sim_t": T[kq], "x": X[kq]}
@@ -412,6 +444,7 @@ def judge(p):
         if geo["has_susp"]:
             qmax = max((abs(fnum(r.get(f"{s_}_q"))) for r in rows for s_ in SUSP if fnum(r.get(f"{s_}_q")) is not None), default=None)
             out["susp_q_abs_max_raw_m"] = qmax
+            out["susp_max_breakdown"] = susp_breakdown(rows, T, spd, variant, model)
             checks["q_abs_max_lt_0.08"] = None if qmax is None else qmax < 0.08
             checks["no_divergence"] = None if qmax is None else qmax < 0.099
         k_go = next((i for i in range(len(spd)) if spd[i] > 0.3), 0)
