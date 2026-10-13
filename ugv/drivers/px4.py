@@ -81,13 +81,26 @@ def park_due(speed_mps: float, now: float, still_since, finished_since, park_aft
     0.3 m/s 미만이 PARK_AFTER_S 이어지면 끈다 (정상 정차). 속도와 관계없이 미션 끝 뒤 RUNAWAY_PARK_S 가 지나도 끈다 (서지 않고 달림).
     finished_since 는 그 미션이 끝난 것을 처음 본 시각 — 속도로 초기화하지 않는다 (호출 쪽이 새 미션에서만 지운다).
     (2026-10-11 검토: 고속·저속 타이머가 서로 지워 0.29↔0.31 m/s 교대면 끝없이 미뤄졌다)"""
+    d = park_decide(speed_mps, now, still_since, finished_since, park_after_s)
+    return d["due"], d["still_since"], d["finished_since"]
+
+
+def park_decide(speed_mps: float, now: float, still_since, finished_since, park_after_s: float = None) -> dict:
+    """park_due 와 같은 판단·분기 우선순위(상한 먼저)를 그대로 하되, 실제로 선택한 분기와 두 조건을 따로 돌려준다 (Codex 0130 P1).
+    reason: 'RUNAWAY_CAP' (미션 끝 뒤 상한 — 속도와 무관, 저속이어도 상한이 먼저 참이면 이것) / 'NORMAL_STILL' (저속 연속 after_s) / None.
+    cond_cap·cond_still 은 그 순간의 조건 참/거짓 (선택 사유와 별개). still_reset = 이번 표본이 저속 타이머를 지웠는지."""
+    after = PARK_AFTER_S if park_after_s is None else park_after_s
     finished_since = finished_since if finished_since is not None else now
-    if now - finished_since >= RUNAWAY_PARK_S:
-        return True, still_since, finished_since
-    if speed_mps >= 0.3:
-        return False, None, finished_since
-    still_since = still_since if still_since is not None else now
-    return now - still_since >= (PARK_AFTER_S if park_after_s is None else park_after_s), still_since, finished_since
+    cond_cap = now - finished_since >= RUNAWAY_PARK_S
+    slow = speed_mps < 0.3
+    new_still = (still_since if still_since is not None else now) if slow else None
+    cond_still = slow and now - new_still >= after
+    if cond_cap:                                   # 원래 순서: 상한 분기가 먼저 — still_since 는 건드리지 않는다
+        return {"due": True, "reason": "RUNAWAY_CAP", "still_since": still_since, "finished_since": finished_since,
+                "cond_cap": True, "cond_still": cond_still, "still_reset": False, "after_s": after}
+    return {"due": cond_still, "reason": "NORMAL_STILL" if cond_still else None, "still_since": new_still,
+            "finished_since": finished_since, "cond_cap": False, "cond_still": cond_still,
+            "still_reset": still_since is not None and not slow, "after_s": after}
 
 
 START_AHEAD_SEARCH = 60     # 시작 지점을 찾을 때 앞쪽 몇 개 항목까지 보는가 (업로드 동안 지나칠 수 있는 범위)
@@ -319,29 +332,69 @@ class Px4Driver(Driver):
                     continue
                 # 속도를 믿을 수 없으면(없음·오래됨) 정차로 보지 않는다 — 미션 끝 상한(RUNAWAY_PARK_S)만 센다
                 fresh = tel is not None and tel.age_s() <= 5.0
-                due, still_since, fin_since = park_due(tel.speed_mps if fresh else 1.0, time.monotonic(), still_since, fin_since,
-                                                       self.park_policy.get("after_s"))
-                if not due:
+                now = time.monotonic()
+                if fin_since is None:
+                    resets, fin_first = [], now                  # 이 미션 끝을 처음 본 시각 (서버 monotonic)
+                dec = park_decide(tel.speed_mps if fresh else 1.0, now, still_since, fin_since, self.park_policy.get("after_s"))
+                if dec["still_reset"] and len(resets) < 20:
+                    resets.append({"t": round(now, 3), "speed": round(tel.speed_mps, 3) if fresh else None, "fresh": fresh})
+                still_since, fin_since = dec["still_since"], dec["finished_since"]
+                if not dec["due"]:
                     continue
+                # 판단 순간 기록 (Codex 0130 P1): 실제 선택 분기·두 조건·입력 속도와 나이 — 잠금 뒤 다시 계산하지 않는다
+                rec = {"mission_seq": prog.mission_seq, "run_id": os.getenv("ADAIR_RUN_ID"), "reason": dec["reason"],
+                       "cond_cap": dec["cond_cap"], "cond_still": dec["cond_still"], "after_s": dec["after_s"],
+                       "decide_mono": round(now, 3), "decide_wall": round(time.time(), 3), "finished_first_mono": round(fin_first, 3),
+                       "still_since_mono": None if still_since is None else round(still_since, 3), "still_resets": resets,
+                       "speed_in": round(tel.speed_mps, 3) if fresh else None, "tel_age_s": round(tel.age_s(), 3) if tel else None,
+                       "fresh": fresh, "poll_s": 0.5}
                 async with self._cmd:
+                    rec["lock_mono"] = round(time.monotonic(), 3)
                     if self._prog.mission_seq != prog.mission_seq or not self._prog.finished:
+                        rec["outcome"] = "ABANDONED_MISSION_CHANGED"
+                        self._park_record(rec)
                         continue
-                    if not fresh or tel.speed_mps >= 0.3:
+                    if dec["reason"] == "RUNAWAY_CAP":
                         self.last_error = (f"park: 미션 끝 뒤 {RUNAWAY_PARK_S:g} s 상한 → 시동 끔 "
                                            f"(속도 {tel.speed_mps:.1f} m/s)" if fresh else "park: 미션 끝 상한 → 시동 끔 (속도 미확인)")
-                    now = time.monotonic()
-                    # 시동 끔 사유 계측 (E4 ③d 분석, 2026-10-14): 정상(저속 연속 after_s 채움) / RUNAWAY(미션 끝 상한, 속도 무관 — 저속이어도 상한이 먼저면 RUNAWAY)
-                    normal = still_since is not None and now - still_since >= (self.park_policy.get("after_s") or PARK_AFTER_S)
-                    self.park_log = {"mission_seq": prog.mission_seq, "reason": "NORMAL" if normal else "RUNAWAY",
-                                     "wall": round(time.time(), 3), "after_finished_s": round(now - fin_since, 3),
-                                     "still_for_s": None if still_since is None else round(now - still_since, 3),
-                                     "speed_mps": round(tel.speed_mps, 3) if fresh else None, "fresh": fresh}
-                    await self._act.disarm()
+                    rec["disarm_req_mono"] = round(time.monotonic(), 3)
+                    try:
+                        await self._act.disarm()
+                        rec["disarm_call"] = "OK"
+                    except Exception as e:  # noqa: BLE001
+                        rec["disarm_call"] = f"ERR {type(e).__name__}: {e}"[:200]
+                        self._park_record(rec)
+                        raise
+                    rec["disarm_ret_mono"] = round(time.monotonic(), 3)
                     self.parked_seq = prog.mission_seq
+                self._tasks.append(asyncio.create_task(self._park_observe_disarmed(rec)))
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
                 self.last_error = f"park: {type(e).__name__}: {e}"
+
+    def _park_record(self, rec: dict):
+        """시동 끔 판단 기록: park_log(마지막, /state) + UGV_STATE_DIR/park_events.jsonl (있으면)."""
+        self.park_log = rec
+        d = os.getenv("UGV_STATE_DIR")
+        if d:
+            try:
+                import json
+                with open(os.path.join(d, "park_events.jsonl"), "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
+
+    async def _park_observe_disarmed(self, rec: dict, limit_s: float = 5.0):
+        """disarm 뒤 armed 해제 관측 시각 (텔레메트리 armed 흐름). limit_s 안에 못 보면 미관측(None)으로 기록."""
+        t0 = time.monotonic()
+        rec["disarmed_seen_mono"] = None
+        while time.monotonic() - t0 < limit_s:
+            if not self._armed:
+                rec["disarmed_seen_mono"] = round(time.monotonic(), 3)
+                break
+            await asyncio.sleep(0.05)
+        self._park_record(rec)
 
     async def _pass_watch(self):
         """주행 중 감시 (PASS_SKIP: 지나친 항목 건너뛰기, STALL_DETECT: 정체 감지). 한 번 분량은 _pass_step."""

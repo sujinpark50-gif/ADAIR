@@ -72,10 +72,63 @@ def _watch(speeds, after_s=1.0):
 
 def test_park_log_normal_reason():
     log = _watch([0.1] * 8, after_s=1.0)
-    assert log["reason"] == "NORMAL" and log["mission_seq"] == 7 and log["still_for_s"] >= 1.0
+    assert log["reason"] == "NORMAL_STILL" and log["mission_seq"] == 7 and log["cond_still"] and not log["cond_cap"]
+    assert log["decide_mono"] - log["still_since_mono"] >= 1.0 and log["disarm_call"] == "OK"
+    assert log["disarmed_seen_mono"] is not None and log["disarmed_seen_mono"] >= log["disarm_req_mono"]
 
 
 def test_park_log_runaway_reason_even_if_slow_at_cap():
     # 미션 끝 뒤 계속 0.5 m/s (저속 연속이 안 채워짐) → 4 s 상한으로 끔 = RUNAWAY
     log = _watch([0.5] * 12, after_s=2.0)
-    assert log["reason"] == "RUNAWAY" and log["after_finished_s"] >= 4.0
+    assert log["reason"] == "RUNAWAY_CAP" and log["cond_cap"] and not log["cond_still"]
+    assert log["decide_mono"] - log["finished_first_mono"] >= 4.0
+
+
+def test_park_decide_cap_and_still_both_true_reports_cap():
+    from ugv.drivers.px4 import park_decide
+    d = park_decide(0.1, 104.0, 101.0, 100.0, 2.0)          # 저속 3 s (≥ 2.0) 이고 미션 끝 뒤 4 s 상한도 참
+    assert d["due"] and d["reason"] == "RUNAWAY_CAP" and d["cond_cap"] and d["cond_still"]
+
+
+def test_park_decide_still_reset_and_stale_speed():
+    from ugv.drivers.px4 import park_decide
+    d = park_decide(0.5, 101.0, 100.5, 100.0, 2.0)          # 저속 타이머가 있었는데 0.5 m/s → 지움
+    assert not d["due"] and d["still_reset"] and d["still_since"] is None
+    d = park_decide(1.0, 102.0, None, 100.0, 2.0)            # 오래된 속도는 호출 쪽이 1.0 으로 넣는다 → 저속 아님
+    assert not d["cond_still"] and d["reason"] is None
+
+
+def test_park_due_unchanged_by_refactor():
+    from ugv.drivers.px4 import park_due
+    assert park_due(0.1, 100.0, None, None) == (False, 100.0, 100.0)
+    assert park_due(0.1, 101.0, 100.0, 100.0)[0] is True
+    assert park_due(2.0, 104.0, None, 100.0)[0] is True
+
+
+def test_park_lock_wait_then_mission_changed_is_recorded_abandoned():
+    """판단(상한) 뒤 명령 잠금 대기 중 새 미션이 오면 끄지 않고 ABANDONED 로 기록 — 판단 사유는 판단 순간 값 그대로."""
+    import asyncio
+    import types
+    from ugv.drivers.base import Progress
+    from ugv.drivers.px4 import Px4Driver
+    d = Px4Driver("udpin://0.0.0.0:1", clock=None)
+    d._armed, d._prog = True, Progress(5, 5, True, 3)
+    d.park_policy = {"after_s": 2.0}
+    d.telemetry = lambda: types.SimpleNamespace(speed_mps=0.6, age_s=lambda: 0.0)
+    calls = []
+
+    class Act:
+        async def disarm(self):
+            calls.append(1)
+    d._act = Act()
+
+    async def run():
+        await d._cmd.acquire()                       # 다른 명령이 잠금을 쥐고 있음
+        t = asyncio.create_task(d._park_watch())
+        await asyncio.sleep(5.2)                     # 상한(4 s) 판단이 나고 잠금 대기
+        d._prog = Progress(0, 9, False, 4)           # 새 미션
+        d._cmd.release()
+        await asyncio.sleep(0.3)
+        t.cancel()
+    asyncio.run(run())
+    assert not calls and d.park_log["outcome"] == "ABANDONED_MISSION_CHANGED" and d.park_log["reason"] == "RUNAWAY_CAP"
