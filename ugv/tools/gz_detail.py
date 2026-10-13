@@ -211,6 +211,19 @@ def main():
     with open(a.out[:-4] + "_meta.json" if a.out.endswith(".csv") else a.out + "_meta.json", "w") as mf:
         json.dump(meta, mf, ensure_ascii=False, indent=1)
     print(len(stamps), "rows ->", a.out)
+    # 2026-10-13: 기록·메타를 모두 쓴 뒤 인터프리터 종료 중 gz-transport 정리에서 가끔 'terminate called without an active exception'
+    # (rc 134, chain_ft3·ft4 정적 각 1회 — CSV 는 60 s 완전). 구독을 해제하고 출력을 비운 뒤 정리 과정을 거치지 않고 끝낸다 (기록 내용 불변)
+    for topic in (f"/world/{a.world}/dynamic_pose/info", f"/world/{a.world}/model/{a.model}/joint_state") + tuple(
+            f"/world/{a.world}/model/{a.model}/link/{w}_link/sensor/{w}_link_contact/contact" for w in W):
+        try:
+            node.unsubscribe(topic)
+        except Exception:  # noqa: BLE001
+            pass
+    import os as _os
+    import sys as _sys
+    _sys.stdout.flush()
+    _sys.stderr.flush()
+    _os._exit(0)
 
 
 if __name__ == "__main__":
