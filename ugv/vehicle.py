@@ -110,6 +110,9 @@ def _progress_seg(x, y, pts, lo=0, hi=None, tie_m=1.0):
 
 _log = logging.getLogger("ugv.vehicle")
 BLOCK_REPLAN_MAX = 3      # 한 임무에서 서 있는 차에 막혀 다시 계획하는 최대 횟수
+# 막힘 우회 때 피할 도로: origin = 상대 텔레메트리 원점 snap 도로 하나 (기본, 예전 동작) / footprint = 상대 차체(프로필 길이·폭)가
+# 도로 띠(drive_graph 반폭 추정)에 걸친 도로 전부. 2026-10-13 간헐 실패 비교 시험용 선택 — 기본값을 바꾸지 않는다.
+BLOCK_AVOID_MODE = os.getenv("UGV_BLOCK_AVOID", "origin")
 HOLD_FAIL_MAX = 2         # 양보 정지 명령이 연속 이만큼 실패하면 고장(STOP_COMMAND_FAILED)으로 처리
 STOP_RETRY_S = 2.0        # 정지 명령이 실패한 차(명령 불확실)는 이 간격으로 정지를 다시 보낸다
 STANDSTILL_ARMED_S = 5.0  # PX4 가 정차 유지(시동 끔)를 못 했을 때 정지로 보는 0.2 m/s 미만 지속 시간
@@ -394,6 +397,29 @@ class Vehicle:
     def _start_dirpos(self, tel, pos, heading_deg: float) -> Optional[DirPos]:
         return choose_start_dirpos(self.net, self.graph, tel.x, tel.y, heading_deg, tel.speed_mps,
                                    self.plan.route if self.plan is not None else None, pos)
+
+    def _footprint_roads(self, other, tel) -> list:
+        """상대 차체(프로필 길이·폭, 텔레메트리 원점 = 뒤축 중심)가 도로 띠(drive_graph 반폭 추정)에 걸친 도로 — 1 m 격자점·공간 색인.
+        UGV_BLOCK_AVOID=footprint 비교 시험용 (근사: 반폭 = 차로 수 기반 추정, 원점 가정)."""
+        from .drive_graph import est_half_width
+        pr = other.profile
+        hd = math.radians(tel.heading_deg)
+        fx, fy = math.sin(hd), math.cos(hd)
+        rx, ry = fy, -fx
+        cx, cy = tel.x + fx * pr.rear_axle_from_center_m, tel.y + fy * pr.rear_axle_from_center_m
+        hl, hw = pr.body_length_m / 2, pr.body_width_m / 2
+        na, nb = max(2, int(math.ceil(2 * hl))), max(2, int(math.ceil(2 * hw)))
+        hwmap = getattr(self.graph, "half_w", None) or {}
+        found = set()
+        for ia in range(na + 1):
+            a = -hl + 2 * hl * ia / na
+            for ib in range(nb + 1):
+                b = -hw + 2 * hw * ib / nb
+                x, y = cx + fx * a + rx * b, cy + fy * a + ry * b
+                for rid, d in self.net.near(x, y, 12.0).items():
+                    if rid not in found and d <= hwmap.get(rid, est_half_width(self.net.roads[rid])):
+                        found.add(rid)
+        return sorted(found)
 
     def here_state(self):
         """계획 출발 상태: (DirPos — 진행 방향, 명령 교체 지연 동안 갈 거리만큼 앞, 속도 m/s, 오류 사유)."""
@@ -1401,6 +1427,12 @@ class Vehicle:
                 start, v0, err = self.here_state()
                 body = {"target": t["target"]} if t.get("target") else {"target_node": t.get("target_node")}
                 avoid = {blocked_road: other_id} if blocked_road else {}
+                if BLOCK_AVOID_MODE == "footprint" and other is not None and tel_o is not None:
+                    # 비교 시험용 선택 (기본 off): 상대 차체가 걸친 도로 전부 (원점 snap 하나만이 아니라) — 2026-10-13 간헐 실패 진단:
+                    # 교차로에 선 고장 차는 도로 3개에 걸쳤고, 원점 snap 도로 하나만 피한 우회가 같은 교차로로 들어가 다시 막혔다
+                    for rid_fp in self._footprint_roads(other, tel_o):
+                        avoid.setdefault(rid_fp, other_id)
+                    rec["avoid_roads"] = sorted(avoid)
                 try:
                     plan = None if start is None else await asyncio.to_thread(self._approach, body, start, v0, avoid)
                 except HttpError as e:
