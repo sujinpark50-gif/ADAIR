@@ -1,0 +1,18 @@
+{
+ "variant": "susp_a_acc3",
+ "model": "adair_ugv",
+ "source_sha1": "0669adace858aadc99f391539adc6d9485e46b0e",
+ "model_sdf_sha1": "cf71aa0bb30aff2339bf7f6abf64edc887df11b5",
+ "params": {
+  "k": 130000.0,
+  "c": 8000.0,
+  "ref": -0.03,
+  "travel": 0.1,
+  "link_mass": 5.0
+ },
+ "generator": "ugv/tools/make_vehicle_variant.py",
+ "derived_from": "susp_a (모델 파일 동일 — 해시 같음)",
+ "airframe_override": {
+  "51100_gz_adair_ugv": "RA_ACC_RAD_MAX -1 → 3 (Fable F2(d), 정지 후보 E2 전용)"
+ }
+}
