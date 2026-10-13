@@ -120,6 +120,14 @@ BLOCK_AVOID_MODE = os.getenv("UGV_BLOCK_AVOID", "origin")
 #                          (UGV_TERRAIN_TILES) 에서 진행 방향 필요거리 구간 고도차 + 불확실성 0.01. 타일이 없으면 경사 0 (지연 항만)
 STOP_SPEED_CMD = os.getenv("UGV_STOP_SPEED_CMD", "0") == "1"
 STOP_GRADE_MODE = os.getenv("UGV_STOP_GRADE", "0") == "1"
+# 개선 2 전달 보완 (2026-10-13 Codex 답변 1423: 계산한 속도 계획을 PX4 가 수행하도록 잇는 최소 연결 — ESC·새 자율 기능 아님). 기본 off.
+#   UGV_SPEED_TERRAIN_CMD=1 : 주행 감독 중 '지금 위치 ~ v·τ 앞' 계획 속도(sp.v, 감속 경사 포함)의 최소를 DO_CHANGE_SPEED 로 보낸다.
+#   진입 전 적용 = τ(TS.TAU_S) 만큼 앞을 본다. 값이 SPEED_CMD_DELTA 넘게 바뀔 때만, SPEED_CMD_MIN_S 간격 이상으로 보낸다 (매 틱 재전송 금지).
+#   양보·정지 감독·취소·재계획 중에는 보내지 않는다 (정지 속도 명령과 경쟁 금지). 실패해도 감독 유지 (문제 기록만).
+#   DO_CHANGE_SPEED 는 목표 속도 명령이지 실제 속도 상한 보장이 아니다 — 보낸 시각·순번·값·ACK·그때 실제 속도를 SPEED_CMD 이벤트로 남긴다.
+SPEED_TERRAIN_CMD = os.getenv("UGV_SPEED_TERRAIN_CMD", "0") == "1"
+SPEED_CMD_DELTA = 0.5
+SPEED_CMD_MIN_S = 1.0
 # 지형 표면은 terrain_speed.surface() 로 일원화 (UGV_TERRAIN_TILES)
 HOLD_FAIL_MAX = 2         # 양보 정지 명령이 연속 이만큼 실패하면 고장(STOP_COMMAND_FAILED)으로 처리
 STOP_RETRY_S = 2.0        # 정지 명령이 실패한 차(명령 불확실)는 이 간격으로 정지를 다시 보낸다
@@ -852,6 +860,7 @@ class Vehicle:
         self.state = state
         self.stop_path_pts, self.command_uncertain, self._hold_failures = None, False, 0
         self._stop_sup = None                       # 새 주행 미션 — 주행 감독이 맡는다
+        self._spd_cmd = None                        # UGV_SPEED_TERRAIN_CMD: 새 미션 — 마지막 보낸 값 초기화
         self._off_since, self._near_i, self._offroad_since = None, 0, None
         self._move_ref = (self.clock.now(), t.x, t.y) if t else None
         self._drive_started_sim = self.clock.now()
@@ -1204,6 +1213,36 @@ class Vehicle:
                 await self._safe_stop()
                 self.state = "FAULT"
             return
+        if SPEED_TERRAIN_CMD and not prog.finished:
+            await self._speed_cmd_tick(now, tel, i)
+
+    async def _speed_cmd_tick(self, now, tel, i):
+        """UGV_SPEED_TERRAIN_CMD (머리말). 목표 = min(sp.v[j] : s_now ≤ cum[j] ≤ s_now + v·τ + 여유). 잠금이 잡혀 있으면 이번 틱은 건너뛴다."""
+        from . import terrain_speed as TS
+        sp = self.speed
+        if self.hold is not None or self._stop_sup is not None or self.state not in ("DRIVING", "EVADING") or self.lock.locked():
+            return
+        s0 = sp.cum[i]
+        look = tel.speed_mps * TS.TAU_S + config.STOP_MARGIN_M
+        ahead = [sp.v[j] for j in range(i, len(sp.v)) if sp.cum[j] <= s0 + look] or [sp.v[min(i, len(sp.v) - 1)]]
+        target = round(max(min(ahead), 0.5), 2)
+        last = getattr(self, "_spd_cmd", None)
+        if last is not None and (abs(target - last["v"]) < SPEED_CMD_DELTA or now - last["t"] < SPEED_CMD_MIN_S):
+            return
+        seq = self.seq
+        async with self.lock:
+            if self.seq != seq or self.hold is not None or self._stop_sup is not None:
+                return                               # 그 사이 재계획·양보·정지 — 지난 미션 값을 보내지 않는다
+            try:
+                ok = await asyncio.wait_for(self.driver.set_speed_cap(target), min(STOP_CMD_TIMEOUT_S, 2.0))
+            except asyncio.TimeoutError:
+                ok = None
+        self._spd_cmd = {"v": target, "t": now, "seq": seq, "ok": ok}
+        self._event("SPEED_CMD", sim_t=round(now, 2), s_m=round(s0, 1), lookahead_m=round(look, 1), target_mps=target,
+                    actual_mps=round(tel.speed_mps, 2), mission_seq=seq, ack=ok,
+                    prev_mps=None if last is None else last["v"], basis="UGV_SPEED_TERRAIN_CMD 계획 속도 v·τ 앞 최소")
+        if not ok:
+            self.last_error = f"SPEED_CMD 실패 (ack={ok}) — 감독 유지"
 
     # ------------------------------------------------------------------ 차량 간 충돌 방지 (ugv/traffic.py 가 부른다)
     def _s_now(self) -> float:
