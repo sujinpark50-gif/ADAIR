@@ -130,6 +130,14 @@ SPEED_TERRAIN_CMD = os.getenv("UGV_SPEED_TERRAIN_CMD", "0") == "1"
 # 스스로 서서 목적지보다 약 3 m 앞에 멈춘다 (E3). UGV_PX4_END_EXTEND=1 이면 정상 주행 미션(_drive)의 마지막 지점을 도착 도로를 따라
 # 드라이버 end_stop_offset_m 만큼 연장해 PX4 반경 경계 = 원래 목적지가 되게 한다. 서비스 목표·도착 판정(plan.dest)은 그대로.
 END_EXTEND = os.getenv("UGV_PX4_END_EXTEND", "0") == "1"
+# 정지 경로 항목화 후보 (2026-10-14 Fable 경사 정지 F1 저속 순항 검토 ③, 기본 off). 정지 경로(≈ 34 m)가 ITEM_SPACING_M(40)보다 짧으면
+# plan_speeds 가 끝 지점 1개만 만들고 그 속도가 램프 마지막 조각 √(2·a·Δ_last)(Δ_last 는 격자 위치에 따라 0~4.9 m) 이라, F1 상한과 함께
+# PX4 가 정지 경로 전체를 1.4~2.7 m/s 로 순항 → 정지 감독 시간 초과 (s3113 3/3 FAULT). 켜면 _safe_stop 의 정지 경로만:
+# (a) 램프를 STOP_ITEM_SPACING_M 간격 항목으로, (b) 끝 STOP_ITEM_END_CLEAR_M 안의 끝 아닌 항목 제거 (1.0 하한이 앞 구간에 번지는 것 방지),
+# (c) 끝 항목 속도 = 마지막 구간 진입 속도 (항목 1개면 지금 속도) — 끝 램프·반경 경계 정지는 PX4(F2, RA_ACC_RAD_MAX ≥ NAV_ACC_RAD)가 한다.
+STOP_ITEMS_RAMP = os.getenv("UGV_STOP_ITEMS_RAMP", "0") == "1"
+STOP_ITEM_SPACING_M = float(os.getenv("UGV_STOP_ITEM_SPACING_M", "8.0"))
+STOP_ITEM_END_CLEAR_M = 5.0     # PX4 도착 반경 3 m + 2 m
 # 정지 후보 F1 (2026-10-13 Fable 원인 검토 `UGV_경사정지_속도명령_페이블원인검토_20261013.md` R1·R2, 오퍼스 소스 대조 확인). 기본 off.
 #   활성 미션 중 새 미션 업로드(onMissionUpdate)는 순항 속도를 리셋하지 않아, 정지 경로 첫 구간(선행 지점까지 — 속도 항목은 지점 뒤에
 #   붙는다)이 직전 주행 항목 속도(예 13.88)를 상속해 가속했다. 외부 DO_CHANGE_SPEED 는 순항 속도 대입 + ACK 만 하므로 업로드 '뒤'에는
@@ -257,6 +265,28 @@ def choose_start_dirpos(net, graph, x: float, y: float, heading_deg: float, spee
         if best is None or graph.ahead_m(d2) > graph.ahead_m(best):
             best = d2
     return best if best is not None else dp
+
+
+def stop_ramp_items(route, v0: float, profile):
+    """STOP_ITEMS_RAMP: 정지 경로 항목 (a)(b)(c) — 위 상수 설명. 반환 (items, 기록)."""
+    sp = plan_speeds(route, v0, profile=profile, spacing=STOP_ITEM_SPACING_M)
+    items = list(sp.items)
+    pts = route.pts
+    cum = [0.0]
+    for a, b in zip(pts, pts[1:]):
+        cum.append(cum[-1] + math.dist(a, b))
+    L = cum[-1]
+
+    def along(x, y):
+        k = min(range(len(pts)), key=lambda i: math.dist(pts[i], (x, y)))
+        return cum[k]
+    removed = [it for it in items[:-1] if L - along(it[0], it[1]) < STOP_ITEM_END_CLEAR_M]
+    items = [it for it in items[:-1] if L - along(it[0], it[1]) >= STOP_ITEM_END_CLEAR_M] + items[-1:]
+    end_v = items[-2][2] if len(items) >= 2 else max(v0, 1.0)
+    orig_end = items[-1][2]
+    items[-1] = (items[-1][0], items[-1][1], round(max(end_v, 1.0), 2))
+    return items, {"spacing_m": STOP_ITEM_SPACING_M, "n_items": len(items), "removed_near_end": len(removed),
+                   "end_v_orig": orig_end, "end_v": items[-1][2], "first_v": items[0][2], "length_m": round(L, 1)}
 
 
 class Vehicle:
@@ -930,6 +960,7 @@ class Vehicle:
         정지 경로가 제동거리보다 짧거나(short) 회전반경·차체 도로 포함 검사를 통과하지 못하면(drivable=false) 그 사실을
         돌려주고 기록한다 — 정지 명령은 그래도 보낸다 (다른 선택지가 없다). 정지가 안전 확보를 뜻하지 않는다."""
         info = {}
+        t_enter = self.clock.now()           # 시간 원점 계측 (Codex 0300·Fable ⑤): _safe_stop 진입 (서버 시계)
         self.hold = None
         if self.stop_cut_active:
             # 구동 차단 중: 정지 미션을 다시 보내면 시동이 다시 걸린다 → 보내지 않고 차단을 유지한다
@@ -979,9 +1010,14 @@ class Vehicle:
                         # 속도 상한 = 지금 속도 (정지 경로는 감속만). 예전에는 최고 속도라 정지 거리 여유(STOP_MARGIN_M) 때문에 시작 구간에서
                         # 지금보다 빠른 속도를 허용해, 2026-10-11 Gazebo 재검증에서 취소·고장 정지 직후 1.3~2 m/s 가속했다
                         route = Route(pts, [max(v, 0.5)] * len(pts), [], pos, pos, 0.0)
-                        items = plan_speeds(route, v, profile=self.profile).items
+                        if STOP_ITEMS_RAMP:
+                            items, ramp_info = stop_ramp_items(route, v, self.profile)
+                            info["stop_items_ramp"] = ramp_info
+                        else:
+                            items = plan_speeds(route, v, profile=self.profile).items
                         chk = g.check_route(pts, label="STOP_PATH")
-                        info = {"basis": "PLANNED_ROUTE" if prefer else "ROAD_AHEAD", "length_m": round(got, 1),
+                        info = {**({"stop_items_ramp": info["stop_items_ramp"]} if "stop_items_ramp" in info else {}),
+                                "basis": "PLANNED_ROUTE" if prefer else "ROAD_AHEAD", "length_m": round(got, 1),
                                 "needed_m": round(need, 1), "short": got < need - 0.5, "speed_mps": round(v, 2),
                                 **({"stop_need_model": need_info} if need_info else {}),
                                 "drivable": chk["ok"], "steering_violations": chk["steering_violations"],
@@ -1009,7 +1045,11 @@ class Vehicle:
                         ok_c = None
                     info["speed_cap_first"] = {"v": round(v_cap, 2), "ok": ok_c, "ack_s": round(time.monotonic() - t_c, 3),
                                                "basis": "업로드 전 min(지금 속도, 첫 구간 계획 속도) — Fable R1/F1"}
+                t_up = self.clock.now()
                 self.seq = await self._send_stop(self.driver.follow(items))
+                info["timing"] = {"t_enter": round(t_enter, 3), "t_upload_start": round(t_up, 3), "upload_s": round(self.clock.now() - t_up, 3),
+                                  "start_item": (getattr(self.driver, "last_sent", None) or {}).get("start_item"),
+                                  "items_sent": [[round(a, 2), round(b, 2), round(c, 2)] for a, b, c in items]}
                 self.stop_path_pts = [tuple(q) for q in pts]
                 if STOP_SPEED_CMD and tel is not None:
                     info["speed_cap_cmd"] = {"v": round(tel.speed_mps, 2), "ok": await self.driver.set_speed_cap(tel.speed_mps)}
@@ -1398,6 +1438,8 @@ class Vehicle:
         reach = max(path_len or 0.0, self.profile.stop_distance(v0) if v0 >= 0.3 else 0.0)
         allow = reach + v0 * (lat + STOP_SUP_LAT_PAD_S) + STOP_SUP_MARGIN_M
         t_allow = (2.0 * reach / v0 if v0 >= 0.3 else 0.0) + lat + STOP_SUP_SLACK_S
+        self._event("STOP_SUP_BEGIN", t0=round(now, 3), t_allow_s=round(t_allow, 3), allow_m=round(allow, 1), reach_m=round(reach, 1),
+                    v0=round(v0, 2), lat_s=round(lat, 3), basis=basis)
         self._stop_sup = {"basis": basis, "t0": now, "x": tel.x if tel else None, "y": tel.y if tel else None,
                           "v0": round(v0, 2), "vmax": v0, "travel_m": 0.0, "allow_m": round(allow, 1),
                           "deadline": now + t_allow, "escalations": 0, "next_cut": now, "still_since": None,
