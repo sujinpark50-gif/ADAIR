@@ -376,7 +376,10 @@ class TrafficManager:
         sent = [t for t in sent if t is not None]
         if sent:
             to_wall = getattr(self.clock, "to_wall", None)
-            wait_s = TRAFFIC_CMD_WAIT_S if to_wall is None else min(TRAFFIC_CMD_WAIT_S, to_wall(TRAFFIC_PERIOD_S))
+            period_wall = to_wall(TRAFFIC_PERIOD_S) if to_wall is not None else 0.0
+            # 실시간 관계가 없는 시계(ManualClock.to_wall = 0 — 단위 시험이 틱을 빠르게 넘긴다)는 예전 상한 그대로: 0 으로 두면 명령(막힘 재계획 등)이
+            # 완료될 벽시계 시간이 없어 시험 장면이 진행되지 않는다 (2026-10-13 합친 브랜치 전체 시험 7 건)
+            wait_s = min(TRAFFIC_CMD_WAIT_S, period_wall) if period_wall > 0 else TRAFFIC_CMD_WAIT_S
             await asyncio.wait(sent, timeout=wait_s)
         self.last_tick_wall_ms = round((time.perf_counter() - w0) * 1000, 1)
 
