@@ -320,6 +320,8 @@ class Vehicle:
         self._stop_retry_at = -1e9
         self._last_armed = None          # (시각, 속도) 시동 걸린 상태의 마지막 텔레메트리 — 시동 꺼진 뒤 관성 주행 추정용
         self._stop_sup = None            # 정지 감독 (위 머리말). 정차가 확인되면 None, 마지막 결과는 last_stop_result
+        self.drive_gen = 0               # 채택된 주행 경로 세대 (_drive 가 경로 전송에 성공할 때만 +1 — 양보·안전 정지 전송은 제외). 교통 막힘 에피소드 키
+        self.block_report_void = None    # 교통이 보고한 막힘을 전제 불충족으로 처리하지 않았을 때 그 에피소드 키 (traffic._block_report_due 가 되돌림)
         self.last_stop_result = None
         self._hold_failures = 0
         self._task: Optional[asyncio.Task] = None
@@ -866,6 +868,7 @@ class Vehicle:
             self._trimmed = len(items) - len(keep)
             items = keep
         self.seq = await self.driver.follow(items)
+        self.drive_gen += 1
         self.state = state
         self.stop_path_pts, self.command_uncertain, self._hold_failures = None, False, 0
         self._stop_sup = None                       # 새 주행 미션 — 주행 감독이 맡는다
@@ -1551,15 +1554,23 @@ class Vehicle:
             self._event("YIELD_END", waited_s=round(self.clock.now() - info.get("since_sim", self.clock.now()), 1),
                         other=info.get("other"))
 
-    async def blocked_by_vehicle(self, other_id: str, waited_s: float, immovable: bool):
+    async def blocked_by_vehicle(self, other_id: str, waited_s: float, immovable: bool, episode=None):
         """서 있는 차에 막혀 오래 기다렸다 (ugv/traffic.py). 같은 목적지로 그 차가 선 도로를 빼고 다시 계획한다.
         통과 가능한 우회 경로(진행 방향·차체·회전 검사 통과)가 있으면 그 길로 가고, 없으면 계속 기다리지 않고 임무를 실패
         (BLOCKED_BY_VEHICLE)로 끝낸다 — 차는 대기 지점에 선 채(이미 보낸 정지 미션) 총괄의 재판단을 기다린다.
         같은 임무에서 같은 차 때문에 다시 계획하는 것은 한 번, 막힘 재계획은 모두 BLOCK_REPLAN_MAX 번까지
         (되풀이 재계획·두 차가 번갈아 길을 바꾸는 것을 막는다)."""
         async with self.lock:
+            # episode: 교통이 보고를 만들 때의 (작업, 주행 경로 세대, 상대). 잠금을 기다리는 사이 새 임무·새 경로가 채택됐으면
+            # 그 오래된 보고는 폐기 — 새 임무의 막힘 이력·보고 상태를 건드리지 않는다 (Codex 1745)
+            cur = (self.task_key, self.drive_gen, other_id)
+            if episode is not None and tuple(episode) != cur:
+                self._event("TRAFFIC_BLOCK_REPORT_STALE", other=other_id, report_episode=list(episode)[1:], current=list(cur)[1:])
+                return
             t = self.current_task()
             if t is None or self.state not in ("DRIVING", "EVADING") or self.hold is None:
+                # 처리하지 않음 — 교통 쪽 '보고 완료' 를 되돌릴 수 있게 원래 요청의 에피소드 키를 남긴다
+                self.block_report_void = tuple(episode) if episode is not None else cur
                 return
             other = next((p for p in self.peers() if p.resource_id == other_id), None)
             tel_o = other.driver.telemetry() if other is not None else None
