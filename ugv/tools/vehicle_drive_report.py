@@ -307,6 +307,13 @@ def judge(p):
             L = math.hypot(ux, uy) or 1.0
             kp = next((i for i in range(k_c, len(X)) if ((X[i] - cmd["stop_en"][0]) * ux + (Y[i] - cmd["stop_en"][1]) * uy) / L >= 0), None)
             cb["speed_at_planned_point_mps"] = None if kp is None else round(spd[kp], 2)
+            # 기록용 (판정 아님 — 2026-10-13 S4 결과를 본 뒤 발견한 정의 문제라 기준 변경은 별도 검토):
+            # 실제 거리(명령 때 Gazebo 위치부터)와 계획 거리(명령 때 PX4 보고 위치부터)는 기준점이 달라 px4_vs_gz 만큼 어긋난다.
+            # 정지 위치를 계획 정지점 기준 진행 방향 부호 거리로 (음수 = 정지점 앞에서 섬)
+            ks_ = next((i for i in range(k_c, len(spd)) if spd[i] < 0.1), None)
+            cb["stop_along_track_vs_planned_point_m"] = (None if ks_ is None else
+                                                         round(((X[ks_] - cmd["stop_en"][0]) * ux + (Y[ks_] - cmd["stop_en"][1]) * uy) / L, 2))
+            cb["note_basis"] = "cmd_to_stop_m 은 Gazebo 위치 기준, planned_stop_dist_m 은 PX4 보고 위치 기준 — 비교 시 px4_vs_gz 오차 포함"
             cb["cmd_to_planned_point_s"] = None if kp is None else round(T[kp] - T[k_c], 2)
             pk = next((e for e in events if e["ev"] == "park_disarm"), None)
             cb["park_policy"] = (f"server ({pk['why']})" if pk else
