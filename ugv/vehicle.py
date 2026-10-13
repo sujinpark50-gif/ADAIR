@@ -1901,6 +1901,8 @@ class Vehicle:
             "sim_time_s": round(self.clock.now(), 2), "mission_state": self.state,
             "speed_mps": round(tel.speed_mps, 2) if tel else None, "heading_deg": round(tel.heading_deg, 1) if tel else None,
             "station": self.station, "profile": self.profile.summary(),
+            # 시험 증거 (E4 G2·E2 ③ 훅): PX4 끝 지점 정지 파라미터·연장 offset, 정차 시동 끔 대기 정책
+            "driver_evidence": {"end_stop": getattr(self.driver, "end_stop_info", None), "park_policy": getattr(self.driver, "park_policy", None)},
             "comm": {**{k: v for k, v in self.comm.items() if k != "stopped_wall"},
                      "orchestrator_silence_s": None if self.comm_lost_s() is None else round(self.comm_lost_s(), 1),
                      "stop_after_s": config.COMM_LOSS_STOP_S, "return_after_stop_s": config.COMM_LOSS_RETURN_S,

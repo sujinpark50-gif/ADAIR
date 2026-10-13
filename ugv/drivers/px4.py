@@ -58,7 +58,25 @@ def mavsdk_plan(items: List[Item], here, v_now: float):
     return out
 
 
-def park_due(speed_mps: float, now: float, still_since, finished_since):
+def park_after_policy(end_stop_info: dict) -> dict:
+    """E2 기준 ③ 관측용 시험 훅 (Fable 미해결 2.2): 정상 정차 시동 끔 대기(PARK_AFTER_S)를 UGV_TEST_HOOKS=1 일 때만
+    UGV_PX4_PARK_AFTER_S 로 늘린다 — [PARK_AFTER_S, RUNAWAY_PARK_S − 1.0] 로 자름. 운영 기본 1.0·RUNAWAY 상한·cut_drive·비상 정지 불변.
+    PX4 가 끝 지점에서 스스로 서지 않는 차(RA_ACC_RAD_MAX < NAV_ACC_RAD, 또는 파라미터 미확인)는 무시 — LOITER 에서 기어가므로 긴 대기는 위치 오차만 키운다."""
+    req = os.getenv("UGV_PX4_PARK_AFTER_S") if os.getenv("UGV_TEST_HOOKS") == "1" else None
+    pol = {"after_s": PARK_AFTER_S, "test_hook": False, "requested": req, "basis": "운영 기본"}
+    if req is None:
+        return pol
+    try:
+        v = min(max(float(req), PARK_AFTER_S), RUNAWAY_PARK_S - 1.0)
+    except ValueError:
+        return {**pol, "basis": "요청값 해석 실패 — 기본 유지"}
+    nav, ra = (end_stop_info or {}).get("NAV_ACC_RAD"), (end_stop_info or {}).get("RA_ACC_RAD_MAX")
+    if nav is None or ra is None or not (ra >= nav > 0.0):
+        return {**pol, "basis": "PX4 끝 지점 자체 정지 없음/미확인 (RA_ACC_RAD_MAX < NAV_ACC_RAD) — 시험 훅 무시"}
+    return {**pol, "after_s": v, "test_hook": True, "basis": "시험 훅 (UGV_TEST_HOOKS=1)"}
+
+
+def park_due(speed_mps: float, now: float, still_since, finished_since, park_after_s: float = None):
     """미션이 끝난 차의 정차 유지(시동 끔) 판단 → (끌지, still_since, finished_since).
     0.3 m/s 미만이 PARK_AFTER_S 이어지면 끈다 (정상 정차). 속도와 관계없이 미션 끝 뒤 RUNAWAY_PARK_S 가 지나도 끈다 (서지 않고 달림).
     finished_since 는 그 미션이 끝난 것을 처음 본 시각 — 속도로 초기화하지 않는다 (호출 쪽이 새 미션에서만 지운다).
@@ -69,7 +87,7 @@ def park_due(speed_mps: float, now: float, still_since, finished_since):
     if speed_mps >= 0.3:
         return False, None, finished_since
     still_since = still_since if still_since is not None else now
-    return now - still_since >= PARK_AFTER_S, still_since, finished_since
+    return now - still_since >= (PARK_AFTER_S if park_after_s is None else park_after_s), still_since, finished_since
 
 
 START_AHEAD_SEARCH = 60     # 시작 지점을 찾을 때 앞쪽 몇 개 항목까지 보는가 (업로드 동안 지나칠 수 있는 범위)
@@ -252,6 +270,7 @@ class Px4Driver(Driver):
         if not self.connected:
             raise DriverError("PX4_NO_POSITION")
         await self._read_end_stop_params(system)
+        self.park_policy = park_after_policy(self.end_stop_info)
         self._tasks.append(asyncio.create_task(self._park_watch()))
         if PASS_SKIP or STALL_DETECT:
             self._tasks.append(asyncio.create_task(self._pass_watch()))
@@ -300,7 +319,8 @@ class Px4Driver(Driver):
                     continue
                 # 속도를 믿을 수 없으면(없음·오래됨) 정차로 보지 않는다 — 미션 끝 상한(RUNAWAY_PARK_S)만 센다
                 fresh = tel is not None and tel.age_s() <= 5.0
-                due, still_since, fin_since = park_due(tel.speed_mps if fresh else 1.0, time.monotonic(), still_since, fin_since)
+                due, still_since, fin_since = park_due(tel.speed_mps if fresh else 1.0, time.monotonic(), still_since, fin_since,
+                                                       self.park_policy.get("after_s"))
                 if not due:
                     continue
                 async with self._cmd:
