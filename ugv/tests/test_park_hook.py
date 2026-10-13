@@ -39,7 +39,7 @@ def test_park_due_uses_policy_but_runaway_cap_unchanged():
     assert park_due(2.9, 200.0 + RUNAWAY_PARK_S, s2, f2, 3.0)[0]
 
 
-def _watch(speeds, after_s=1.0):
+def _watch(speeds, after_s=1.0, with_xy=True):
     """실제 _park_watch 를 가짜 텔레메트리로 돌려 시동 끔 사유 기록(park_log)을 본다. speeds: 0.5 s 폴링마다 속도."""
     import asyncio
     import types
@@ -50,7 +50,7 @@ def _watch(speeds, after_s=1.0):
     d.park_policy = {"after_s": after_s, "test_hook": after_s != 1.0}
     it = iter(speeds)
     cur = {"v": next(it)}
-    d.telemetry = lambda: types.SimpleNamespace(speed_mps=cur["v"], age_s=lambda: 0.0)
+    d.telemetry = (lambda: types.SimpleNamespace(speed_mps=cur["v"], age_s=lambda: 0.0, x=1.0, y=2.0)) if with_xy else (lambda: types.SimpleNamespace(speed_mps=cur["v"], age_s=lambda: 0.0))
 
     class Act:
         async def disarm(self):
@@ -132,3 +132,22 @@ def test_park_lock_wait_then_mission_changed_is_recorded_abandoned():
         t.cancel()
     asyncio.run(run())
     assert not calls and d.park_log["outcome"] == "ABANDONED_MISSION_CHANGED" and d.park_log["reason"] == "RUNAWAY_CAP"
+
+
+def test_park_samples_recorded_only_with_test_hooks(monkeypatch):
+    """park 표본 계측: UGV_TEST_HOOKS=1 일 때만, 판단 기록에 최근 표본 (속도 성분·나이·저속 시작) — 판단 결과는 그대로."""
+    monkeypatch.setenv("UGV_TEST_HOOKS", "1")
+    log = _watch([0.1] * 8, after_s=1.0)
+    assert log["reason"] == "NORMAL_STILL" and log["samples"] and log["samples_max"] == 40
+    smp = log["samples"][-1]
+    assert {"mono", "seq", "finished", "speed", "pos_age", "vel_age", "still_since"} <= set(smp)
+    monkeypatch.delenv("UGV_TEST_HOOKS")
+    log2 = _watch([0.1] * 8, after_s=1.0)
+    assert log2["reason"] == "NORMAL_STILL" and "samples" not in log2
+
+
+def test_park_sample_error_does_not_block_park(monkeypatch):
+    """계측이 예외를 내도 (텔레메트리에 위치 없음) 정차 판단·시동 끔은 그대로 — 처음 구현에서 계측 예외가 판단을 건너뛰게 했던 결함."""
+    monkeypatch.setenv("UGV_TEST_HOOKS", "1")
+    log = _watch([0.1] * 8, after_s=1.0, with_xy=False)
+    assert log["reason"] == "NORMAL_STILL" and any("sample_error" in x for x in log["samples"])

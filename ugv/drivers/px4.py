@@ -29,7 +29,8 @@ from .base import Driver, DriverError, Item, Progress, Telemetry
 START_RETRIES = 20
 PARK_AFTER_S = 1.0          # 미션 끝 + 0.3 m/s 미만이 이만큼 이어지면 시동을 꺼 정차 유지
 ARMED_STALE_S = 3.0         # armed 보고가 이만큼 없으면 시동 걸림으로 본다 (heartbeat 1 Hz)
-RUNAWAY_PARK_S = 4.0        # 미션 끝 + 0.3 m/s 이상이 이만큼 이어지면 (미션 끝에서 서지 않고 달림) 그래도 시동을 끈다
+RUNAWAY_PARK_S = 4.0
+PARK_SAMPLES_MAX = 40       # park 표본 계측 버퍼 (0.5 s 폴링 × 40 = 최근 20 s, 시험 훅에서만)        # 미션 끝 + 0.3 m/s 이상이 이만큼 이어지면 (미션 끝에서 서지 않고 달림) 그래도 시동을 끈다
 LEAD_BASE_M = 5.0           # 선행 지점 = 지금 위치에서 경로를 따라 LEAD_BASE_M + 속도 × LEAD_TIME_S 앞
 LEAD_TIME_S = 2.0           #   (업로드·시작에 걸리는 동안 지나쳐 뒤에 남지 않게. 뒤에 남으면 rover 가 되돌아간다)
 ACCEPT_M = float(os.getenv("UGV_PX4_ACCEPT_M", "3.0"))   # 미션 지점 도착 반경 (airframe NAV_ACC_RAD 와 맞춘다. 환경변수는 시험용)
@@ -321,11 +322,28 @@ class Px4Driver(Driver):
     async def _park_watch(self):
         """미션이 끝나고 멈춘 차의 시동을 끈다 (정차 유지). 다음 follow 가 다시 시동을 건다."""
         still_since = fin_since = fin_seq = None
+        # park 표본 계측 (2026-10-14 Codex 0455 (c), 시험 전용 UGV_TEST_HOOKS=1): 폴링마다 입력 속도 성분·수신 나이·판단 상태를
+        # 상한 있는 버퍼(최근 PARK_SAMPLES_MAX)에 두고 시동 끔 기록에 붙인다. 폴링 주기·판단·안전 조건은 그대로
+        from collections import deque
+        samples = deque(maxlen=PARK_SAMPLES_MAX) if os.getenv("UGV_TEST_HOOKS") == "1" else None
         while True:
             await asyncio.sleep(0.5)
             try:
                 tel = self.telemetry()
                 prog = self._prog
+                if samples is not None:
+                  try:                                  # 계측 실패가 정차 판단을 막지 않게 따로 감싼다
+                    now_s = time.monotonic()
+                    vel = self._vel
+                    samples.append({"mono": round(now_s, 3), "seq": prog.mission_seq, "finished": prog.finished, "armed": self._armed,
+                                    "vN": None if vel is None else round(vel.north_m_s, 3), "vE": None if vel is None else round(vel.east_m_s, 3),
+                                    "speed": None if tel is None else round(tel.speed_mps, 3),
+                                    "x": None if tel is None else round(tel.x, 2), "y": None if tel is None else round(tel.y, 2),
+                                    "pos_age": round(now_s - self._pos_mono, 3) if self._pos is not None else None,
+                                    "vel_age": round(now_s - self._mono.get("velocity", -math.inf), 3) if vel is not None else None,
+                                    "still_since": None if still_since is None else round(still_since, 3)})
+                  except Exception as e:  # noqa: BLE001
+                    samples.append({"sample_error": repr(e)[:120]})
                 if fin_seq != prog.mission_seq:          # 새 미션에서만 미션 끝 타이머를 지운다
                     fin_seq, fin_since, still_since = prog.mission_seq, None, None
                 if not self._armed or not prog.finished or self.parked_seq == prog.mission_seq:
@@ -347,7 +365,8 @@ class Px4Driver(Driver):
                        "decide_mono": round(now, 3), "decide_wall": round(time.time(), 3), "finished_first_mono": round(fin_first, 3),
                        "still_since_mono": None if still_since is None else round(still_since, 3), "still_resets": resets,
                        "speed_in": round(tel.speed_mps, 3) if fresh else None, "tel_age_s": round(tel.age_s(), 3) if tel else None,
-                       "fresh": fresh, "poll_s": 0.5}
+                       "fresh": fresh, "poll_s": 0.5,
+                       **({"samples": list(samples), "samples_max": PARK_SAMPLES_MAX} if samples is not None else {})}
                 async with self._cmd:
                     rec["lock_mono"] = round(time.monotonic(), 3)
                     if self._prog.mission_seq != prog.mission_seq or not self._prog.finished:
