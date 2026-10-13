@@ -35,7 +35,11 @@ class VehicleProfile:
     basis: str
     gz_model: str                      # Gazebo 모델 (ugv/gazebo/models/<gz_model>)
     px4_airframe: int
-    emergency_decel_mps2: float = 3.5  # 비상 정지 계산용 감속 (PX4 RO_DECEL_LIM 보다 낮게: UGV 4, 소방차 2.5)
+    # 비상 정지 계산용 감속 (vehicle.py EMERGENCY_STRAIGHT·traffic_emergency_stop 의 정지점 거리 v²/(2a)+1 m). 차종별 값:
+    #   UGV 기본 3.5 (airframe 51100 RO_DECEL_LIM 4.0 보다 낮게), 소방차 2.2 (아래 PROFILES, airframe 51101 RO_DECEL_LIM 2.5 보다 낮게).
+    # 숫자가 PX4 값과 같을 필요는 없다. 2026-10-13 S4 평지 실측 (서버와 같은 정차 유지 정책): 정지점까지 감속은 계획을 따랐으나
+    # 미션 끝 뒤 저속 진행(4 s 상한 대기)으로 소방차는 계획 정지점을 0.4~3.9 m 지났다 — 감속값 보수성과 정차 유지 시점은 따로 검증 중.
+    emergency_decel_mps2: float = 3.5
     # 경로 추종 오차 여유: 최종 경로·미션 선 검사에서 차체가 도로 띠 안쪽으로 이만큼 들어와 있어야 한다 (도로 폭을 늘리지 않고 판정만
     # 보수적으로). 값 = 2026-10-11 평탄 월드 곡선 보정 뒤 남은 추종 오차 p95 최대 0.27 m (두 차종). 교차로 전이 여유 0.03~0.13 m 이탈
     track_margin_m: float = 0.27
