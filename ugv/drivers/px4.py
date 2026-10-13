@@ -251,9 +251,28 @@ class Px4Driver(Driver):
         self.connected = self._pos is not None
         if not self.connected:
             raise DriverError("PX4_NO_POSITION")
+        await self._read_end_stop_params(system)
         self._tasks.append(asyncio.create_task(self._park_watch()))
         if PASS_SKIP or STALL_DETECT:
             self._tasks.append(asyncio.create_task(self._pass_watch()))
+
+    async def _read_end_stop_params(self, system):
+        """E4 G2 (Fable 미해결 1.3): PX4 로버는 끝 지점에서 position_controller_status 의 도착 반경 경계에 들어서면 속도 설정 0 으로 선다 —
+        그 메시지는 RA_ACC_RAD_MAX ≥ NAV_ACC_RAD 일 때만 발행된다 (AckermannAutoMode). 그런 차만 offset = NAV_ACC_RAD, 아니면 0
+        (RA −1 차에 연장하면 점까지 기어가 목적지를 지나친다). 읽기 실패 → 0 + 사유 기록."""
+        self.end_stop_offset_m, self.end_stop_info = 0.0, {"basis": "읽기 전"}
+        try:
+            from mavsdk.asyncio.plugins.param import ParamAsync
+            prm = ParamAsync(system)
+            nav = float(await asyncio.wait_for(prm.get_param_float("NAV_ACC_RAD"), 5.0))
+            ra = float(await asyncio.wait_for(prm.get_param_float("RA_ACC_RAD_MAX"), 5.0))
+            on = ra >= nav > 0.0
+            self.end_stop_offset_m = nav if on else 0.0
+            self.end_stop_info = {"NAV_ACC_RAD": nav, "RA_ACC_RAD_MAX": ra, "offset_m": self.end_stop_offset_m,
+                                  "basis": "RA_ACC_RAD_MAX ≥ NAV_ACC_RAD — 끝 지점 반경 경계 정지" if on else "RA_ACC_RAD_MAX < NAV_ACC_RAD — 반경 정지 없음, 연장 안 함"}
+        except Exception as e:  # noqa: BLE001
+            self.end_stop_offset_m = 0.0
+            self.end_stop_info = {"offset_m": 0.0, "basis": "파라미터 읽기 실패 — 연장 안 함", "error": repr(e)[:200]}
 
     async def test_link(self, cut: bool) -> dict:
         """시험용 (UGV_TEST_HOOKS=1): 이 차량의 MAVLink 연결만 끊거나 잇는다. 끊으면 이 차량의 MAVSDK 인스턴스를 닫아 서버는 이 차에

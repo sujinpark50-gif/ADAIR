@@ -126,6 +126,10 @@ STOP_GRADE_MODE = os.getenv("UGV_STOP_GRADE", "0") == "1"
 #   양보·정지 감독·취소·재계획 중에는 보내지 않는다 (정지 속도 명령과 경쟁 금지). 실패해도 감독 유지 (문제 기록만).
 #   DO_CHANGE_SPEED 는 목표 속도 명령이지 실제 속도 상한 보장이 아니다 — 보낸 시각·순번·값·ACK·그때 실제 속도를 SPEED_CMD 이벤트로 남긴다.
 SPEED_TERRAIN_CMD = os.getenv("UGV_SPEED_TERRAIN_CMD", "0") == "1"
+# E4 목적지 조기 정지 보정 (2026-10-13 Fable 미해결 1.3, Codex 1705·2315). 기본 off. RA_ACC_RAD_MAX 3 (F2) 인 PX4 로버는 끝 지점 3 m 반경 경계에서
+# 스스로 서서 목적지보다 약 3 m 앞에 멈춘다 (E3). UGV_PX4_END_EXTEND=1 이면 정상 주행 미션(_drive)의 마지막 지점을 도착 도로를 따라
+# 드라이버 end_stop_offset_m 만큼 연장해 PX4 반경 경계 = 원래 목적지가 되게 한다. 서비스 목표·도착 판정(plan.dest)은 그대로.
+END_EXTEND = os.getenv("UGV_PX4_END_EXTEND", "0") == "1"
 # 정지 후보 F1 (2026-10-13 Fable 원인 검토 `UGV_경사정지_속도명령_페이블원인검토_20261013.md` R1·R2, 오퍼스 소스 대조 확인). 기본 off.
 #   활성 미션 중 새 미션 업로드(onMissionUpdate)는 순항 속도를 리셋하지 않아, 정지 경로 첫 구간(선행 지점까지 — 속도 항목은 지점 뒤에
 #   붙는다)이 직전 주행 항목 속도(예 13.88)를 상속해 가속했다. 외부 DO_CHANGE_SPEED 는 순항 속도 대입 + ACK 만 하므로 업로드 '뒤'에는
@@ -845,7 +849,12 @@ class Vehicle:
         if chk.get("ok") is not True:
             raise DriverError(f"UNVERIFIED_ROUTE: 최종 경로 검사 통과 기록 없음 ({plan.mode}, route_check={chk.get('ok')})")
         t = self.driver.telemetry()
-        self.speed = plan_speeds(plan.route, t.speed_mps if t else 0.0, profile=self.profile)
+        route_send = plan.route
+        if END_EXTEND:
+            route_send, ext = self._end_extend(plan)
+            plan.detail["end_extension"] = ext
+            self._event("END_EXTENSION" if ext.get("applied") else "END_EXTENSION_SKIPPED", **ext)
+        self.speed = plan_speeds(route_send, t.speed_mps if t else 0.0, profile=self.profile)
         self.plan = plan
         self.hold = None
         items = self.speed.items
@@ -878,6 +887,42 @@ class Vehicle:
         self._move_ref = (self.clock.now(), t.x, t.y) if t else None
         self._drive_started_sim = self.clock.now()
         return self.seq
+
+    def _end_extend(self, plan):
+        """E4 (Fable 1.3): (보낼 경로, 기록). G2 드라이버 offset 0 이면 연장 없음. G3 도착 도로를 따라 offset 만큼, 도로 잔여 ≥ offset + 1 m 일 때만
+        (노드·교차로를 넘지 않음). G4 연장 선형 포함 최종 경로 검사(check_route) 와 화재 이격(끝점 ≥ FIRE_STANDOFF_M) 통과해야.
+        G5 plan.dest(서비스 목표)·도착 판정은 바꾸지 않는다. 실패하면 원래 경로 + 사유."""
+        off = float(getattr(self.driver, "end_stop_offset_m", 0.0) or 0.0)
+        info = {"offset_m": off, "driver_info": getattr(self.driver, "end_stop_info", None)}
+        route, dest = plan.route, plan.dest
+        if off <= 0.0:
+            return route, {**info, "applied": False, "reason": "OFFSET_0 (차량이 반경 경계 정지를 하지 않음)"}
+        toward = getattr(route, "arrive_toward", None)
+        if dest is None or toward is None or dest.road_id not in self.net.roads:
+            return route, {**info, "applied": False, "reason": "NO_ARRIVAL_ROAD"}
+        r = self.net.roads[dest.road_id]
+        fwd = toward == r.b
+        remaining = (r.length - dest.s) if fwd else dest.s
+        if remaining < off + 1.0:
+            return route, {**info, "applied": False, "reason": "ROAD_END_TOO_CLOSE", "remaining_m": round(remaining, 2)}
+        s_ext = dest.s + off if fwd else dest.s - off
+        ext_pts = [tuple(q) for q in self.net.polyline(dest.road_id, dest.s, s_ext)]
+        pts = list(route.pts) + [q for q in ext_pts if math.dist(q, route.pts[-1]) > 0.01]
+        vlim = list(route.vlim) + [min(route.vlim[-1], 2.0)] * (len(pts) - len(route.pts))
+        end = self.net.at(dest.road_id, s_ext)
+        new = Route(pts, vlim, list(route.road_ids), route.start, end, route.time_s)
+        for k in ("legs", "arrive_toward", "item_comp_l", "item_chord_tol", "turn_variants"):
+            if hasattr(route, k):
+                setattr(new, k, getattr(route, k))
+        rec = {**info, "road_id": dest.road_id, "remaining_m": round(remaining, 2),
+               "service_dest_xy": [round(dest.x, 2), round(dest.y, 2)], "px4_end_xy": [round(end.x, 2), round(end.y, 2)]}
+        chk = self.graph.check_route(new)
+        if not chk["ok"]:
+            return route, {**rec, "applied": False, "reason": "ROUTE_CHECK_FAIL", "issue": (chk.get("issues") or [None])[0]}
+        fire = self.fire_source.area()
+        if len(fire) and fire.distance(end.x, end.y) < config.FIRE_STANDOFF_M:
+            return route, {**rec, "applied": False, "reason": "FIRE_STANDOFF", "fire_m": round(fire.distance(end.x, end.y), 1)}
+        return new, {**rec, "applied": True, "check": {"worst_excess_m": chk.get("worst_excess_m")}}
 
     async def _safe_stop(self) -> dict:
         """도로를 따라 감속 정지. 남은 계획 경로가 있으면 그것을, 없으면 진행 방향 도로를 따라 제동거리만큼 간다.

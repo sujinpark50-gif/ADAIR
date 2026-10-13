@@ -57,6 +57,11 @@ class Driver:
         """미션 교체 후 출발. 새 mission_seq 를 돌려준다."""
         raise NotImplementedError
 
+    # 끝 지점 정지 반경 보정 (E4): PX4 가 마지막 지점 '도착 반경' 경계에서 스스로 서는 차(RA_ACC_RAD_MAX ≥ NAV_ACC_RAD)만 그 반경 (m).
+    # 기본 드라이버·sim 은 0 — 연장하지 않는다
+    end_stop_offset_m: float = 0.0
+    end_stop_info: dict = {"basis": "기본 드라이버 — 끝 지점 연장 없음"}
+
     async def set_speed_cap(self, v: float) -> bool:
         """현재 미션의 속도 상한 명령 (PX4: MAV_CMD_DO_CHANGE_SPEED). 기본 드라이버는 없음 → False. UGV_STOP_SPEED_CMD 후보용."""
         return False
