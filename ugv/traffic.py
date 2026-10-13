@@ -349,23 +349,16 @@ class TrafficManager:
             h = holds.get(rid)
             if h is not None:
                 self._clear_ticks[rid] = 0
-                prev = self.waits.get(rid)
-                since = prev["since_sim"] if prev and prev["other"] == h["other"] else now
-                self.waits[rid] = {**h, "since_sim": since}
-                if prev and prev.get("reported") and prev["other"] == h["other"]:
-                    self.waits[rid]["reported"] = True
                 hinfo = {k: x for k, x in h.items() if k != "s"}
                 cmds = [lambda v=v, h=h, hinfo=hinfo: v.set_hold(h["s"], hinfo)]
-                if h["kind"] == "STATIC" and not self.waits[rid].get("reported"):
-                    other = self.vehicles.get(h["other"])
-                    immovable = other is not None and _immovable(other)
-                    waited = now - since
-                    if waited > TRAFFIC_BLOCK_REPORT_S or (immovable and waited >= TRAFFIC_BLOCK_IMMOVABLE_S):
-                        # 막힘 처리는 같은 상대에 한 번 — 우회 경로가 있으면 다시 계획, 없으면 임무를 실패로 끝내 총괄이 재판단한다
-                        self.waits[rid]["reported"] = True
-                        v._event("TRAFFIC_BLOCKED_BY_VEHICLE", other=h["other"], waited_s=round(waited, 1),
-                                 blocker_immovable=immovable)
-                        cmds.append(lambda v=v, o=h["other"], w=round(waited, 1), im=immovable: v.blocked_by_vehicle(o, w, im))
+                rep_ = self._block_report_due(rid, v, h, now)
+                if rep_ is not None:
+                    # 막힘 처리는 같은 에피소드에 한 번 — 우회 경로가 있으면 다시 계획, 없으면 임무를 실패로 끝내 총괄이 재판단한다
+                    waited, immovable = rep_
+                    v._event("TRAFFIC_BLOCKED_BY_VEHICLE", other=h["other"], waited_s=round(waited, 1),
+                             blocker_immovable=immovable, episode=list(self.waits[rid]["reported_key"][1:]))
+                    ep = self.waits[rid]["reported_key"]
+                    cmds.append(lambda v=v, o=h["other"], w=round(waited, 1), im=immovable, ep=ep: v.blocked_by_vehicle(o, w, im, episode=ep))
                 sent.append(self._dispatch(rid, cmds))
             elif getattr(v, "hold", None):
                 self._clear_ticks[rid] = self._clear_ticks.get(rid, 0) + 1
@@ -386,6 +379,40 @@ class TrafficManager:
             wait_s = TRAFFIC_CMD_WAIT_S if to_wall is None else min(TRAFFIC_CMD_WAIT_S, to_wall(TRAFFIC_PERIOD_S))
             await asyncio.wait(sent, timeout=wait_s)
         self.last_tick_wall_ms = round((time.perf_counter() - w0) * 1000, 1)
+
+    @staticmethod
+    def _episode_key(v, other):
+        """막힘 에피소드 키 = (작업, 채택된 주행 경로 세대, 상대). 양보·안전 정지 미션 전송은 세대를 올리지 않는다 (vehicle._drive 만)."""
+        return (getattr(v, "task_key", None), getattr(v, "drive_gen", 0), other)
+
+    def _block_report_due(self, rid, v, h, now):
+        """대기 기록 갱신 + 정지 차량 막힘 보고 여부. 보고하면 (대기 s, 상대 immovable), 아니면 None.
+        같은 에피소드에는 한 번만 보고한다. 막힘 처리로 새 주행 경로가 채택되면(세대 증가) 같은 상대에 다시 막혀도 새 에피소드 —
+        다시 보고해 vehicle.blocked_by_vehicle 이 막힘 이력으로 REPEATED_BLOCK 안전 종료를 하게 한다 (예전: '같은 상대면 보고 완료 승계'
+        로 재계획 직후 재양보가 영원히 보고되지 않았다 — 2026-10-13 sim 3배 고정 장면 5/5 무한 대기).
+        보고했는데 차량 쪽이 전제 불충족으로 처리하지 않았으면(vehicle.block_report_void == 키) 보고 완료를 되돌린다."""
+        key = self._episode_key(v, h["other"])
+        prev = self.waits.get(rid)
+        same_ep = prev is not None and prev.get("key") == key
+        since = prev["since_sim"] if same_ep else now
+        self.waits[rid] = {**h, "since_sim": since, "key": key}
+        if same_ep and prev.get("reported"):
+            if getattr(v, "block_report_void", None) == key:
+                v.block_report_void = None                  # 처리 안 됨 — 같은 에피소드에서 다시 보고할 수 있게
+            else:
+                self.waits[rid]["reported"] = True
+                self.waits[rid]["reported_key"] = prev.get("reported_key", key)
+                return None
+        if h["kind"] != "STATIC":
+            return None
+        other = self.vehicles.get(h["other"])
+        immovable = other is not None and _immovable(other)
+        waited = now - since
+        if waited > TRAFFIC_BLOCK_REPORT_S or (immovable and waited >= TRAFFIC_BLOCK_IMMOVABLE_S):
+            self.waits[rid]["reported"] = True
+            self.waits[rid]["reported_key"] = key
+            return waited, immovable
+        return None
 
     def _busy(self, rid) -> bool:
         t = self._inflight.get(rid)
