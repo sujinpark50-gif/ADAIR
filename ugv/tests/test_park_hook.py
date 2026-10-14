@@ -151,3 +151,47 @@ def test_park_sample_error_does_not_block_park(monkeypatch):
     monkeypatch.setenv("UGV_TEST_HOOKS", "1")
     log = _watch([0.1] * 8, after_s=1.0, with_xy=False)
     assert log["reason"] == "NORMAL_STILL" and any("sample_error" in x for x in log["samples"])
+
+
+# 운영 설정 UGV_PX4_PARK_STILL_S (2026-10-14 리더 결정 — 시험 훅과 별개, 기본값 불변)
+def test_ops_setting_absent_keeps_default(monkeypatch):
+    monkeypatch.delenv("UGV_TEST_HOOKS", raising=False); monkeypatch.delenv("UGV_PX4_PARK_STILL_S", raising=False)
+    p = park_after_policy(ACC3)
+    assert p["after_s"] == PARK_AFTER_S == 1.0 and p["basis"] == "운영 기본" and "ops_setting" not in p
+
+
+def test_ops_setting_applies_without_test_hooks(monkeypatch):
+    monkeypatch.delenv("UGV_TEST_HOOKS", raising=False); monkeypatch.setenv("UGV_PX4_PARK_STILL_S", "2.0")
+    p = park_after_policy(ACC3)
+    assert p["after_s"] == 2.0 and p["test_hook"] is False and p["ops_setting"] == "2.0" and p["basis"].startswith("운영 설정")
+
+
+def test_ops_setting_clamped_and_bad_value(monkeypatch):
+    monkeypatch.delenv("UGV_TEST_HOOKS", raising=False)
+    monkeypatch.setenv("UGV_PX4_PARK_STILL_S", "9"); assert park_after_policy(ACC3)["after_s"] == RUNAWAY_PARK_S - 1.0
+    monkeypatch.setenv("UGV_PX4_PARK_STILL_S", "0.2"); assert park_after_policy(ACC3)["after_s"] == PARK_AFTER_S
+    monkeypatch.setenv("UGV_PX4_PARK_STILL_S", "abc"); p = park_after_policy(ACC3)
+    assert p["after_s"] == PARK_AFTER_S and "해석 실패" in p["basis"]
+
+
+def test_ops_setting_ignored_for_vehicle_without_end_stop(monkeypatch):
+    monkeypatch.delenv("UGV_TEST_HOOKS", raising=False); monkeypatch.setenv("UGV_PX4_PARK_STILL_S", "2.0")
+    for info in (RA_OFF, {"basis": "파라미터 읽기 실패"}, None):
+        p = park_after_policy(info)
+        assert p["after_s"] == PARK_AFTER_S and p["test_hook"] is False
+
+
+def test_test_hook_takes_precedence_over_ops_setting(monkeypatch):
+    monkeypatch.setenv("UGV_TEST_HOOKS", "1"); monkeypatch.setenv("UGV_PX4_PARK_AFTER_S", "2.5"); monkeypatch.setenv("UGV_PX4_PARK_STILL_S", "2.0")
+    p = park_after_policy(ACC3)
+    assert p["after_s"] == 2.5 and p["test_hook"] is True
+
+
+def test_ops_2s_still_runaway_cap_unchanged():
+    # 2.0 s 대기에서도 미션 끝 뒤 RUNAWAY_PARK_S 상한은 그대로 먼저
+    due, still, fin = park_due(0.1, 10.0, 9.0, 6.0, park_after_s=2.0)
+    assert due is True          # 10 − 6 = 4.0 ≥ RUNAWAY_PARK_S (상한)
+    due, still, fin = park_due(0.1, 10.0, 8.5, 7.5, park_after_s=2.0)
+    assert due is False         # 저속 1.5 s < 2.0, 미션 끝 뒤 2.5 s < 4.0
+    due, still, fin = park_due(0.1, 10.5, 8.5, 7.5, park_after_s=2.0)
+    assert due is True          # 저속 2.0 s

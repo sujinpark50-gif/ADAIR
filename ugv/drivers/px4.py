@@ -66,7 +66,7 @@ def park_after_policy(end_stop_info: dict) -> dict:
     req = os.getenv("UGV_PX4_PARK_AFTER_S") if os.getenv("UGV_TEST_HOOKS") == "1" else None
     pol = {"after_s": PARK_AFTER_S, "test_hook": False, "requested": req, "basis": "운영 기본"}
     if req is None:
-        return pol
+        return park_still_ops_policy(end_stop_info, pol)
     try:
         v = min(max(float(req), PARK_AFTER_S), RUNAWAY_PARK_S - 1.0)
     except ValueError:
@@ -75,6 +75,25 @@ def park_after_policy(end_stop_info: dict) -> dict:
     if nav is None or ra is None or not (ra >= nav > 0.0):
         return {**pol, "basis": "PX4 끝 지점 자체 정지 없음/미확인 (RA_ACC_RAD_MAX < NAV_ACC_RAD) — 시험 훅 무시"}
     return {**pol, "after_s": v, "test_hook": True, "basis": "시험 훅 (UGV_TEST_HOOKS=1)"}
+
+
+def park_still_ops_policy(end_stop_info: dict, pol: dict) -> dict:
+    """운영 설정 UGV_PX4_PARK_STILL_S (2026-10-14 리더 결정 — 운영 경사 중단의 '차단 전 1 초 자체 정지' 후보, 시험 훅과 별개):
+    정상 정차 시동 끔 대기를 명시적으로 늘린다. 없으면 운영 기본 1.0 그대로 (기본값 불변). 시험 훅과 같은 범위 [PARK_AFTER_S, RUNAWAY_PARK_S − 1.0]
+    로 자르고, PX4 끝 지점 자체 정지 차 (RA_ACC_RAD_MAX ≥ NAV_ACC_RAD > 0) 에만 적용 — 그 밖의 차는 기본 유지. RUNAWAY 상한·cut_drive·비상 정지 불변.
+    시험 훅 요청 (UGV_TEST_HOOKS=1 + UGV_PX4_PARK_AFTER_S) 이 있으면 그쪽이 먼저 (park_after_policy)."""
+    ops = os.getenv("UGV_PX4_PARK_STILL_S")
+    if ops is None:
+        return pol
+    pol = {**pol, "ops_setting": ops}
+    try:
+        v = min(max(float(ops), PARK_AFTER_S), RUNAWAY_PARK_S - 1.0)
+    except ValueError:
+        return {**pol, "basis": "운영 설정 해석 실패 — 기본 유지"}
+    nav, ra = (end_stop_info or {}).get("NAV_ACC_RAD"), (end_stop_info or {}).get("RA_ACC_RAD_MAX")
+    if nav is None or ra is None or not (ra >= nav > 0.0):
+        return {**pol, "basis": "PX4 끝 지점 자체 정지 없음/미확인 — 운영 설정 무시, 기본 유지"}
+    return {**pol, "after_s": v, "basis": "운영 설정 (UGV_PX4_PARK_STILL_S)"}
 
 
 def park_due(speed_mps: float, now: float, still_since, finished_since, park_after_s: float = None):
